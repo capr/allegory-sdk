@@ -2867,6 +2867,16 @@ function try_start(ignore_interrupts)
 	if running then
 		return
 	end
+
+	if Linux then
+		--signals thread to stop loop on SIGINT (Ctrl+C) and SIGTERM (kill) events.
+		require'signal'
+		on_signal('SIGINT SIGTERM', function()
+			stop()
+			return 'stop'
+		end)
+	end
+
 	poll_thread = currentthread()
 	repeat
 		running = true

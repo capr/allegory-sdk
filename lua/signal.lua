@@ -15,6 +15,8 @@
 
 	signals arg: 'SIGHUP ...' | {SIGHUP, ...}
 
+	on_signal(signals, fn) => fn(signal) -> 'stop'
+
 ]]
 
 require'sock'
@@ -107,7 +109,7 @@ function signal_file(signals, async, flags, name)
 	local ss = sigset(signals)
 	local fd = C.signalfd(-1, ss, bor(async and SFD_NONBLOCK or 0, flags or 0))
 	assert(check_errno(fd ~= -1))
-	local f = file_wrap_fd(fd, null, async, 'pipe', name)
+	local f = file_wrap_fd(fd, nil, async, 'pipe', name)
 	local si = new'struct signalfd_siginfo'
 	assert(sizeof(si) == 128)
 	local psi = cast(u8p, si)
@@ -142,6 +144,24 @@ function signal_ignore (signals)
 		signal = check_signal(signal)
 		assert(check_errno(C.signal(signal, SIG_IGN) ~= SIG_ERR))
 	end
+end
+
+--TODO: on stop(), this thread is leaked because read_signal() never returns.
+--We should probably resume all waiting threads with a zero-bytes return
+--or something to signal that the loop has stopped.
+function on_signal(sigs, fn)
+	resume(thread(function()
+		signal_block(sigs)
+		local sigf = signal_file(sigs, true)
+		while 1 do
+			local si = sigf:read_signal()
+			if fn(si.signo) == 'stop' then
+				break
+			end
+		end
+		sigf:close()
+		signal_unblock(sigs)
+	end))
 end
 
 if not ... then --self-test
