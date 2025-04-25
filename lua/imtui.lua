@@ -3492,22 +3492,12 @@ function ui.start()
 	scr_resize()
 	scr_clip_reset()
 
-	--signals thread to capture Ctrl+C and terminal window resize events.
-	resume(thread(function()
-		signal_block'SIGWINCH SIGINT'
-		local sigf = signal_file('SIGWINCH SIGINT', true)
-		while 1 do
-			local si = sigf:read_signal()
-			if si.signo == SIGWINCH then
-				scr_resize()
-				scr_clip_reset()
-				redraw()
-			elseif si.signo == SIGINT then
-				stop()
-				break
-			end
-		end
-	end))
+	--signal thread to capture terminal window resize events.
+	on_signal('SIGWINCH', function()
+		scr_resize()
+		scr_clip_reset()
+		redraw()
+	end)
 
 	--input thread
 	resume(thread(function()
