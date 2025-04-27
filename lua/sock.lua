@@ -1115,7 +1115,7 @@ local expires_heap = heap{
 	index_key = 'index', --enable O(log n) removal.
 }
 
-do
+do --timers
 local function wait_until(job, expires)
 	job.thread = currentthread()
 	job.expires = expires
@@ -1468,6 +1468,8 @@ do
 		return n, job.sa
 	end
 
+	--making normal files async.
+
 	function _file_async_read(f, read_overlapped, buf, sz)
 		local o, job = overlapped(f, io_done, f.recv_expires)
 		local ok = read_overlapped(f, o, buf, sz)
@@ -1527,9 +1529,9 @@ end
 
 --NOTE: it is unsafe to close a socket twice no matter the error.
 function socket:_close()
-	local s = self.s; self.s = nil
+	local s = self.s; self.s = nil --make closed() true.
 	local ok, err = check(C.close(s) == 0)
-	cancel_wait_io(self) -- closed() is true here.
+	cancel_wait_io(self)
 	return ok, err
 end
 
@@ -1551,7 +1553,7 @@ local send_expires_heap = heap{
 	index_key = 'index', --enable O(log n) removal.
 }
 
-do
+do --timers
 local function wait_until(job, expires)
 	job.recv_thread = currentthread()
 	job.recv_expires = expires
@@ -1775,20 +1777,15 @@ do
 	end
 end
 
-local file_write = make_async(true, true, function(self, buf, len)
+--making normal files async.
+
+_file_async_write = make_async(true, true, function(self, buf, len)
 	return tonumber(C.write(self.fd, buf, len))
 end, EAGAIN)
 
-local file_read = make_async(false, true, function(self, buf, len)
+_file_async_read = make_async(false, true, function(self, buf, len)
 	return tonumber(C.read(self.fd, buf, len))
 end, EAGAIN)
-
-function _file_async_write(f, buf, len)
-	return file_write(f, buf, len)
-end
-function _file_async_read(f, buf, len)
-	return file_read(f, buf, len)
-end
 
 --epoll ----------------------------------------------------------------------
 
@@ -1881,8 +1878,8 @@ do
 			thread = socket.recv_thread
 		end
 		if not thread then --misfire or bug?
-			log('', 'sock', 'poll', 'no thread waiting for %s (%s)',
-				socket, for_writing and 'write' or 'read')
+			log('', 'sock', 'poll', '%-4s %s - no thread waiting',
+				socket, for_writing and 'w' or 'r')
 			return
 		end
 		if for_writing then
@@ -2680,7 +2677,7 @@ local weak_keys = {__mode = 'k'}
 local poll_thread
 
 local wait_count = 0
-waiting = setmetatable({}, weak_keys) --{thread -> true}
+--[[local]] waiting = setmetatable({}, weak_keys) --{thread -> true}
 
 local function wait_io_cont(thread, ...)
 	wait_count = wait_count - 1
@@ -2696,6 +2693,7 @@ end
 	return wait_io_cont(thread, coro_transfer(poll_thread))
 end
 
+if Linux or OSX then
 --closing a socket doesn't trigger an epoll event, instead the socket is
 --silently removed from the epoll list, thus we have to wake up any waiting
 --threads manually when the socket is closed from another thread.
@@ -2712,6 +2710,8 @@ end
 		self.send_thread = nil
 		resume(thread, nil, 'closed')
 	end
+end
+_sock_cancel_wait_io = cancel_wait_io
 end
 
 function poll(ignore_interrupts)

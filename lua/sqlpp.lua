@@ -29,7 +29,7 @@ Backends & writing your own
 	Writing a backend for your favorite RDBMS is easy. At the minimum you have
 	to show sqlpp how to connect to your engine and how to quote strings,
 	and if you want schema diffs you have to write the queries to extract metadata
-	from information tables. Use `sqlpp_mysql.lua` or `sqlpp_tarantoo.lua`
+	from information tables. Use `sqlpp_mysql.lua` or `sqlpp_tarantool.lua`
 	as a reference for how to do all that.
 
 INSTANCING

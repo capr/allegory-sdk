@@ -153,6 +153,9 @@ function on_signal(sigs, fn)
 	resume(thread(function()
 		signal_block(sigs)
 		f = signal_file(sigs, true)
+		f:onclose(function()
+			signal_unblock(sigs)
+		end)
 		while 1 do
 			local si = f:try_read_signal()
 			if not si or fn(si.signo) == 'stop' then
@@ -160,7 +163,6 @@ function on_signal(sigs, fn)
 			end
 		end
 		f:close()
-		signal_unblock(sigs)
 	end, 'on_signal %s', sigs))
 	return f
 end

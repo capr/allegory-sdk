@@ -194,12 +194,20 @@ function file.try_close(f)
 	if f.async then
 		_sock_unregister(f)
 	end
-	local ok = C.close(f.fd) == 0
+	local ok, err = check(C.close(f.fd) == 0)
 	f.fd = -1 --fd is gone no matter the error.
-	if not ok then return check(false) end
+	if f._after_close then
+		f:_after_close()
+	end
+	_sock_cancel_wait_io(f)
+	if not ok then return ok, err end
 	log(f.quiet and '' or 'note', 'fs', 'closed', '%-4s r:%d w:%d', f, f.r, f.w)
 	live(f, nil)
 	return true
+end
+
+function file:onclose(fn)
+	after(self, '_after_close', fn)
 end
 
 cdef[[

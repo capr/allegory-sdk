@@ -410,10 +410,17 @@ function file.try_close(f)
 	end
 	local ok, err = checknz(C.CloseHandle(f.handle))
 	f.handle = INVALID_HANDLE_VALUE --handle is gone no matter the error.
-	if not ok then return false, err end
+	if f._after_close then
+		f:_after_close()
+	end
+	if not ok then return ok, err end
 	log(f.quiet and '' or 'note', 'fs', 'closed', '%-4s r:%d w:%d', f, f.r, f.w)
 	live(f, nil)
 	return true
+end
+
+function file:onclose(fn)
+	after(self, '_after_close', fn)
 end
 
 function file_wrap_handle(h, opt, async, is_pipe_end, path, quiet, debug_prefix)

@@ -683,16 +683,6 @@ end
 file.check_io = check_io
 file.checkp   = checkp
 
-function file:onclose(fn)
-	local try_close = self.try_close
-	function self:try_close()
-		local ok, err = try_close(self)
-		fn()
-		if not ok then return false, err end
-		return true
-	end
-end
-
 function file:try_skip(n)
 	local i, err = f:try_seek('cur', 0); if not i then return nil, err end
 	local j, err = f:try_seek('cur', n); if not i then return nil, err end
