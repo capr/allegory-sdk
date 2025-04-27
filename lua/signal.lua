@@ -146,22 +146,23 @@ function signal_ignore (signals)
 	end
 end
 
---TODO: on stop(), this thread is leaked because read_signal() never returns.
---We should probably resume all waiting threads with a zero-bytes return
---or something to signal that the loop has stopped.
+--NOTE: before stop() make sure to close the signal file or this thread
+--will never exit and the sock loop will never stop.
 function on_signal(sigs, fn)
+	local f
 	resume(thread(function()
 		signal_block(sigs)
-		local sigf = signal_file(sigs, true)
+		f = signal_file(sigs, true)
 		while 1 do
-			local si = sigf:read_signal()
-			if fn(si.signo) == 'stop' then
+			local si = f:try_read_signal()
+			if not si or fn(si.signo) == 'stop' then
 				break
 			end
 		end
-		sigf:close()
+		f:close()
 		signal_unblock(sigs)
 	end, 'on_signal %s', sigs))
+	return f
 end
 
 if not ... then --self-test

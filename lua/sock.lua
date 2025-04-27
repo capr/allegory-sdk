@@ -2869,16 +2869,24 @@ end
 
 local _stop = false
 local running = false
-function stop() _stop = true end
+local term_sig_f
+function stop()
+	_stop = true
+	if term_sig_f then
+		term_sig_f:close()
+	end
+end
 function try_start(ignore_interrupts)
 	if running then
 		return
 	end
 
-	if Linux then
+	--NOTE: not creating the signal-catching thread if there are no waiting I/O
+	--threads otherwise there will not be no opportunity to ever close it.
+	if Linux and wait_count > 0 then
 		--signals thread to stop loop on SIGINT (Ctrl+C) and SIGTERM (kill) events.
 		require'signal'
-		on_signal('SIGINT SIGTERM', function()
+		term_sig_f = on_signal('SIGINT SIGTERM', function()
 			stop()
 			return 'stop'
 		end)
@@ -2915,6 +2923,9 @@ function run(f, ...)
 		local ret
 		local function wrapper(...)
 			ret = pack(f(...))
+			if term_sig_f then
+				term_sig_f:close()
+			end
 		end
 		resume(thread(wrapper, 'sock-run'), ...)
 		start()

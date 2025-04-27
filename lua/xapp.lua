@@ -73,17 +73,23 @@ local function xapp(...)
 	app.after = after
 
 	function app:run_cmd(cmd_name, cmd_run, cmd_opt, ...)
+		local exit_code
 		if cmd_name == 'run' then
-			return cmd_run(cmd_name, cmd_opt, ...)
+			exit_code = cmd_run(cmd_name, cmd_opt, ...)
+		else
+			exit_code = run(function(...)
+				local ok, err = pcall(cmd_run, cmd_name, cmd_opt, ...)
+				if not ok then --check500, assert, etc.
+					log('ERROR', 'xapp', 'run', '%s', err)
+					return 1
+				end
+				return err --exit_code
+			end, ...)
 		end
-		return run(function(...)
-			local ok, err = pcall(cmd_run, cmd_name, cmd_opt, ...)
-			if not ok then --check500, assert, etc.
-				log('ERROR', 'xapp', 'run', '%s', err)
-				return 1
-			end
-			return err --exit_code
-		end, ...)
+		if logging.debug then --show any leaks.
+			logging.printlive()
+		end
+		return exit_code
 	end
 
 	config('main_module', function()

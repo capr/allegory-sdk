@@ -3476,6 +3476,10 @@ end
 
 function ui.start()
 
+	stdin  = stdin_async_pipe()
+	stdout = stdout_async_pipe()
+	stderr = stderr_async_pipe()
+
 	tc_set_raw_mode()
 	assert(tc_get_raw_mode(), 'could not put terminal in raw mode')
 
@@ -3493,14 +3497,13 @@ function ui.start()
 	scr_clip_reset()
 
 	--signal thread to capture terminal window resize events.
-	on_signal('SIGWINCH', function()
+	local sigwinch_file = on_signal('SIGWINCH', function()
 		scr_resize()
 		scr_clip_reset()
 		redraw()
 	end)
 
 	--input thread
-	stdin = stdin_async_pipe()
 	resume(thread(function()
 		while 1 do
 			redraw()

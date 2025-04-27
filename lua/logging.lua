@@ -9,7 +9,7 @@ LOGGING
 	logging.live(e, [fmt, ...] | nil)
 UTILS
 	logging.arg(v) -> s
-	logging.printlive(v) -> s
+	logging.printlive() -> s
 	logging.args(...) -> ...
 CONFIG
 	logging.deploy            app deployment name (logged to server)
@@ -588,8 +588,12 @@ function logging.rpc:get_env()
 	self.logvar('env', env())
 end
 
-function logging.printlive(custom_print)
-	local print = custom_print or print
+local function out_stderr(s)
+	io.stderr:write(s)
+	io.stderr:flush()
+end
+function logging.printlive(out)
+	local out = out or out_stderr
 	local types = {}
 	for ty in pairs(ids_db) do
 		types[#types+1] = ty
@@ -598,7 +602,7 @@ function logging.printlive(custom_print)
 	for _,ty in ipairs(types) do
 		local ids = ids_db[ty]
 		local live = ids.live
-		print(('%-12s: %d'):format(ty, ids.live_count))
+		out(('%-12s: %d\n'):format(ty, ids.live_count))
 		local ids, ss = {}, {}
 		for o in pairs(live) do
 			local id = logarg(o)
@@ -607,7 +611,7 @@ function logging.printlive(custom_print)
 		end
 		table.sort(ids)
 		for _,id in ipairs(ids) do
-			print(('  %-4s: %s'):format(id, ss[id]))
+			out(('  %-4s: %s\n'):format(id, ss[id]))
 		end
 	end
 end
