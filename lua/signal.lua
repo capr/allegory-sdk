@@ -109,7 +109,7 @@ function signal_file(signals, async, flags, name)
 	local ss = sigset(signals)
 	local fd = C.signalfd(-1, ss, bor(async and SFD_NONBLOCK or 0, flags or 0))
 	assert(check_errno(fd ~= -1))
-	local f = file_wrap_fd(fd, nil, async, 'pipe', name)
+	local f = file_wrap_fd(fd, nil, async, 'pipe', name or _("signalfd('%s')", signals), nil, 's')
 	local si = new'struct signalfd_siginfo'
 	assert(sizeof(si) == 128)
 	local psi = cast(u8p, si)
@@ -161,7 +161,7 @@ function on_signal(sigs, fn)
 		end
 		sigf:close()
 		signal_unblock(sigs)
-	end))
+	end, 'on_signal %s', sigs))
 end
 
 if not ... then --self-test

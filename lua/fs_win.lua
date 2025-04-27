@@ -416,7 +416,7 @@ function file.try_close(f)
 	return true
 end
 
-function file_wrap_handle(h, opt, async, is_pipe_end, path, quiet)
+function file_wrap_handle(h, opt, async, is_pipe_end, path, quiet, debug_prefix)
 
 	opt = opt or empty
 
@@ -430,7 +430,7 @@ function file_wrap_handle(h, opt, async, is_pipe_end, path, quiet)
 		async = async,
 		seek = seek,
 		path = path,
-		debug_prefix = is_pipe_end and 'P' or 'F',
+		debug_prefix = debug_prefix or is_pipe_end and 'P' or 'F',
 		w = 0, r = 0,
 		quiet = repl(quiet, nil, is_pipe_end) or nil, --pipes are quiet
 	}, opt)
@@ -452,10 +452,10 @@ int _fileno(struct FILE *stream);
 HANDLE _get_osfhandle(int fd);
 ]]
 
-function file_wrap_fd(fd, opt)
+function file_wrap_fd(fd, ...)
 	local h = C._get_osfhandle(fd)
 	if h == nil then return check_errno() end
-	return file_wrap_handle(h, opt)
+	return file_wrap_handle(h, ...)
 end
 
 function fileno(file)
@@ -463,10 +463,10 @@ function fileno(file)
 	return check_errno(fd ~= -1 and fd or nil)
 end
 
-function file_wrap_file(file, opt)
+function file_wrap_file(file, ...)
 	local fd, err = fileno(file)
 	if not fd then return nil, err end
-	return file_wrap_fd(fd, opt)
+	return file_wrap_fd(fd, ...)
 end
 
 local HANDLE_FLAG_INHERIT = 1

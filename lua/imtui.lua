@@ -3500,6 +3500,7 @@ function ui.start()
 	end)
 
 	--input thread
+	stdin = stdin_async_pipe()
 	resume(thread(function()
 		while 1 do
 			redraw()

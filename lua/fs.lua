@@ -91,9 +91,9 @@ COMMON PATHS
 	vardir() -> path                              get script's private r/w directory
 	varpath(...) -> path                          get vardir-relative path
 LOW LEVEL
-	file_wrap_handle(HANDLE, [opt]) -> f          wrap opened HANDLE (Windows)
+	file_wrap_handle(HANDLE, [opt], ...) -> f     wrap opened HANDLE (Windows)
 	file_wrap_fd(fd, [opt], ...) -> f             wrap opened file descriptor
-	file_wrap_file(FILE*, [opt]) -> f             wrap opened FILE* object
+	file_wrap_file(FILE*, [opt], ...) -> f        wrap opened FILE* object
 	fileno(FILE*) -> fd                           get stream's file descriptor
 MEMORY MAPPING
 	mmap(...) -> map                              create a memory mapping
@@ -1928,11 +1928,3 @@ file.skip     = unprotect_io(file.try_skip)
 
 metatype(stream_ct, stream)
 metatype(dir_ct, dir)
-
---init stdin/out/err as async pipes ------------------------------------------
-
-if _sock_register then
-	stdin  = file_wrap_fd(0, null, true, 'pipe', '<stdin>' )
-	stdout = file_wrap_fd(1, null, true, 'pipe', '<stdout>')
-	stderr = file_wrap_fd(2, null, true, 'pipe', '<stderr>')
-end

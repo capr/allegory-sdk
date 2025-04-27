@@ -116,7 +116,7 @@ end
 local fcntl_set_fl_flags = fcntl_set_flags_func(F_GETFL, F_SETFL)
 local fcntl_set_fd_flags = fcntl_set_flags_func(F_GETFD, F_SETFD)
 
-function file_wrap_fd(fd, opt, async, file_type, path, quiet)
+function file_wrap_fd(fd, opt, async, file_type, path, quiet, debug_prefix)
 
 	file_type = file_type or 'file'
 
@@ -128,8 +128,8 @@ function file_wrap_fd(fd, opt, async, file_type, path, quiet)
 		s = fd, --for async use with sock
 		type = file_type,
 		seek = seek,
-		debug_prefix =
-			   file_type == 'file' and 'F'
+		debug_prefix = debug_prefix
+			or file_type == 'file' and 'F'
 			or file_type == 'pipe' and 'P'
 			or file_type == 'pidfile' and 'D',
 		w = 0, r = 0,

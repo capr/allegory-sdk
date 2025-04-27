@@ -99,6 +99,9 @@ MULTI-THREADING (WITH OS THREADS)
 	iocp([iocp_h]) -> iocp_h    get/set IOCP handle (Windows)
 	epoll_fd([epfd]) -> epfd    get/set epoll fd (Linux)
 
+STDIN/OUT/ERR ASYNC PIPES
+	std{in|out|err}_async_pipe() -> pipe
+
 ------------------------------------------------------------------------------
 
 All function return `nil, err` on error (but raise on user error
@@ -1877,7 +1880,11 @@ do
 		else
 			thread = socket.recv_thread
 		end
-		if not thread then return end --misfire.
+		if not thread then --misfire or bug?
+			log('', 'sock', 'poll', 'no thread waiting for %s (%s)',
+				socket, for_writing and 'write' or 'read')
+			return
+		end
 		if for_writing then
 			if socket.send_expires then
 				assert(send_expires_heap:remove(socket))
@@ -2946,8 +2953,6 @@ end
 
 --init stdin/out/err as async pipes ------------------------------------------
 
-if file_wrap_fd then
-	stdin  = file_wrap_fd(0, null, true, 'pipe', '<stdin>' )
-	stdout = file_wrap_fd(1, null, true, 'pipe', '<stdout>')
-	stderr = file_wrap_fd(2, null, true, 'pipe', '<stderr>')
-end
+stdin_async_pipe  = memoize(function() require'fs'; return file_wrap_fd(0, null, true, 'pipe', '<stdin>' ) end)
+stdout_async_pipe = memoize(function() require'fs'; return file_wrap_fd(1, null, true, 'pipe', '<stdout>') end)
+stderr_async_pipe = memoize(function() require'fs'; return file_wrap_fd(2, null, true, 'pipe', '<stderr>') end)

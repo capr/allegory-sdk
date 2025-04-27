@@ -72,12 +72,12 @@ local function xapp(...)
 	app.before = before
 	app.after = after
 
-	function app:run_cmd(cmd_name, cmd_fn, ...)
+	function app:run_cmd(cmd_name, cmd_run, cmd_opt, ...)
 		if cmd_name == 'run' then
-			return cmd_fn(cmd_name, ...)
+			return cmd_run(cmd_name, cmd_opt, ...)
 		end
 		return run(function(...)
-			local ok, err = pcall(cmd_fn, cmd_name, ...)
+			local ok, err = pcall(cmd_run, cmd_name, cmd_opt, ...)
 			if not ok then --check500, assert, etc.
 				log('ERROR', 'xapp', 'run', '%s', err)
 				return 1
