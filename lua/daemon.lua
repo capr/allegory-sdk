@@ -4,10 +4,13 @@
 	Written by Cosmin Apreutesei. Public Domain.
 
 	daemon(cmdline_args...) -> app
-
-	cmd_server     cmdline section for server control
-
 	exit(app:run(...))    run the daemon app with cmdline args
+
+CMDLINE
+
+	cmd_server     cmdline section with commands for server control
+
+CONFIG
 
 	deploy         app deployment name.
 	machine        app machine name.

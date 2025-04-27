@@ -333,6 +333,7 @@ suspending any thread is: "who is now responsible for resuming this thread?".
 In the classic one-connection-per-thread scheme the answer is simple: it's
 the I/O scheduler which is guaranteed to wake up the thread. With more
 complex flows it's up to you to provide the answer and the guarantee.
+
 ]]
 
 local rs = {} --resolver class

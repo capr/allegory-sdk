@@ -36,8 +36,8 @@ databases with different engines.
 
 ## Usage
 
-See `schema_std.lua` for type definitions and `lang_schema.lua`
-and `webb_auth.lua` for examples of table definitions.
+See `schema_std.lua` for type definitions and `lang_schema()` in lang.lua
+and `auth_schema()` in `webb_auth.lua` for examples of table definitions.
 
 ### How this works / caveats
 
@@ -74,7 +74,7 @@ you'll have to _bring them into scope_ via locals, or access them through
 `_G`, which _is_ available. A DDL is mostly static however so you'd rarely
 need to do this.
 
-Q: Flags and types look like the do the same thing, why the distinction?
+Q: Flags and types look like they do the same thing, why the distinction?
 
 A: Because column definitions have the form `name, type, flag1, ...`
 instead of `name, flag1|type1, ...` which would have allowed a field to

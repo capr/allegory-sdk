@@ -43,7 +43,7 @@ expires before the underlying mutex is locked.
 
 THREADS ----------------------------------------------------------------------
 
-osthread(func, args...) -> th
+os_thread(func, args...) -> th
 
 	Create a new thread and Lua state, push `func` and `args` to the Lua state
 	and execute `func(args...)` in the context of the thread. The return values

@@ -4,7 +4,7 @@
 	Written by Cosmin Apreutesei. Public domain.
 	Original code by Yichun Zhang (agentzh). BSD license.
 
-	Field metadata is consistent with sqlpp.lua, schema.lua and x-nav.js.
+	Field metadata is consistent with sqlpp.lua, schema.lua and ui_nav.js.
 	No compression or fancy auth supported.
 
 CONNECTING

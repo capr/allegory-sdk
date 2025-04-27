@@ -37,11 +37,11 @@ You can call both.
 LOGGING API
 
 	log(severity, module, event, fmt, ...)
-	loglive(e, [fmt, ...] | nil)
-	logliveadd(e, fmt, ...)
+	live(e, [fmt, ...] | nil)    track/untrack an object for loging purposes
+	liveadd(e, fmt, ...)         update the tracking label on a live object
 
-	logarg(v) -> s
-	logargs(...) -> ...
+	logarg(v) -> s               format a value for logging
+	logargs(...) -> ...          format multiple values for logging
 
 ]]
 

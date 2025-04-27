@@ -6,9 +6,23 @@
 	Features, https, gzip compression, persistent connections, pipelining,
 	resource limits, multi-level debugging, cdata-buffer-based I/O.
 
-server:new(opt) -> server         Create a server object
-	opt.listen                     {{host=, port=, tls=t|f, tls_options=},...}
-	opt.tls_options             -> tls_config()
+http_server(opt1,...) -> server   Create a server object
+	opt.listen                     {lopt1, lopt2, ..}
+		lopt.host                     Host header match
+		lopt.addr                     IP address to listen to
+		lopt.port                     TCP port to listen to
+		lopt.tls                      use TLS over this port
+		lopt.tls_options            {opt->v}
+			tlsopt.cert_file           TLS cert file
+			tlsopt.key_file            TLS key file
+		lopt.unix_socket              unix socket file to listen to
+		lopt.unix_socket_perms        set perms on socket file after bind()
+		lopt.unix_socket_user         set user  on socket file after bind()
+		lopt.unix_socket_group        set group on socket file after bind()
+	opt.tls_options                tls_config(opt.tls_options)
+		.protocols                    'tlsv1.2'
+		.ciphers                      'CIPHER1 ...'
+		.prefer_ciphers_server        true
 	opt.max_line_size           -> http.max_line_size
 	opt.recv_buffer_size        -> http.recv_buffer_size
 	opt.debug                   -> http.debug
@@ -23,6 +37,26 @@ server:new(opt) -> server         Create a server object
 http_request([thread]) -> req     (current) thread's http request object
 http_error(t | status,[content])  raise http error
 http_redirect(url, [status=303])  raise http redirect error
+
+CONFIG
+
+	host                           'localhost'
+	http_addr                      '*'
+	http_port                      80
+	http_unix_socket
+	http_unix_socket_perms
+	http_unix_socket_user
+	http_unix_socket_group
+	https_addr                     '*' (set to false to disable)
+	https_port                     443
+	https_unix_socket
+	https_unix_socket_perms
+	https_unix_socket_user
+	https_unix_socket_group
+	https_crt_file                 ../../tests/localhost.crt
+	https_key_file                 ../../tests.localhost.key
+	http_compress                  nil, means enabled (set to false to disable)
+	http_debug                     nil (set to true to enable)
 
 ]=]
 

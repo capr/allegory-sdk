@@ -64,6 +64,16 @@ DEBUGGING
 	pqr(opt | rows,fields)                         pretty-print query result
 	outpqr(opt | rows,fields)                      same but using out()
 
+CONFIG
+
+	db_name            <- scriptname
+	db_engine             'mysql'
+	db_host               '127.0.0.1'
+	db_port               3306
+	db_user               'root'
+	db_pass               'root'
+	db_schema             nil
+
 ]==]
 
 require'webb'

@@ -65,14 +65,14 @@ or "dependency injection", then you might actually enjoy this.
 # Status
 
 Follow the [releases](https://github.com/allegory-software/allegory-sdk/tags)
-to see what's new and the [dev branch](https://github.com/allegory-software/allegory-sdk/commits/dev)
-to see what's cooking for the next release.<br>
+to see what's new and the [master branch](https://github.com/allegory-software/allegory-sdk/commits/master)
+to see keep up to date with the latest features.<br>
 Look at the [issues](https://github.com/allegory-software/allegory-sdk/issues)
 to see what's missing, broken or wanted.
 
 # Compatibility
 
- * Operating Systems: **Debian 10+**, **Windows 10**
+ * Operating Systems: **Debian 10+**, **Windows 10+**
  * Browsers: Desktop **Chrome**, **Firefox**, **Edge**, **Safari 16.3+**
  * CPUs: x86-64 with SSE 4.2 (AVX2 used if found).
 
@@ -106,10 +106,10 @@ scripts for new libraries without using a build system.
   * [cmdline](lua/cmdline.lua)         - Command-line arg processing
   * [pbuffer](lua/pbuffer.lua)         - Dynamic binary buffer for decoding and encoding
   * [lang](lua/lang.lua)               - Multi-language, country and currency support
-  * [reflect](lua/reflect.lua)         - FFI reflection library
+  * [reflect](lua/reflect.lua)         - [FFI reflection](https://corsix.github.io/ffi-reflect/) library
 * __Platform APIs__
-  * [fs](lua/fs.lua)                   - Files, directories, symlinks, pipes, memory mapping
-  * [proc](lua/proc.lua)               - Async process execution with I/O redirection
+  * [fs](lua/fs.lua)                   - Files, directories, symlinks, pipes, memory mapping for [Linux](lua/fs_posix.lua) and [Windows](lua/fs_win.lua)
+  * [proc](lua/proc.lua)               - Async process execution with I/O redirection for [Linux](lua/proc_posix.lua) and [Windows](lua/proc_win.lua)
   * [path](lua/path.lua)               - Path manipulation
   * [unixperms](lua/unixperms.lua)     - Unix permissons string parser
   * [time](lua/time.lua)               - Wall clock, monotonic clock, sleep
@@ -124,8 +124,8 @@ scripts for new libraries without using a build system.
   * [sock_libtls](lua/sock_libtls.lua) - TLS-encrypted async TCP sockets
   * [connpool](lua/connpool.lua)       - Connection pools
   * [resolver](lua/resolver.lua)       - Async DNS resolver
-  * [http_client](lua/http_client.lua) - Async HTTP(s) 1.1 client for high-volume web scraping
-  * [http_server](lua/http_server.lua) - Async HTTP(s) 1.1 server
+  * [http_client](lua/http_client.lua) - Async [HTTP(s) 1.1](lua/http.lua) client for high-volume web scraping
+  * [http_server](lua/http_server.lua) - Async [HTTP(s) 1.1](lua/http.lua) server
   * [smtp](lua/smtp.lua)               - Async SMTP(s) client
   * [mess](lua/mess.lua)               - simple TCP-based protocol for Lua programs
   * [url](lua/url.lua)                 - URL parsing and formatting
@@ -194,7 +194,7 @@ and non-opinionated. The opinionated part comes next.
 * __The Webb Web Framework / Client-side__
   * [webb_spa.js](www/webb_spa.js)     - client-side counterpart of [webb_spa.lua](lua/webb_spa.lua)
   * [mustache.js](www/mustache.js)     - [Logic-less templates](https://mustache.github.io/) rendered on the client
-  * [glue.js](www/glue.js)             - Utilities on the client side (part of [canvas-ui]).
+  * [glue.js](https://github.com/allegory-software/canvas-ui/blob/main/www/glue.js) - Utilities on the client side (part of [canvas-ui]).
 * __Support Libs__
   * [jsmin](c/jsmin/jsmin.txt)         - JavaScript minification
 
