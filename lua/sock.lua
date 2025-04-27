@@ -1877,9 +1877,7 @@ do
 		else
 			thread = socket.recv_thread
 		end
-		if not thread then --misfire or bug?
-			log('', 'sock', 'poll', '%-4s %s - no thread waiting',
-				socket, for_writing and 'w' or 'r')
+		if not thread then --misfire or bug
 			return
 		end
 		if for_writing then
@@ -1953,6 +1951,8 @@ do
 			--if EPOLLHUP/RDHUP/ERR arrives (and it'll arrive alone because maxevents == 1),
 			--we need to wake up all waiting threads because EPOLLIN/OUT might never follow!
 			local has_err = band(e, EPOLLERR) ~= 0
+			--NOTE: epoll_wait sets both RECV_MASK and SEND_MASK even when
+			--waiting for read or write but not both.
 			if band(e, RECV_MASK) ~= 0 then wake(socket, false, has_err) end
 			if band(e, SEND_MASK) ~= 0 then wake(socket, true , has_err) end
 			return true
