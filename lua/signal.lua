@@ -19,6 +19,7 @@
 
 ]]
 
+assert(Linux, 'not on Linux') --OSX and Windows don't have signalfd.
 require'sock'
 require'fs'
 
