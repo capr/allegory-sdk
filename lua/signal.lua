@@ -158,7 +158,7 @@ function on_signal(sigs, fn)
 			signal_unblock(sigs)
 		end)
 		while 1 do
-			local si = f:try_read_signal()
+			local si, err = f:try_read_signal()
 			if not si or fn(si.signo) == 'stop' then
 				break
 			end

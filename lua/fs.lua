@@ -829,7 +829,7 @@ function file:try_readn(buf, sz)
 	local buf0, sz0 = buf, sz
 	local buf = cast(u8p, buf)
 	while sz > 0 do
-		local len, err = self:read(buf, sz)
+		local len, err = self:try_read(buf, sz)
 		if not len then --short read
 			return nil, err, sz0 - sz
 		elseif len == 0 then --eof
@@ -843,14 +843,14 @@ end
 
 function file:try_readall(ignore_file_size)
 	if self.type == 'pipe' or ignore_file_size then
-		return readall(self.read, self)
+		return readall(self.try_read, self)
 	end
 	assert(self.type == 'file')
-	local size, err = self:attr'size'; if not size then return nil, err end
+	local size, err = self:try_attr'size'; if not size then return nil, err end
 	local offset, err = self:try_seek(); if not offset then return nil, err end
 	local sz = size - offset
 	local buf = u8a(sz)
-	local n, err = self:read(buf, sz)
+	local n, err = self:try_read(buf, sz)
 	if not n then return nil, err end
 	if n < sz then return nil, 'partial', buf, n end
 	return buf, n
