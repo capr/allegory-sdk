@@ -148,17 +148,19 @@ function action_handler(url) {
 	if (!handler) {
 		// no handler, find a static template with the same name
 		// to be rendered on the #main element or on document.body.
-		if (template(act)) {
-			handler = function() {
-				let main = window.main || document.body
-				if (main)
-					main.unsafe_html = render(act)
-			}
-		} else if (static_template(act)) {
-			handler = function() {
-				let main = window.main || document.body
-				if (main)
-					main.unsafe_html = static_template(act)
+		if (window[name+'_template']) { // prevent warning for unknown template
+			if (template(act)) {
+				handler = function() {
+					let main = window.main || document.body
+					if (main)
+						main.unsafe_html = render(act)
+				}
+			} else if (static_template(act)) {
+				handler = function() {
+					let main = window.main || document.body
+					if (main)
+						main.unsafe_html = static_template(act)
+				}
 			}
 		}
 	}
