@@ -374,8 +374,9 @@ local function save_session(sess)
 				attrs = {
 					Path = '/',
 					Expires = sess.expires,
-					Secure = secure_flag or nil,
-					HttpOnly = true,
+					Secure = secure_flag or nil, --prevent MITM
+					HttpOnly = true, --prevent JS access
+					SameSite = 'strict', --prevent BREACH (but also img tracking)
 				},
 			},
 		})
@@ -391,6 +392,7 @@ local function save_session(sess)
 					Expires = 0,
 					Secure = secure_flag,
 					HttpOnly = true,
+					SameSite = 'strict',
 				},
 			},
 		})
