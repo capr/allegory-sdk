@@ -1,3 +1,4 @@
+--go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/tests/lmdb_test.lua
 --go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit sdk/tests/lmdb_test.lua
 require'glue'
 require'ffi'
@@ -165,6 +166,7 @@ int	mdb_reader_check(MDB_env *env, int *dead);
 ]]
 
 require'fs'
+require'sock'
 
 local M = {}
 
@@ -193,7 +195,7 @@ function M.open(dir, opt)
 	if not opt.readonly then
 		mkdir(dir)
 		if not exists(schema_file) then
-			save(schema_file, '{}')
+			save(schema_file, 'return {}')
 		end
 	end
 	local schema = eval_file(schema_file)
@@ -215,10 +217,29 @@ function M.open(dir, opt)
 		_free_tx = {},
 		_free_cur = {},
 	})
+
+	--process schema
+	for table_name, table_schema in pairs(schema.tables or {}) do
+		local key_len = 0
+		local val_len = 0
+		local pk_cols = words(table_schema.pk)
+		for i, col in ipairs(table_schema.columns) do
+			local col_len =
+				col.type == 'u32' and 4 or
+				col.type == 'string' and col.maxlen + 2 or
+				assertf(false, 'unknown col type %s', col.type)
+			if indexof(pk_cols, col) then
+				key_len = key_len + col_len
+			else
+				val_len = val_len + col_len
+			end
+		end
+	end
+
 	--open all tables
 	local dbi = new'MDB_dbi[1]'
 	local tx = env:tx'w'
-	for table_name, table in pairs(schema.tables) do
+	for table_name, table_schema in pairs(schema.tables or {}) do
 		check(C.mdb_dbi_open(tx.txn[0], table_name, MDB_CREATE, dbi))
 		dbis[table_name] = dbi[0]
 		--check(C.mdb_set_compare(self.txn[0], dbi, cmp))
@@ -296,6 +317,10 @@ function Tx:put(dbi, key_data, key_size, val_data, val_size, flags)
 end
 end
 
+function Tx:upsert(dbi, row)
+	--
+end
+
 local Cur = {}
 function Tx:cursor(dbi)
 	local cur = pop(self.env._free_cur)
@@ -346,15 +371,15 @@ end
 
 local lmdb = M
 
-local env = lmdb.open('testdb')
+local db = lmdb.open('testdb')
 
 s = _('%03x %d foo bar', 32, 3141592)
 
-local tx = env:tx'w'
+local tx = db:tx'w'
 tx:put('users', new('int[1]', 123456789), sizeof'int', cast('char*', s), #s)
 tx:commit()
 
-local tx = env:tx()
+local tx = db:tx()
 for k,v in tx:each'users' do
 	printf('key: %s %s, data: %s %s\n',
 		k.size, cast('int*', k.data)[0],
@@ -362,4 +387,4 @@ for k,v in tx:each'users' do
 end
 tx:abort()
 
-env:close()
+db:close()

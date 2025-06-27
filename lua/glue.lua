@@ -2188,7 +2188,7 @@ function try_eval_file(s, ...)
 	return ret
 end
 function eval_file(s, ...)
-	return assert(loadfile(s))(...)
+	return assert(try_eval_file(s, ...))
 end
 
 --bits -----------------------------------------------------------------------
