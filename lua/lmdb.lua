@@ -1,5 +1,17 @@
---go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/tests/lmdb_test.lua
 --go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit sdk/tests/lmdb_test.lua
+--go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/tests/lmdb_test.lua
+--[[
+
+DATA TYPES:
+	f64 (enc/dec + native asc/desc)
+	u32 i32 u64 i64 (native enc/dec + native asc/desc)
+	str (MAXN) (16 + data + optional padding; utf8 lowercase for CI indexing)
+
+COMPOSITE KEYS:
+	- need to invert components for asc/desc (invert all bytes)
+	- need to invert offsets
+
+]]
 require'glue'
 require'ffi'
 local isnum = isnum
@@ -175,9 +187,9 @@ local function check(rc)
 	error(str(C.mdb_strerror(rc)), 2)
 end
 
-local Env = {}
+local Db = {}
 
-function Env:close()
+function Db:close()
 	for table_name,dbi in pairs(self.dbis) do
 		C.mdb_dbi_close(self.env, dbi)
 	end
@@ -191,6 +203,7 @@ end
 --opt.file_mode
 function M.open(dir, opt)
 	opt = opt or {}
+
 	local schema_file = dir..'/schema.lua'
 	if not opt.readonly then
 		mkdir(dir)
@@ -199,17 +212,19 @@ function M.open(dir, opt)
 		end
 	end
 	local schema = eval_file(schema_file)
+
 	local env = new'MDB_env*[1]'
 	check(C.mdb_env_create(env)); env = env[0]
-	check(C.mdb_env_set_mapsize(env, 1024^4))
+	check(C.mdb_env_set_mapsize(env, 1024e4))
 	check(C.mdb_env_set_maxreaders(env, schema.max_readers or 1024))
 	check(C.mdb_env_set_maxdbs(env, schema.max_dbs or 1024))
 	check(C.mdb_env_open(env, dir,
 		opt.readonly and MDB_RDONLY or 0,
 		(unixperms_parse(opt.file_mode or '0660'))
 	))
+
 	local dbis = {}
-	local env = object(Env, {
+	local db = object(Db, {
 		env = env,
 		dbis = dbis,
 		schema = schema,
@@ -218,47 +233,161 @@ function M.open(dir, opt)
 		_free_cur = {},
 	})
 
-	--process schema
+	local max_key_size = C.mdb_env_get_maxkeysize(env)
+
+	--compute column layout and encoding parameters based on schema.
+	--NOTE: changing this algorithm or making it non-deterministic in any way
+	--will trash your existing databses, so better version it or something!
 	for table_name, table_schema in pairs(schema.tables or {}) do
-		local key_len = 0
-		local val_len = 0
-		local pk_cols = words(table_schema.pk)
-		for i, col in ipairs(table_schema.columns) do
-			local col_len =
-				col.type == 'u32' and 4 or
-				col.type == 'string' and col.maxlen + 2 or
-				assertf(false, 'unknown col type %s', col.type)
-			if indexof(pk_cols, col) then
-				key_len = key_len + col_len
+
+		--split cols into key cols and val cols based on pk.
+		local pk_cols = {}
+		local pk_order = {}
+		for s in words(table_schema.pk) do
+			local pk, order = s:match'^(.-):(.*)'
+			if not pk then
+				pk, order = s, 'asc'
 			else
-				val_len = val_len + col_len
+				assert(order == 'desc' or order == 'asc')
+				assert(#pk > 0)
 			end
+			add(pk_cols, pk)
+			add(pk_order, order)
 		end
-	end
+		local key_cols = {}
+		local val_cols = {}
+		for i,col in ipairs(table_schema.columns) do
+			if indexof(col.name, pk_cols) then
+				add(key_cols, col)
+				col.index = #key_cols
+			else
+				add(val_cols, col)
+				col.index = #val_cols
+			end
+			--typecheck the column while we're at it.
+			col.elem_size =
+				col.type == 'f64' and 8 or
+				col.type == 'u64' and 8 or
+				col.type == 'i64' and 8 or
+				col.type == 'u32' and 4 or
+				col.type == 'i32' and 4 or
+				col.type == 'u16' and 2 or
+				col.type == 'i16' and 2 or
+				col.type == 'i8'  and 1 or
+				col.type == 'u8'  and 1 or
+				assertf(false, 'unknown col type %s', col.type)
+			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
+		end
+		assert(#key_cols < 2^16)
+		assert(#val_cols < 2^16)
+
+		table_schema.key_cols = key_cols
+		table_schema.val_cols = val_cols
+
+		for _,cols in ipairs{key_cols, val_cols} do
+
+			if cols == val_cols then --we can layout val_cols freely.
+				--move varsize cols at the end to minimize the size of the dyn offset table.
+				--order cols by elem_size to maintain alignment.
+				sort(cols, function(col1, col2)
+					--elem_size fits in 4bit; col_index fits in 16bit; 4+16 = 20 bits,
+					--so any bit from bit 21+ can be used for extra conditions.
+					local i1 = (col1.maxlen and 2^22 or 0) + (2^4-1 - col1.elem_size) * 2^16 + col1.index
+					local i2 = (col2.maxlen and 2^22 or 0) + (2^4-1 - col2.elem_size) * 2^16 + col2.index
+					return i1 < i2
+				end)
+			end
+
+			--compute dynamic offset table (d.o.t.) length.
+			--all cols after the first varsize col need a dyn offset.
+			local dot_len = 0
+			for i,col in ipairs(cols) do
+				if col.maxlen then --varsize
+					dot_len = #cols - i
+					break
+				end
+			end
+
+			--compute max row size, excluding d.o.t.
+			local max_row_size = 0
+			for _,col in ipairs(cols) do
+				max_row_size = max_row_size + (col.maxlen or col.len or 1) * col.elem_size
+			end
+
+			--compute min offset size.
+			local offset_size = 8
+			if max_row_size - dot_len < 2^8 then
+				offset_size = 1
+			elseif max_row_size - dot_len * 2 < 2^16 then
+				offset_size = 2
+			elseif max_row_size - dot_len * 4 < 2^32 then
+				offset_size = 4
+			end
+
+			--compute max row size, includin d.o.t.
+			local max_row_size = max_row_size + dot_len * offset_size
+
+			cols.max_row_size = max_row_size
+			cols.offset_size = offset_size
+
+			--compute column value offsets.
+			--layout: fixsize_val1, ..., dyn_offset1, ..., varsize_val1, remaining_val1, ...
+			local offset = 0
+			local in_dot
+			for _,col in ipairs(cols) do
+				if not in_dot then
+					if dot_len > 0 and col.maxlen then
+						--first varsize col: insert d.o.t. before it.
+						col.offset = offset + dot_len * offset_size --first col after the d.o.t.
+						in_dot = true --subsequent cols have dyn offsets from the d.o.t.
+						--offset stays the same at first entry in the d.o.t.
+					else --fixsize col or the only varsize col.
+						col.offset = offset
+						offset = offset + col.elem_size * (col.len or 1)
+					end
+				else --col after varsize col.
+					col.offset = offset
+					col.in_dot = true
+					offset = offset + offset_size --next offset in the d.o.t.
+				end
+			end
+
+			if cols == key_cols then
+				assert(max_row_size <= max_key_size,
+					'pk too big: %d bytes (max is %d bytes)', max_row_size, max_key_size)
+			end
+
+		end --for cols
+
+		pr(table_schema)
+
+	end --for tables
 
 	--open all tables
 	local dbi = new'MDB_dbi[1]'
-	local tx = env:tx'w'
+	local tx = db:tx'w'
 	for table_name, table_schema in pairs(schema.tables or {}) do
 		check(C.mdb_dbi_open(tx.txn[0], table_name, MDB_CREATE, dbi))
-		dbis[table_name] = dbi[0]
+		local dbi = dbi[0]
+		dbis[table_name] = dbi
 		--check(C.mdb_set_compare(self.txn[0], dbi, cmp))
 	end
 	tx:commit()
-	return env
+
+	return db
 end
 
-function Env:dbi(table_name)
+function Db:dbi(table_name)
 	return assertf(self.dbis[table_name], 'table not found: %s', table_name)
 end
 
 local Tx = {}
 
-function Env:tx(mode)
+function Db:tx(mode)
 	mode = mode or 'r'
 	assert(mode == 'w' or mode == 'r')
 	local tx = pop(self._free_tx) or object(Tx, {
-		env = self,
+		db = self,
 		txn = new'MDB_txn*[1]',
 		cursors = {},
 	})
@@ -281,7 +410,7 @@ function Tx:commit()
 	self:close_cursors()
 	check(C.mdb_txn_commit(self.txn[0]))
 	self.txn[0] = nil
-	push(self.env._free_tx, self)
+	push(self.db._free_tx, self)
 end
 
 function Tx:abort()
@@ -289,47 +418,47 @@ function Tx:abort()
 	self:close_cursors()
 	C.mdb_txn_abort(self.txn[0])
 	self.txn[0] = nil
-	push(self.env._free_tx, self)
+	push(self.db._free_tx, self)
 end
 
 do
 local key = new'MDB_val'
 local val = new'MDB_val'
-function Tx:get()
-	check(C.mdb_get(self.txn[0], isnum(dbi) and dbi or self.env:dbi(dbi), key, val, 0))
+function Tx:get(tab)
+	check(C.mdb_get(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), key, val, 0))
 	return key, val
 end
 end
 
-function Tx:put_kv(dbi, key, val, flags)
-	check(C.mdb_put(self.txn[0], isnum(dbi) and dbi or self.env:dbi(dbi), key, val, flags or 0))
+function Tx:put_kv(tab, key, val, flags)
+	check(C.mdb_put(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), key, val, flags or 0))
 end
 
 do
 local key = new'MDB_val'
 local val = new'MDB_val'
-function Tx:put(dbi, key_data, key_size, val_data, val_size, flags)
+function Tx:put(tab, key_data, key_size, val_data, val_size, flags)
 	key.data = key_data
 	key.size = key_size
 	val.data = val_data
 	val.size = val_size
-	self:put_kv(dbi, key, val, flags)
+	self:put_kv(tab, key, val, flags)
 end
 end
 
-function Tx:upsert(dbi, row)
+function Tx:upsert(tab, row)
 	--
 end
 
 local Cur = {}
-function Tx:cursor(dbi)
-	local cur = pop(self.env._free_cur)
+function Tx:cursor(tab)
+	local cur = pop(self.db._free_cur)
 	if cur then
 		cur.tx = self
 	else
 		cur = object(Cur, {tx = self, cursor = new'MDB_cursor*[1]'})
 	end
-	check(C.mdb_cursor_open(self.txn[0], isnum(dbi) and dbi or self.env:dbi(dbi), cur.cursor))
+	check(C.mdb_cursor_open(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), cur.cursor))
 	self.cursors[cur] = true
 	return cur
 end
@@ -343,7 +472,7 @@ function Cur:close()
 	C.mdb_cursor_close(self.cursor[0])
 	self.cursor[0] = nil
 	self.tx.cursors[self] = nil
-	push(self.tx.env._free_cur, self)
+	push(self.tx.db._free_cur, self)
 end
 
 do
@@ -362,8 +491,8 @@ function Cur:next()
 end
 end
 
-function Tx:each(dbi)
-	local cur = self:cursor(dbi)
+function Tx:each(tab)
+	local cur = self:cursor(tab)
 	return Cur.next, cur
 end
 
