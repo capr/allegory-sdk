@@ -1,5 +1,24 @@
---go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit sdk/tests/lmdb_test.lua
+--go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit sdk/lua/lmdb.lua
 --go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/tests/lmdb_test.lua
+--[[
+
+	LMDB binding.
+	Written by Cosmin Apreutsei. Public Domain.
+
+	LMDB is a super-fast mmap-based MVCC key-value store in 12 KLOC of C.
+	LMDB offers ACID with serializable semantics, good for read-heavy loads.
+	TODO: LMDB alternatives: libmdbx (30 KLOC), bbolt (Golang).
+
+	LMDB will blow up in your face if:
+	- you write too much data in a single write transaction, which blows up the
+	  freelist of free pages. libmdbx solves this.
+	- you stay too long in a read-only transaction, which prevents writers from
+	  reclaiming free pages, which blows up the DB.
+	- you stay too long in a write transaction which blocks all other write
+	  transactions.
+
+
+]]
 
 require'glue'
 require'ffi'
@@ -7,39 +26,60 @@ local isnum = isnum
 local C = ffi.load'lmdb'
 
 -- mdb_env Environment Flags
-local MDB_FIXEDMAP     =      0x01
-local MDB_NOSUBDIR     =    0x4000
-local MDB_NOSYNC       =   0x10000
-local MDB_RDONLY       =   0x20000
-local MDB_NOMETASYNC   =   0x40000
-local MDB_WRITEMAP     =   0x80000
-local MDB_MAPASYNC     =  0x100000
-local MDB_NOTLS        =  0x200000
-local MDB_NOLOCK       =  0x400000
-local MDB_NORDAHEAD    =  0x800000
-local MDB_NOMEMINIT    = 0x1000000
-local MDB_PREVSNAPSHOT = 0x2000000
+MDB_FIXEDMAP     =      0x01
+MDB_NOSUBDIR     =    0x4000
+MDB_NOSYNC       =   0x10000
+MDB_RDONLY       =   0x20000
+MDB_NOMETASYNC   =   0x40000
+MDB_WRITEMAP     =   0x80000
+MDB_MAPASYNC     =  0x100000
+MDB_NOTLS        =  0x200000
+MDB_NOLOCK       =  0x400000
+MDB_NORDAHEAD    =  0x800000
+MDB_NOMEMINIT    = 0x1000000
+MDB_PREVSNAPSHOT = 0x2000000
 
 --mdb_dbi_open Database Flags
-local MDB_REVERSEKEY   =    0x02
-local MDB_DUPSORT      =    0x04
-local MDB_INTEGERKEY   =    0x08
-local MDB_DUPFIXED     =    0x10
-local MDB_INTEGERDUP   =    0x20
-local MDB_REVERSEDUP   =    0x40
-local MDB_CREATE       = 0x40000
+MDB_REVERSEKEY   =    0x02
+MDB_DUPSORT      =    0x04
+MDB_INTEGERKEY   =    0x08
+MDB_DUPFIXED     =    0x10
+MDB_INTEGERDUP   =    0x20
+MDB_REVERSEDUP   =    0x40
+MDB_CREATE       = 0x40000
 
 -- mdb_put Write Flags
-local MDB_NOOVERWRITE  =    0x10
-local MDB_NODUPDATA    =    0x20
-local MDB_CURRENT      =    0x40
-local MDB_RESERVE      = 0x10000
-local MDB_APPEND       = 0x20000
-local MDB_APPENDDUP    = 0x40000
-local MDB_MULTIPLE     = 0x80000
+MDB_NOOVERWRITE  =    0x10
+MDB_NODUPDATA    =    0x20
+MDB_CURRENT      =    0x40
+MDB_RESERVE      = 0x10000
+MDB_APPEND       = 0x20000
+MDB_APPENDDUP    = 0x40000
+MDB_MULTIPLE     = 0x80000
 
 -- mdb_copy Copy Flags
-local MDB_CP_COMPACT = 0x01
+MDB_CP_COMPACT = 0x01
+
+--cursor ops
+MDB_FIRST          =  0
+MDB_FIRST_DUP      =  1
+MDB_GET_BOTH       =  2
+MDB_GET_BOTH_RANGE =  3
+MDB_GET_CURRENT    =  4
+MDB_GET_MULTIPLE   =  5
+MDB_LAST           =  6
+MDB_LAST_DUP       =  7
+MDB_NEXT           =  8
+MDB_NEXT_DUP       =  9
+MDB_NEXT_MULTIPLE  = 10
+MDB_NEXT_NODUP     = 11
+MDB_PREV           = 12
+MDB_PREV_DUP       = 13
+MDB_PREV_NODUP     = 14
+MDB_SET            = 15
+MDB_SET_KEY        = 16
+MDB_SET_RANGE      = 17
+MDB_PREV_MULTIPLE  = 18
 
 cdef[[
 typedef unsigned int mode_t;
@@ -58,28 +98,6 @@ typedef struct MDB_val {
 } MDB_val;
 
 typedef int (MDB_cmp_func)(const MDB_val *a, const MDB_val *b);
-
-typedef enum MDB_cursor_op {
-	MDB_FIRST,
-	MDB_FIRST_DUP,
-	MDB_GET_BOTH,
-	MDB_GET_BOTH_RANGE,
-	MDB_GET_CURRENT,
-	MDB_GET_MULTIPLE,
-	MDB_LAST,
-	MDB_LAST_DUP,
-	MDB_NEXT,
-	MDB_NEXT_DUP,
-	MDB_NEXT_MULTIPLE,
-	MDB_NEXT_NODUP,
-	MDB_PREV,
-	MDB_PREV_DUP,
-	MDB_PREV_NODUP,
-	MDB_SET,
-	MDB_SET_KEY,
-	MDB_SET_RANGE,
-	MDB_PREV_MULTIPLE
-} MDB_cursor_op;
 
 typedef struct MDB_stat {
 	unsigned int	ms_psize;
@@ -153,7 +171,7 @@ void mdb_cursor_close(MDB_cursor *cursor);
 int  mdb_cursor_renew(MDB_txn *txn, MDB_cursor *cursor);
 MDB_txn *mdb_cursor_txn(MDB_cursor *cursor);
 MDB_dbi mdb_cursor_dbi(MDB_cursor *cursor);
-int  mdb_cursor_get(MDB_cursor *cursor, MDB_val *key, MDB_val *data, MDB_cursor_op op);
+int  mdb_cursor_get(MDB_cursor *cursor, MDB_val *key, MDB_val *data, int op);
 int  mdb_cursor_put(MDB_cursor *cursor, MDB_val *key, MDB_val *data, unsigned int flags);
 int  mdb_cursor_del(MDB_cursor *cursor, unsigned int flags);
 int  mdb_cursor_count(MDB_cursor *cursor, mdb_size_t *countp);
@@ -219,7 +237,8 @@ end
 function Db:open_tables(tables)
 	local dbi = new'MDB_dbi[1]'
 	local tx = self:tx'w'
-	for table_name in pairs(tables) do
+	local iter = isstr(tables) and words or pairs
+	for table_name in iter(tables) do
 		check(C.mdb_dbi_open(tx.txn[0], table_name, MDB_CREATE, dbi))
 		local dbi = dbi[0]
 		self.dbis[table_name] = dbi
@@ -237,16 +256,29 @@ end
 
 local Tx = {}; lmdb.Tx = Tx
 
-function Db:tx(mode)
-	mode = mode or 'r'
-	assert(mode == 'w' or mode == 'r')
+function Db:tx(flags, parent_tx)
+	flags = flags or (parent_tx and not parent_tx:is_readonly() and 'w') or 'r'
+	if flags == 'r' then flags = MDB_RDONLY end
+	if flags == 'w' then flags = 0 end
 	local tx = pop(self._free_tx) or object(Tx, {
 		db = self,
 		txn = new'MDB_txn*[1]',
-		cursors = {},
 	})
-	check(C.mdb_txn_begin(self.env, nil, mode == 'w' and 0 or MDB_RDONLY, tx.txn))
+	check(C.mdb_txn_begin(self.env, parent_tx and parent_tx.txn[0], flags, tx.txn))
+	if parent_tx then
+		self.parent_tx = parent_tx
+		add(attr(parent_tx, 'child_txs'), self)
+	end
+	tx.flags = flags
 	return tx
+end
+
+function Tx:is_readonly()
+	return band(self.flags, MDB_RDONLY) ~= 0
+end
+
+function Tx:tx()
+	return self.db:tx('w', self)
 end
 
 function Tx:closed()
@@ -254,6 +286,7 @@ function Tx:closed()
 end
 
 function Tx:close_cursors()
+	if not self.cursors then return end
 	for cur in pairs(self.cursors) do
 		cur:close()
 	end
@@ -265,6 +298,11 @@ function Tx:commit()
 	check(C.mdb_txn_commit(self.txn[0]))
 	self.txn[0] = nil
 	push(self.db._free_tx, self)
+	if self.parent_tx then --child takes place of parent.
+		self.parent_tx.txn[0] = nil
+		push(self.db._free_tx, self.parent_tx)
+		self.parent_tx = nil
+	end
 end
 
 function Tx:abort()
@@ -273,6 +311,14 @@ function Tx:abort()
 	C.mdb_txn_abort(self.txn[0])
 	self.txn[0] = nil
 	push(self.db._free_tx, self)
+	if self.child_txs then --child txs are aborted automatically.
+		for _,tx in ipairs(self.child_txs) do
+			tx.txn[0] = nil
+			push(self.db._free_tx, tx)
+			tx.parent_tx = nil
+		end
+		self.child_txs = nil
+	end
 end
 
 do
@@ -309,7 +355,7 @@ function Tx:cursor(tab)
 		cur = object(Cur, {tx = self, cursor = new'MDB_cursor*[1]'})
 	end
 	check(C.mdb_cursor_open(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), cur.cursor))
-	self.cursors[cur] = true
+	attr(self, 'cursors')[cur] = true
 	return cur
 end
 
@@ -331,7 +377,7 @@ local val = new'MDB_val'
 local MDB_NOTFOUND = -30798
 function Cur:next()
 	if self:closed() then return end
-	local rc = C.mdb_cursor_get(self.cursor[0], key, val, C.MDB_NEXT)
+	local rc = C.mdb_cursor_get(self.cursor[0], key, val, MDB_NEXT)
 	if rc == 0 then return key, val end
 	if rc == MDB_NOTFOUND then
 		self:close()
@@ -351,6 +397,8 @@ end
 if not ... then
 
 	local db = lmdb.open('testdb')
+
+	db:open_tables'users'
 
 	s = _('%03x %d foo bar', 32, 3141592)
 
