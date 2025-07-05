@@ -322,6 +322,10 @@ local flag_bits = {
 	first_pipe_instance  = 0x00080000,
 }
 
+--TODO: backup_semantics is only kosher for opening directories, so we shouldn't
+--add it by default. OTOH, I haven't noticed any problems, and the plan is
+--to scrape Windows support from the SDK and hopefully from my brain anyway.
+
 _open_mode_opt = {
 	r = {
 		access = 'read',

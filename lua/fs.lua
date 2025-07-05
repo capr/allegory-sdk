@@ -112,9 +112,9 @@ FILESYSTEM INFO
 	fs_info(path) -> {size=, free=}               get free/total disk space for a path
 HI-LEVEL APIs
 	[try_]load[_tobuffer](path, [default], [ignore_fsize]) -> buf,len  read file to string or buffer
-	[try_]save(path, s, [sz], [perms], [quiet])   atomic save value/buffer/array/read-results
-	file_saver(path) -> f(v | buf,len | t | read) atomic save writer function
-	touch(file, [mtime], [btime], [quiet])
+	[try_]save(path, s, [sz], [perms], [quiet], [flush])   atomic save value/buffer/array/read-results
+	file_saver(path, [perms], [quiet], [flush]) -> f(v | buf,len | t | read) atomic save writer function
+	touch(file, [mtime], [btime], [quiet], [flush])
 	cp(src_file, dst_file)
 
 The `deref` arg is true by default, meaning that by default, symlinks are
@@ -1684,7 +1684,8 @@ end
 --write a Lua value, array of values or function results to a file atomically.
 --TODO: make a file_saver() out of this without coroutines and use it
 --in resize_image()!
-local function _save(file, s, sz, perms)
+--TODO: allow specifying tmpfile suffix or include PID+TID or something.
+local function _save(file, s, sz, perms, flush)
 
 	local tmpfile = file..'.tmp'
 
@@ -1730,6 +1731,11 @@ local function _save(file, s, sz, perms)
 		end
 		ok, err = f:try_write(s, sz)
 	end
+
+	if ok and flush then
+		ok, err = f:try_flush()
+	end
+
 	local close_ok, close_err = f:try_close()
 	if ok then --I/O errors can also be reported by close().
 		ok, err = close_ok, close_err
@@ -1754,11 +1760,25 @@ local function _save(file, s, sz, perms)
 		return false, _(err_msg, tmpfile, file, err, rm_err)
 	end
 
+	if ok and flush then
+		ok, err = try_open(dir)
+		if ok then
+			ok, err = f:try_flush()
+			local close_ok, close_err = f:try_close()
+			if ok then --I/O errors can also be reported by close().
+				ok, err = close_ok, close_err
+			end
+		end
+		if not ok then
+			return _('could not flush dir %s: %s', dir, err)
+		end
+	end
+
 	return true
 end
 
-function try_save(file, s, sz, perms, quiet)
-	local ok, err = _save(file, s, sz, perms)
+function try_save(file, s, sz, perms, quiet, flush)
+	local ok, err = _save(file, s, sz, perms, flush)
 	if not ok then return false, err end
 	local sz = sz or isstr(s) and #s
 	local ssz = sz and _(' (%s)', kbytes(sz)) or ''
@@ -1766,16 +1786,16 @@ function try_save(file, s, sz, perms, quiet)
 	return true
 end
 
-function save(file, s, sz, perms, quiet)
-	local ok, err = try_save(file, s, sz, perms, quiet)
+function save(file, s, sz, perms, quiet, flush)
+	local ok, err = try_save(file, s, sz, perms, quiet, flush)
 	check('fs', 'save', ok, '%s: %s', file, err)
 end
 
 --return a `try_write(v | buf,len | t | nil) -> true | false,err` function.
-function file_saver(file, thread_name)
+function file_saver(file, thread_name, perms, quiet, flush)
 	require'sock'
 	local write = cowrap(function(yield)
-		return try_save(file, yield)
+		return try_save(file, yield, nil, perms, quiet, flush)
 	end, thread_name or 'file-saver %s', file)
 	local ok, err = write()
 	if not ok then return nil, err end
@@ -1789,9 +1809,9 @@ function cp(src_file, dst_file, quiet)
 	save(dst_file, load(src_file))
 end
 
-function try_touch(file, mtime, btime, quiet) --create file or update its mtime.
+function try_touch(file, mtime, btime, quiet, flush) --create file or update its mtime.
 	if not exists(file) then
-		local ok, err = try_save(file, '', quiet)
+		local ok, err = try_save(file, '', quiet, flush)
 		if not ok then return false, err end
 		if not (mtime or btime) then
 			return
@@ -1802,6 +1822,7 @@ function try_touch(file, mtime, btime, quiet) --create file or update its mtime.
 			date('%d-%m-%Y %H:%M', mtime) or 'now',
 			btime and ', btime '..date('%d-%m-%Y %H:%M', btime) or '')
 	end
+	--TODO: flush this
 	local ok, err = try_file_attr(file, {
 		mtime = mtime or time(),
 		btime = btime or nil,
