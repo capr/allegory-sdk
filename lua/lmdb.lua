@@ -13,10 +13,9 @@
 	- you write too much data in a single write transaction, which blows up the
 	  freelist of free pages. libmdbx solves this.
 	- you stay too long in a read-only transaction, which prevents writers from
-	  reclaiming free pages, which blows up the DB.
+	  reclaiming free pages, which blows up the DB while this happens.
 	- you stay too long in a write transaction which blocks all other write
 	  transactions.
-
 
 ]]
 

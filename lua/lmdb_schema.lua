@@ -1,5 +1,11 @@
 --go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit ~/sdk/lua/*
 
+--TODO: big-endian ints.
+--TODO: signed ints.
+--TODO: floats & doubles.
+--TODO: descending keys.
+--TODO: .
+
 require'lmdb'
 
 local col_ct = {
@@ -69,6 +75,9 @@ function Db:load_schema()
 			col.elem_ct = assertf(col_ct[col.type], 'unknown col type %s', col.type)
 			col.elem_size = sizeof(col.elem_ct)
 			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
+			--index columns by name and check for duplicate names.
+			assertf(not table_schema.columns[col.name], 'duplicate column name: %s', col.name)
+			table_schema.columns[col.name] = col
 		end
 		assert(#key_cols < 2^16)
 		assert(#val_cols < 2^16)
@@ -98,7 +107,6 @@ function Db:load_schema()
 				if col.maxlen then --first varsize col
 					dot_len = #cols - i
 					fixsize_n = i - 1
-					cols.fixsize_n = fixsize_n
 					break
 				end
 			end
@@ -110,7 +118,7 @@ function Db:load_schema()
 				max_row_size = max_row_size + (col.maxlen or col.len or 1) * col.elem_size
 			end
 
-			--compute offset C type.
+			--compute offset C type based on how large the offsets can be.
 			local offset_ct = 'uint64_t'
 			if max_row_size - dot_len < 2^8 then
 				offset_ct = 'uint8_t'
@@ -150,6 +158,7 @@ function Db:load_schema()
 						''
 					) .. ';\n'
 			end
+			--all other cols are at dyn. offsets so can't be struct fields.
 			ct = ct .. '}'
 			pr(ct)
 			local ct = ctype(ct)
@@ -161,7 +170,7 @@ function Db:load_schema()
 					col.varlen = function()
 						return col.len
 					end
-					col.shift = noop
+					col.grow = noop
 				end
 				local elem_p_ct = ctype(col.elem_ct..'*')
 				if i <= fixsize_n+1 then
@@ -197,15 +206,19 @@ function Db:load_schema()
 								col.varlen = function(buf, sz)
 									return buf._offsets_[0] - col_offset
 								end
-								col.shift = function(buf, buf_old_sz, n)
+								--make room for n elements.
+								col.grow = function(buf, buf_old_sz, len)
+									local len0 = col.varlen(buf, buf_old_sz)
+									if len <= len0 then return end
+									local shift_sz = (len - len0) * elem_size
 									local next_offset = buf._offsets_[0]
-									local copy_sz = buf_old_sz - next_offset - max(0, n)
+									local copy_sz = buf_old_sz - next_offset
 									copy(
-										cast(i8p, buf) + next_offset + n,
+										cast(i8p, buf) + next_offset + shift_sz,
 										cast(i8p, buf) + next_offset,
 										copy_sz)
 									for i = 0, dot_len-1 do
-										buf._offsets_[i] = buf._offsets_[i] + n
+										buf._offsets_[i] = buf._offsets_[i] + shift_sz
 									end
 								end
 							end
@@ -255,15 +268,23 @@ function Db:load_schema()
 								local next_offset = OFFSET == dot_len-1 and sz or buf._offsets_[OFFSET+1]
 								return next_offset - buf._offsets_[OFFSET]
 							end
-							col.shift = function(buf, buf_old_sz, n)
-								local next_offset = OFFSET == dot_len-1 and sz or buf._offsets_[OFFSET+1]
-								local copy_sz = buf_old_sz - next_offset - max(0, n)
-								copy(
-									cast(i8p, buf) + next_offset + n,
-									cast(i8p, buf) + next_offset,
-									copy_sz)
-								for i = OFFSET+1, dot_len-1 do
-									buf._offsets_[i] = buf._offsets_[i] + n
+							--make room for n more elements.
+							if OFFSET == dot_len-1 then
+								col.grow = noop
+							else
+								col.grow = function(buf, buf_old_sz, len)
+									local len0 = col.varlen(buf, buf_old_sz)
+									if len <= len0 then return end
+									local shift_sz = (len - len0) * elem_size
+									local next_offset = buf._offsets_[OFFSET+1]
+									local copy_sz = buf_old_sz - next_offset
+									copy(
+										cast(i8p, buf) + next_offset + shift_sz,
+										cast(i8p, buf) + next_offset,
+										copy_sz)
+									for i = OFFSET+1, dot_len-1 do
+										buf._offsets_[i] = buf._offsets_[i] + shift_sz
+									end
 								end
 							end
 						end
@@ -285,10 +306,9 @@ function Db:load_schema()
 
 end
 
-local function val_len(col, vals)
+local function fixed_val_len(col)
 	if col.maxlen then
-		local val = vals[col.name]
-		return #val
+		return
 	elseif col.len then
 		return col.len
 	else
@@ -296,11 +316,15 @@ local function val_len(col, vals)
 	end
 end
 
+local function val_len(col, vals)
+	return fixed_val_len(col) or #vals[col.name]
+end
+
 local function row_size(self, cols, vals)
 	local sz = sizeof(cols.ct, 0) --fixsize cols + d.o.t.
 	for i = cols.fixsize_n+1, #cols do
 		local col = cols[i]
-		sz = sz + val_len(col, vals)
+		sz = sz + val_len(col, vals) * col.elem_size
 	end
 	return sz, cols.ct
 end
@@ -320,7 +344,7 @@ function Db:val_size(tbl, vals)
 	return row_size(self, val_cols(self, tbl), vals)
 end
 
-local function encode_row(self, cols, vals, buf, sz)
+local function encode_rec(self, cols, vals, buf, sz)
 	local buf = cast(ctype('$*', cols.ct), buf)
 	local fixsize_n = cols.fixsize_n
 	for i=1,fixsize_n do
@@ -343,11 +367,19 @@ local function encode_row(self, cols, vals, buf, sz)
 end
 
 function Db:encode_key(tbl, vals, buf, sz)
-	return encode_row(self, key_cols(self, tbl), vals, buf, sz)
+	return encode_rec(self, key_cols(self, tbl), vals, buf, sz)
 end
 
 function Db:encode_val(tbl, vals, buf, sz)
-	return encode_row(self, val_cols(self, tbl), vals, buf, sz)
+	return encode_rec(self, val_cols(self, tbl), vals, buf, sz)
+end
+
+function Db:encode_col(tbl, col, val, buf, sz)
+	local cols = self.schema.tables[tbl].columns
+	local col = assertf(cols[col], 'unknown column: %s', col)
+	local val_len = fixed_val_len(col) or #val
+	col.grow(buf, buf_old_sz, val_len)
+	return encode_rec(self, val_cols(self, tbl), vals, buf, sz)
 end
 
 local function row_col_tostring(self, cols, col, buf, sz)
