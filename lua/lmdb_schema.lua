@@ -113,28 +113,28 @@ function Db:load_schema()
 			cols.fixsize_n = fixsize_n
 
 			--compute max row size, excluding d.o.t.
-			local max_row_size = 0
+			local max_rec_size = 0
 			for _,col in ipairs(cols) do
-				max_row_size = max_row_size + (col.maxlen or col.len or 1) * col.elem_size
+				max_rec_size = max_rec_size + (col.maxlen or col.len or 1) * col.elem_size
 			end
 
 			--compute offset C type based on how large the offsets can be.
 			local offset_ct = 'uint64_t'
-			if max_row_size - dot_len < 2^8 then
+			if max_rec_size - dot_len < 2^8 then
 				offset_ct = 'uint8_t'
-			elseif max_row_size - dot_len * 2 < 2^16 then
+			elseif max_rec_size - dot_len * 2 < 2^16 then
 				offset_ct = 'uint16_t'
-			elseif max_row_size - dot_len * 4 < 2^32 then
+			elseif max_rec_size - dot_len * 4 < 2^32 then
 				offset_ct = 'uint32_t'
 			end
 
 			--compute max row size, including d.o.t.
-			local max_row_size = max_row_size + dot_len * sizeof(offset_ct)
+			local max_rec_size = max_rec_size + dot_len * sizeof(offset_ct)
 			if cols == key_cols then
-				assert(max_row_size <= self:max_key_size(),
-					'pk too big: %d bytes (max is %d bytes)', max_row_size, self:max_key_size())
+				assert(max_rec_size <= self:db_max_key_size(),
+					'pk too big: %d bytes (max is %d bytes)', max_rec_size, self:db_max_key_size())
 			end
-			cols.max_row_size = max_row_size
+			cols.max_rec_size = max_rec_size
 
 			--compute row layout: fixsize cols, d.o.t., varsize cols.
 			local offset = 0
@@ -163,25 +163,26 @@ function Db:load_schema()
 			pr(ct)
 			local ct = ctype(ct)
 			cols.ct = ct
+			cols.pct = ctype('$*', ct)
 
 			--generate value encoders and decoders
 			for i,col in ipairs(cols) do
 				if col.len then
-					col.varlen = function()
-						return col.len
+					col.size = function()
+						return col.len * elem_size
 					end
-					col.grow = noop
+					col.resize = noop
 				end
 				local elem_p_ct = ctype(col.elem_ct..'*')
 				if i <= fixsize_n+1 then
 					if col.len or col.maxlen then --fixsize or varsize at fixed offset
 						local COL = col.name
-						col.seti = function(buf, sz, val, i)
+						col.seti = function(buf, rec_sz, val, i)
 							buf[COL][i] = val
 						end
 						local elem_size = col.elem_size
 						local typeof = typeof
-						col.set = function(buf, sz, val, len)
+						col.set = function(buf, val, len)
 							local tval = typeof(val)
 							if tval == 'string' or tval == 'cdata' then
 								copy(buf[COL], val, len * elem_size)
@@ -193,106 +194,120 @@ function Db:load_schema()
 								assertf(false, 'invalid val type %s', tval)
 							end
 						end
-						col.get = function(buf, sz)
+						col.get = function(buf, rec_sz)
 							return cast(elem_p_ct, buf[COL])
 						end
-						col.tostring = function(buf, sz)
-							local len = col.varlen(buf, sz)
-							return str(buf[COL], len * elem_size)
+						col.tostring = function(buf, rec_sz)
+							local sz = col.size(buf, rec_sz)
+							return str(buf[COL], sz)
 						end
 						if col.maxlen then --varsize at fixed offset (first col after d.o.t.)
 							local col_offset = offsetof(ct, COL)
 							if dot_len > 0 then --d.o.t. follows
-								col.varlen = function(buf, sz)
+								col.size = function(buf, rec_sz)
 									return buf._offsets_[0] - col_offset
 								end
-								--make room for n elements.
-								col.grow = function(buf, buf_old_sz, len)
-									local len0 = col.varlen(buf, buf_old_sz)
-									if len <= len0 then return end
-									local shift_sz = (len - len0) * elem_size
+								col.resize = function(buf, offset, rec_sz, len)
+									local sz0 = col.size(buf, rec_sz)
+									local shift_sz = len * elem_size - sz0
 									local next_offset = buf._offsets_[0]
-									local copy_sz = buf_old_sz - next_offset
-									copy(
-										cast(i8p, buf) + next_offset + shift_sz,
-										cast(i8p, buf) + next_offset,
-										copy_sz)
+									if shift_sz > 0 then --grow: shift right
+										copy(
+											buf + offset + next_offset + shift_sz,
+											buf + offset + next_offset,
+											rec_sz - next_offset)
+									else --shrink: shift left
+										copy(
+											buf + offset + next_offset,
+											buf + offset + next_offset - shift_sz,
+											rec_sz - next_offset + shift_sz)
+									end
 									for i = 0, dot_len-1 do
 										buf._offsets_[i] = buf._offsets_[i] + shift_sz
 									end
+									return rec_sz + shift_sz
 								end
 							end
 						end
 					else --value at fixed offset
-						col.set = function(buf, sz, val)
+						col.set = function(buf, val)
 							buf[COL] = val
 						end
-						col.get = function(buf, sz)
+						col.get = function(buf, rec_sz)
 							return buf[COL]
 						end
 					end
 				else
 					local OFFSET = i - (fixsize_n+2)
-					col.get = function(buf, sz)
+					col.get = function(buf, rec_sz)
 						local offset = buf._offsets_[OFFSET]
-						return cast(elem_p_ct, cast(i8p, buf) + offset)
+						return cast(elem_p_ct, cast(u8p, buf) + offset)
 					end
 					local elem_size = col.elem_size
-					col.tostring = function(buf, sz)
-						local len = col.varlen(buf, sz)
+					col.tostring = function(buf, rec_sz)
+						local sz = col.size(buf, rec_sz)
 						local offset = buf._offsets_[OFFSET]
-						return str(cast(i8p, buf) + offset, len * elem_size)
+						return str(cast(u8p, buf) + offset, sz)
 					end
 					if col.len or col.maxlen then --fixsize or varsize at dyn offset
-						col.seti = function(buf, sz, val, i)
+						col.seti = function(buf, rec_sz, val, i)
 							local offset = buf._offsets_[OFFSET]
-							cast(elem_p_ct, cast(i8p, buf) + offset)[i] = val
+							cast(elem_p_ct, cast(u8p, buf) + offset)[i] = val
 						end
 						local elem_size = col.elem_size
 						local typeof = typeof
-						col.set = function(buf, sz, val, len)
+						col.set = function(buf, val, len)
 							local tval = typeof(val)
 							local offset = buf._offsets_[OFFSET]
 							if tval == 'string' or tval == 'cdata' then
-								copy(cast(i8p, buf) + offset, val, len * elem_size)
+								copy(cast(u8p, buf) + offset, val, len * elem_size)
 							elseif tval == 'table' then
 								for i = 1, len do
-									cast(elem_p_ct, cast(i8p, buf) + offset)[i-1] = val[i]
+									cast(elem_p_ct, cast(u8p, buf) + offset)[i-1] = val[i]
 								end
 							else
 								assertf(false, 'invalid val type %s', tval)
 							end
 						end
 						if col.maxlen then --varsize at dyn offset
-							col.varlen = function(buf, sz)
-								local next_offset = OFFSET == dot_len-1 and sz or buf._offsets_[OFFSET+1]
-								return next_offset - buf._offsets_[OFFSET]
-							end
-							--make room for n more elements.
-							if OFFSET == dot_len-1 then
-								col.grow = noop
+							if OFFSET == dot_len-1 then --last col, sz based on rec_sz
+								col.size = function(buf, rec_sz)
+									local next_offset = rec_sz
+									return next_offset - buf._offsets_[OFFSET]
+								end
+								col.resize = noop
 							else
-								col.grow = function(buf, buf_old_sz, len)
-									local len0 = col.varlen(buf, buf_old_sz)
-									if len <= len0 then return end
-									local shift_sz = (len - len0) * elem_size
+								col.size = function(buf, rec_sz)
 									local next_offset = buf._offsets_[OFFSET+1]
-									local copy_sz = buf_old_sz - next_offset
-									copy(
-										cast(i8p, buf) + next_offset + shift_sz,
-										cast(i8p, buf) + next_offset,
-										copy_sz)
+									return next_offset - buf._offsets_[OFFSET]
+								end
+								--make room for n more elements.
+								col.resize = function(buf, offset, rec_sz, len)
+									local sz0 = col.size(buf, rec_sz)
+									local shift_sz = len * elem_size - sz0
+									local next_offset = buf._offsets_[OFFSET+1]
+									if shift_sz > 0 then --grow: shift right
+										copy(
+											buf + offset + next_offset + shift_sz,
+											buf + offset + next_offset,
+											rec_sz - next_offset)
+									else --shrink: shift left
+										copy(
+											buf + offset + next_offset,
+											buf + offset + next_offset - shift_sz,
+											rec_sz - next_offset + shift_sz)
+									end
 									for i = OFFSET+1, dot_len-1 do
 										buf._offsets_[i] = buf._offsets_[i] + shift_sz
 									end
+									return rec_sz + shift_sz
 								end
 							end
 						end
 					else --value at dyn offset
-						local elem_p_ct = ctype(elem_ct..'*')
-						col.set = function(buf, sz, val)
+						col.set = function(buf, val)
 							local offset = buf._offsets_[OFFSET]
-							cast(elem_p_ct, cast(i8p, buf) + offset)[0] = val
+							cast(elem_p_ct, cast(u8p, buf) + offset)[0] = val
 						end
 					end
 				end
@@ -306,27 +321,19 @@ function Db:load_schema()
 
 end
 
-local function fixed_val_len(col)
-	if col.maxlen then
-		return
-	elseif col.len then
-		return col.len
-	else
-		return 1
-	end
+local function val_len(col, val) --truncates the value if needed.
+	local max_len = col.maxlen or col.len
+	return max_len and min(#val, max_len) or 1
 end
 
-local function val_len(col, vals)
-	return fixed_val_len(col) or #vals[col.name]
-end
-
-local function row_size(self, cols, vals)
+local function rec_size(self, cols, vals)
 	local sz = sizeof(cols.ct, 0) --fixsize cols + d.o.t.
 	for i = cols.fixsize_n+1, #cols do
 		local col = cols[i]
-		sz = sz + val_len(col, vals) * col.elem_size
+		local padded_val_len = col.len or col.maxlen and min(#vals[col.name], col.maxlen) or 1
+		sz = sz + padded_val_len * col.elem_size
 	end
-	return sz, cols.ct
+	return sz
 end
 
 function key_cols(self, tbl)
@@ -336,64 +343,85 @@ function val_cols(self, tbl)
 	return self.schema.tables[tbl].val_cols
 end
 
-function Db:key_size(tbl, vals)
-	return row_size(self, key_cols(self, tbl), vals)
+function Db:encoded_key_size(tbl, vals)
+	return rec_size(self, key_cols(self, tbl), vals)
 end
 
-function Db:val_size(tbl, vals)
-	return row_size(self, val_cols(self, tbl), vals)
+function Db:encoded_val_size(tbl, vals)
+	return rec_size(self, val_cols(self, tbl), vals)
 end
 
-local function encode_rec(self, cols, vals, buf, sz)
-	local buf = cast(ctype('$*', cols.ct), buf)
+function Db:max_key_size(tbl)
+	return key_cols(self, tbl).max_rec_size
+end
+
+function Db:max_val_size(tbl)
+	return val_cols(self, tbl).max_rec_size
+end
+
+local function encode_rec(self, cols, vals, buf, buf_sz, offset)
+	local rec_sz = rec_size(self, cols, vals)
+	assert(buf_sz - offset >= rec_sz, 'buffer too short')
+	local set_buf = cast(cols.pct, buf + offset)
 	local fixsize_n = cols.fixsize_n
 	for i=1,fixsize_n do
 		local col = cols[i]
+		local val = vals[col.name]
+		local len = val_len(col, val)
+		col.set(set_buf, val, len)
 	end
 	local offset = sizeof(cols.ct, 0)
 	local NEXT_OFFSET = 0
 	for i = fixsize_n+1, #cols do
 		local col = cols[i]
-		local maxlen = col.maxlen or col.len or 1
-		local len = min(maxlen, val_len(col, vals))
 		local val = vals[col.name]
-		col.set(buf, sz, val, len)
-		offset = offset + len * col.elem_size
+		local len = val_len(col, val)
+		col.set(set_buf, val, len)
+		offset = offset + (col.len or len) * col.elem_size
 		if i < #cols then
-			buf._offsets_[NEXT_OFFSET] = offset
+			set_buf._offsets_[NEXT_OFFSET] = offset
 			NEXT_OFFSET = NEXT_OFFSET + 1
 		end
 	end
 end
 
-function Db:encode_key(tbl, vals, buf, sz)
-	return encode_rec(self, key_cols(self, tbl), vals, buf, sz)
-end
-
-function Db:encode_val(tbl, vals, buf, sz)
-	return encode_rec(self, val_cols(self, tbl), vals, buf, sz)
-end
-
-function Db:encode_col(tbl, col, val, buf, sz)
-	local cols = self.schema.tables[tbl].columns
+local function encode_rec_col(self, cols, col, val, buf, offset, rec_sz)
 	local col = assertf(cols[col], 'unknown column: %s', col)
-	local val_len = fixed_val_len(col) or #val
-	col.grow(buf, buf_old_sz, val_len)
-	return encode_rec(self, val_cols(self, tbl), vals, buf, sz)
+	local val_len = val_len(col, val)
+	rec_sz = col.resize(buf, offset, rec_sz, val_len) or rec_sz
+	local set_buf = cast(cols.pct, buf + offset)
+	col.set(set_buf, val, val_len)
+	return rec_sz
 end
 
-local function row_col_tostring(self, cols, col, buf, sz)
-	local buf = cast(ctype('$*', cols.ct), buf)
+function Db:encode_key(tbl, vals, buf, buf_sz, offset)
+	return encode_rec(self, key_cols(self, tbl), vals, buf, buf_sz, offset)
+end
+
+function Db:encode_val(tbl, vals, buf, buf_sz, offset)
+	return encode_rec(self, val_cols(self, tbl), vals, buf, buf_sz, offset)
+end
+
+function Db:encode_key_col(tbl, col, val, buf, offset, rec_sz)
+	return encode_rec_col(self, key_cols(self, tbl), col, val, buf, offset, rec_sz)
+end
+
+function Db:encode_val_col(tbl, col, val, buf, offset, rec_sz)
+	return encode_rec_col(self, val_cols(self, tbl), col, val, buf, offset, rec_sz)
+end
+
+local function rec_col_tostring(self, cols, col, buf, offset, rec_sz)
+	local buf = cast(cols.pct, buf + offset)
 	local col = assertf(cols[col], 'unknown column: %s', col)
-	return col.tostring(buf, sz)
+	return col.tostring(buf, rec_sz)
 end
 
-function Db:key_tostring(tbl, col, buf, sz)
-	return row_col_tostring(self, key_cols(self, tbl), col, buf, sz)
+function Db:key_tostring(tbl, col, buf, rec_sz, offset)
+	return rec_col_tostring(self, key_cols(self, tbl), col, buf, rec_sz, offset)
 end
 
-function Db:val_tostring(tbl, col, buf, sz)
-	return row_col_tostring(self, val_cols(self, tbl), col, buf, sz)
+function Db:val_tostring(tbl, col, buf, rec_sz, offset)
+	return rec_col_tostring(self, val_cols(self, tbl), col, buf, rec_sz, offset)
 end
 
 --test -----------------------------------------------------------------------
@@ -407,16 +435,17 @@ if not ... then
 		active = 1,
 		roles = {123, 321},
 		email = 'admin@some.com',
-		name = 'john galt',
+		name = 'John Galt',
 	}
-	local sz = db:key_size('users', u)
-	local buf = u8a(sz)
-	db:encode_key('users', u, buf, sz)
-	local sz = db:val_size('users', u)
-	local buf = u8a(sz)
-	db:encode_val('users', u, buf, sz)
-	pr(db:val_tostring('users', 'email', buf, sz))
-	pr(db:val_tostring('users', 'name', buf, sz))
+	local key_sz = db:max_key_size'users'
+	local val_sz = db:max_val_size'users'
+	local buf_sz = key_sz + val_sz
+	local buf = u8a(buf_sz)
+	db:encode_key('users', u, buf, buf_sz)
+	db:encode_val('users', u, buf, buf_sz, key_sz)
+	db:encode_val_col('users', 'name', 'Dagny Taggart', buf, 0, sz)
+	pr(db:val_tostring('users', 'email', buf, buf_sz, 0))
+	pr(db:val_tostring('users', 'name' , buf, buf_sz, key_sz))
 	--db:decode_val('users', u, buf, sz)
 	db:close()
 

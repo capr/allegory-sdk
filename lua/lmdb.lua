@@ -249,7 +249,7 @@ function Db:dbi(table_name)
 	return assertf(self.dbis[table_name], 'table not found: %s', table_name)
 end
 
-function Db:max_key_size()
+function Db:db_max_key_size()
 	return C.mdb_env_get_maxkeysize(self.env)
 end
 
