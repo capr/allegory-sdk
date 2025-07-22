@@ -61,3 +61,6 @@
 [submodule "bin/debian12"]
 	path = bin/debian12
 	url = git@github.com:allegory-software/allegory-sdk-bin-debian12
+[submodule "c/mdbx/src"]
+	path = c/mdbx/src
+	url = git@github.com:erthink/libmdbx.git
