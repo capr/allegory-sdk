@@ -1,3 +1,4 @@
+--go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/lua/*
 --go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit ~/sdk/lua/*
 
 --TODO: big-endian ints.
@@ -61,7 +62,7 @@ function Db:load_schema()
 		end
 		local key_cols = {}
 		local val_cols = {}
-		for i,col in ipairs(table_schema.columns) do
+		for i,col in ipairs(table_schema.fields) do
 			if indexof(col.name, pk_cols) then
 				add(key_cols, col)
 				key_cols[col.name] = col
@@ -75,9 +76,9 @@ function Db:load_schema()
 			col.elem_ct = assertf(col_ct[col.type], 'unknown col type %s', col.type)
 			col.elem_size = sizeof(col.elem_ct)
 			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
-			--index columns by name and check for duplicate names.
-			assertf(not table_schema.columns[col.name], 'duplicate column name: %s', col.name)
-			table_schema.columns[col.name] = col
+			--index fields by name and check for duplicate names.
+			assertf(not table_schema.fields[col.name], 'duplicate column name: %s', col.name)
+			table_schema.fields[col.name] = col
 		end
 		assert(#key_cols < 2^16)
 		assert(#val_cols < 2^16)
@@ -174,9 +175,9 @@ function Db:load_schema()
 					col.resize = noop
 				end
 				local elem_p_ct = ctype(col.elem_ct..'*')
+				local COL = col.name
 				if i <= fixsize_n+1 then
 					if col.len or col.maxlen then --fixsize or varsize at fixed offset
-						local COL = col.name
 						col.seti = function(buf, rec_sz, val, i)
 							buf[COL][i] = val
 						end
@@ -360,6 +361,7 @@ function Db:max_val_size(tbl)
 end
 
 local function encode_rec(self, cols, vals, buf, buf_sz, offset)
+	offset = offset or 0
 	local rec_sz = rec_size(self, cols, vals)
 	assert(buf_sz - offset >= rec_sz, 'buffer too short')
 	local set_buf = cast(cols.pct, buf + offset)
