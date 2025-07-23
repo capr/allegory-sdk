@@ -1,5 +1,5 @@
---go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/tests/lmdb_test.lua
---go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit sdk/lua/lmdb.lua
+--go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/lua/mdbx.lua
+--go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit sdk/lua/mdbx.lua
 --[[
 
 	libmdbx binding.
@@ -17,9 +17,18 @@
 require'glue'
 require'ffi'
 local isnum = isnum
-local C = ffi.load'lmdb'
+local C = ffi.load'mdbx'
 
 cdef[[
+typedef unsigned int mode_t;
+typedef int pid_t;
+typedef unsigned long int real_pthread_t;
+typedef struct { real_pthread_t _; } pthread_t;
+struct MDBX_val { /* iovec with renamed fields */
+	void   *data;
+	size_t  size;
+};
+
 typedef int mdbx_filehandle_t;
 typedef pid_t mdbx_pid_t;
 typedef pthread_t mdbx_tid_t;
@@ -52,7 +61,7 @@ typedef struct MDBX_env MDBX_env;
 typedef struct MDBX_txn MDBX_txn;
 typedef uint32_t MDBX_dbi;
 typedef struct MDBX_cursor MDBX_cursor;
-typedef struct iovec MDBX_val;
+typedef struct MDBX_val MDBX_val;
 
 enum MDBX_constants {
   MDBX_MAX_DBI = 32765U,
@@ -122,7 +131,7 @@ typedef enum MDBX_txn_flags {
   MDBX_TXN_TRY = 0x10000000U,
   MDBX_TXN_NOMETASYNC = MDBX_NOMETASYNC,
   MDBX_TXN_NOSYNC = MDBX_SAFE_NOSYNC,
-  MDBX_TXN_INVALID = (-2147483647-1)
+  MDBX_TXN_INVALID = (-2147483647-1),
   MDBX_TXN_FINISHED = 0x01,
   MDBX_TXN_ERROR = 0x02,
   MDBX_TXN_DIRTY = 0x04,
@@ -217,7 +226,6 @@ typedef enum MDBX_error {
   MDBX_RESULT_FALSE = MDBX_SUCCESS,
   MDBX_RESULT_TRUE = -1,
   MDBX_KEYEXIST = -30799,
-  MDBX_FIRST_LMDB_ERRCODE = MDBX_KEYEXIST,
   MDBX_NOTFOUND = -30798,
   MDBX_PAGE_NOTFOUND = -30797,
   MDBX_CORRUPTED = -30796,
@@ -237,7 +245,6 @@ typedef enum MDBX_error {
   MDBX_BAD_VALSIZE = -30781,
   MDBX_BAD_DBI = -30780,
   MDBX_PROBLEM = -30779,
-  MDBX_LAST_LMDB_ERRCODE = MDBX_PROBLEM,
   MDBX_BUSY = -30778,
   MDBX_FIRST_ADDED_ERRCODE = MDBX_BUSY,
   MDBX_EMULTIVAL = -30421,
@@ -302,7 +309,7 @@ typedef enum MDBX_option {
   MDBX_opt_subpage_reserve_limit
 } MDBX_option_t;
 
-nt mdbx_env_set_option(MDBX_env *env, const MDBX_option_t option, uint64_t value);
+int mdbx_env_set_option(MDBX_env *env, const MDBX_option_t option, uint64_t value);
 int mdbx_env_get_option(const MDBX_env *env, const MDBX_option_t option, uint64_t *pvalue);
 int mdbx_env_open(MDBX_env *env, const char *pathname, MDBX_env_flags_t flags, mdbx_mode_t mode);
 
@@ -679,7 +686,6 @@ typedef struct MDBX_chk_table {
   MDBX_val name;
   MDBX_db_flags_t flags;
   int id;
-
   size_t payload_bytes, lost_bytes;
   struct {
     size_t all, empty, other;
@@ -749,14 +755,14 @@ int mdbx_env_chk_encount_problem(MDBX_chk_context_t *ctx);
 require'fs'
 require'sock'
 
-lmdb = {}
+mdbx = {}
 
 local function check(rc)
 	if rc == 0 then return end
 	error(str(C.mdbx_strerror(rc)), 2)
 end
 
-local Db = {}; lmdb.Db = Db
+local Db = {}; mdbx.Db = Db
 
 function Db:close()
 	for table_name,dbi in pairs(self.dbis) do
@@ -770,17 +776,17 @@ end
 
 --opt.readonly
 --opt.file_mode
-function lmdb.open(dir, opt)
+function mdbx.open(dir, opt)
 	opt = opt or {}
 
-	local env = new'MDB_env*[1]'
+	local env = new'MDBX_env*[1]'
 	check(C.mdbx_env_create(env)); env = env[0]
 	local size = 1024e4
 	check(C.mdbx_env_set_geometry(env, size, size, size, -1, -1, -1))
-	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_readers, readers))
+	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_readers, opt.max_readers or 1024))
 	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_db, opt.max_dbs or 1024))
 	check(C.mdbx_env_open(env, dir,
-		opt.readonly and MDB_RDONLY or 0,
+		opt.readonly and C.MDBX_RDONLY or 0,
 		(unixperms_parse(opt.file_mode or '0660'))
 	))
 
@@ -798,7 +804,7 @@ function lmdb.open(dir, opt)
 end
 
 function Db:open_tables(tables)
-	local dbi = new'MDB_dbi[1]'
+	local dbi = new'MDBX_dbi[1]'
 	local tx = self:tx'w'
 	local iter = isstr(tables) and words or pairs
 	for table_name in iter(tables) do
@@ -817,17 +823,17 @@ function Db:db_max_key_size()
 	return C.mdbx_env_get_maxkeysize_ex(self.env, C.MDBX_DB_DEFAULTS)
 end
 
-local Tx = {}; lmdb.Tx = Tx
+local Tx = {}; mdbx.Tx = Tx
 
 function Db:tx(flags, parent_tx)
 	flags = flags or (parent_tx and not parent_tx:is_readonly() and 'w') or 'r'
-	if flags == 'r' then flags = MDB_RDONLY end
+	if flags == 'r' then flags = C.MDBX_RDONLY end
 	if flags == 'w' then flags = 0 end
 	local tx = pop(self._free_tx) or object(Tx, {
 		db = self,
-		txn = new'MDB_txn*[1]',
+		txn = new'MDBX_txn*[1]',
 	})
-	check(C.mdb_txn_begin(self.env, parent_tx and parent_tx.txn[0], flags, tx.txn))
+	check(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn[0], flags, tx.txn, nil))
 	if parent_tx then
 		self.parent_tx = parent_tx
 		add(attr(parent_tx, 'child_txs'), self)
@@ -837,7 +843,7 @@ function Db:tx(flags, parent_tx)
 end
 
 function Tx:is_readonly()
-	return band(self.flags, MDB_RDONLY) ~= 0
+	return band(self.flags, C.MDBX_RDONLY) ~= 0
 end
 
 function Tx:tx()
@@ -858,7 +864,7 @@ end
 function Tx:commit()
 	assert(not self:closed(), 'transaction closed')
 	self:close_cursors()
-	check(C.mdb_txn_commit(self.txn[0]))
+	check(C.mdbx_txn_commit_ex(self.txn[0], nil))
 	self.txn[0] = nil
 	push(self.db._free_tx, self)
 	if self.parent_tx then --child takes place of parent.
@@ -871,7 +877,7 @@ end
 function Tx:abort()
 	assert(not self:closed(), 'transaction closed')
 	self:close_cursors()
-	C.mdb_txn_abort(self.txn[0])
+	C.mdbx_txn_abort(self.txn[0])
 	self.txn[0] = nil
 	push(self.db._free_tx, self)
 	if self.child_txs then --child txs are aborted automatically.
@@ -885,21 +891,21 @@ function Tx:abort()
 end
 
 do
-local key = new'MDB_val'
-local val = new'MDB_val'
+local key = new'MDBX_val'
+local val = new'MDBX_val'
 function Tx:get(tab)
-	check(C.mdb_get(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), key, val, 0))
+	check(C.mdbx_get(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), key, val, 0))
 	return key, val
 end
 end
 
 function Tx:put_kv(tab, key, val, flags)
-	check(C.mdb_put(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), key, val, flags or 0))
+	check(C.mdbx_put(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), key, val, flags or 0))
 end
 
 do
-local key = new'MDB_val'
-local val = new'MDB_val'
+local key = new'MDBX_val'
+local val = new'MDBX_val'
 function Tx:put(tab, key_data, key_size, val_data, val_size, flags)
 	key.data = key_data
 	key.size = key_size
@@ -915,9 +921,9 @@ function Tx:cursor(tab)
 	if cur then
 		cur.tx = self
 	else
-		cur = object(Cur, {tx = self, cursor = new'MDB_cursor*[1]'})
+		cur = object(Cur, {tx = self, cursor = new'MDBX_cursor*[1]'})
 	end
-	check(C.mdb_cursor_open(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), cur.cursor))
+	check(C.mdbx_cursor_open(self.txn[0], isnum(tab) and tab or self.db:dbi(tab), cur.cursor))
 	attr(self, 'cursors')[cur] = true
 	return cur
 end
@@ -928,21 +934,20 @@ end
 
 function Cur:close()
 	if self:closed() then return end
-	C.mdb_cursor_close(self.cursor[0])
+	C.mdbx_cursor_close(self.cursor[0])
 	self.cursor[0] = nil
 	self.tx.cursors[self] = nil
 	push(self.tx.db._free_cur, self)
 end
 
 do
-local key = new'MDB_val'
-local val = new'MDB_val'
-local MDB_NOTFOUND = -30798
+local key = new'MDBX_val'
+local val = new'MDBX_val'
 function Cur:next()
 	if self:closed() then return end
-	local rc = C.mdb_cursor_get(self.cursor[0], key, val, MDB_NEXT)
+	local rc = C.mdbx_cursor_get(self.cursor[0], key, val, C.MDBX_NEXT)
 	if rc == 0 then return key, val end
-	if rc == MDB_NOTFOUND then
+	if rc == C.MDBX_NOTFOUND then
 		self:close()
 		return
 	end
@@ -959,7 +964,7 @@ end
 
 if not ... then
 
-	local db = lmdb.open('testdb')
+	local db = mdbx.open('testdb')
 
 	db:open_tables'users'
 

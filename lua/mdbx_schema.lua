@@ -7,7 +7,7 @@
 --TODO: descending keys.
 --TODO: .
 
-require'lmdb'
+require'mdbx'
 
 local col_ct = {
 	double = 'double',
@@ -26,7 +26,7 @@ local col_ct = {
 	i8     = 'int8_t',
 }
 
-local Db = lmdb.Db
+local Db = mdbx.Db
 
 function Db:load_schema()
 
@@ -430,7 +430,7 @@ end
 
 if not ... then
 
-	local db = lmdb.open('lmdb_schema_test')
+	local db = mdbx.open('mdbx_schema_test')
 	db:load_schema()
 	local u = {
 		uid = 1234,
