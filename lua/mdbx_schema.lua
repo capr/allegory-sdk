@@ -1,6 +1,3 @@
---go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/lua/*
---go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit ~/sdk/lua/*
-
 --TODO: big-endian ints.
 --TODO: signed ints.
 --TODO: floats & doubles.
@@ -8,6 +5,10 @@
 --TODO: .
 
 require'mdbx'
+
+local cast = cast
+local copy = copy
+local u8p = u8p
 
 local col_ct = {
 	double = 'double',
@@ -24,6 +25,11 @@ local col_ct = {
 	i16    = 'int16_t',
 	u8     = 'uint8_t',
 	i8     = 'int8_t',
+}
+
+local col_union_ct = {
+	double   = 'union { double d; uint64_t u; uint8_t b[8]; }'
+	uint64_t = 'union { double d; uint64_t u; uint8_t b[8]; }'
 }
 
 local Db = mdbx.Db
@@ -74,6 +80,7 @@ function Db:load_schema()
 			end
 			--typecheck the column while we're at it.
 			col.elem_ct = assertf(col_ct[col.type], 'unknown col type %s', col.type)
+			col.elem_ct = col_union_ct[col.elem_ct] or col.elem_ct
 			col.elem_size = sizeof(col.elem_ct)
 			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
 			--index fields by name and check for duplicate names.
@@ -138,7 +145,6 @@ function Db:load_schema()
 			cols.max_rec_size = max_rec_size
 
 			--compute row layout: fixsize cols, d.o.t., varsize cols.
-			local offset = 0
 			local ct = 'struct __attribute__((__packed__)) {\n'
 			--cols at a fixed offset: direct access.
 			for i=1,fixsize_n do
@@ -162,26 +168,53 @@ function Db:load_schema()
 			--all other cols are at dyn. offsets so can't be struct fields.
 			ct = ct .. '}'
 			pr(ct)
-			local ct = ctype(ct)
+			ct = ctype(ct)
 			cols.ct = ct
 			cols.pct = ctype('$*', ct)
 
 			--generate value encoders and decoders
+			local OFFSET = -1
+			local function pass1(v) return v end
 			for i,col in ipairs(cols) do
 				if col.len then
+					local len = col.len
+					local elem_size = col.elem_size
 					col.size = function()
-						return col.len * elem_size
+						return len * elem_size
 					end
 					col.resize = noop
 				end
+				local elem_size = col.elem_size
 				local elem_p_ct = ctype(col.elem_ct..'*')
 				local COL = col.name
+
+				local encode = pass1
+				local decode = pass1
+				if cols == key_cols then
+					if col.elem_ct == 'uint32_t' then
+						encode = bswap
+					elseif col.elem_ct == 'uint16_t' then
+						local bswap, shl = bswap, shl
+						encode = function(v) return bswap(shl(v, 16)) end
+					end
+					elseif col.elem_ct = 'uint64_t' then
+						encode = function(v)
+							for i = 0, 7 do
+								buf[i] = bit.band(bit.rshift(v, (7 - i) * 8), 0xFF)
+							end
+						end
+					elseif col.elem_ct = 'double' then
+
+					elseif col.elem_ct = 'float' then
+
+					end
+				end
+
 				if i <= fixsize_n+1 then
 					if col.len or col.maxlen then --fixsize or varsize at fixed offset
 						col.seti = function(buf, rec_sz, val, i)
 							buf[COL][i] = val
 						end
-						local elem_size = col.elem_size
 						local typeof = typeof
 						col.set = function(buf, val, len)
 							local tval = typeof(val)
@@ -203,31 +236,12 @@ function Db:load_schema()
 							return str(buf[COL], sz)
 						end
 						if col.maxlen then --varsize at fixed offset (first col after d.o.t.)
-							local col_offset = offsetof(ct, COL)
+							local col_offset = offsetof(cols.ct, COL)
 							if dot_len > 0 then --d.o.t. follows
 								col.size = function(buf, rec_sz)
 									return buf._offsets_[0] - col_offset
 								end
-								col.resize = function(buf, offset, rec_sz, len)
-									local sz0 = col.size(buf, rec_sz)
-									local shift_sz = len * elem_size - sz0
-									local next_offset = buf._offsets_[0]
-									if shift_sz > 0 then --grow: shift right
-										copy(
-											buf + offset + next_offset + shift_sz,
-											buf + offset + next_offset,
-											rec_sz - next_offset)
-									else --shrink: shift left
-										copy(
-											buf + offset + next_offset,
-											buf + offset + next_offset - shift_sz,
-											rec_sz - next_offset + shift_sz)
-									end
-									for i = 0, dot_len-1 do
-										buf._offsets_[i] = buf._offsets_[i] + shift_sz
-									end
-									return rec_sz + shift_sz
-								end
+								col.resize = true
 							end
 						end
 					else --value at fixed offset
@@ -239,12 +253,12 @@ function Db:load_schema()
 						end
 					end
 				else
-					local OFFSET = i - (fixsize_n+2)
+					OFFSET = OFFSET + 1
+					local OFFSET = OFFSET
 					col.get = function(buf, rec_sz)
 						local offset = buf._offsets_[OFFSET]
 						return cast(elem_p_ct, cast(u8p, buf) + offset)
 					end
-					local elem_size = col.elem_size
 					col.tostring = function(buf, rec_sz)
 						local sz = col.size(buf, rec_sz)
 						local offset = buf._offsets_[OFFSET]
@@ -255,7 +269,6 @@ function Db:load_schema()
 							local offset = buf._offsets_[OFFSET]
 							cast(elem_p_ct, cast(u8p, buf) + offset)[i] = val
 						end
-						local elem_size = col.elem_size
 						local typeof = typeof
 						col.set = function(buf, val, len)
 							local tval = typeof(val)
@@ -282,27 +295,7 @@ function Db:load_schema()
 									local next_offset = buf._offsets_[OFFSET+1]
 									return next_offset - buf._offsets_[OFFSET]
 								end
-								--make room for n more elements.
-								col.resize = function(buf, offset, rec_sz, len)
-									local sz0 = col.size(buf, rec_sz)
-									local shift_sz = len * elem_size - sz0
-									local next_offset = buf._offsets_[OFFSET+1]
-									if shift_sz > 0 then --grow: shift right
-										copy(
-											buf + offset + next_offset + shift_sz,
-											buf + offset + next_offset,
-											rec_sz - next_offset)
-									else --shrink: shift left
-										copy(
-											buf + offset + next_offset,
-											buf + offset + next_offset - shift_sz,
-											rec_sz - next_offset + shift_sz)
-									end
-									for i = OFFSET+1, dot_len-1 do
-										buf._offsets_[i] = buf._offsets_[i] + shift_sz
-									end
-									return rec_sz + shift_sz
-								end
+								col.resize = true
 							end
 						end
 					else --value at dyn offset
@@ -312,6 +305,33 @@ function Db:load_schema()
 						end
 					end
 				end
+
+				if col.resize == true then
+					local pct = cols.pct
+					local OFFSET = OFFSET
+					col.resize = function(buf, offset, rec_sz, len)
+						local set_buf = cast(pct, buf + offset)
+						local sz0 = col.size(set_buf, rec_sz)
+						local shift_sz = len * elem_size - sz0
+						local next_offset = set_buf._offsets_[OFFSET+1]
+						if shift_sz > 0 then --grow: shift right
+							copy(
+								buf + offset + next_offset + shift_sz,
+								buf + offset + next_offset,
+								rec_sz - next_offset)
+						else --shrink: shift left
+							copy(
+								buf + offset + next_offset,
+								buf + offset + next_offset - shift_sz,
+								rec_sz - next_offset + shift_sz)
+						end
+						for i = OFFSET+1, dot_len-1 do
+							set_buf._offsets_[i] = set_buf._offsets_[i] + shift_sz
+						end
+						return rec_sz + shift_sz
+					end
+				end
+
 			end --for col in cols
 
 		end --for cols in key_cols, val_cols
@@ -331,7 +351,9 @@ local function rec_size(self, cols, vals)
 	local sz = sizeof(cols.ct, 0) --fixsize cols + d.o.t.
 	for i = cols.fixsize_n+1, #cols do
 		local col = cols[i]
-		local padded_val_len = col.len or col.maxlen and min(#vals[col.name], col.maxlen) or 1
+		local padded_val_len = col.len
+			or col.maxlen and min(#vals[col.name], col.maxlen)
+			or 1
 		sz = sz + padded_val_len * col.elem_size
 	end
 	return sz
@@ -360,7 +382,7 @@ function Db:max_val_size(tbl)
 	return val_cols(self, tbl).max_rec_size
 end
 
-local function encode_rec(self, cols, vals, buf, buf_sz, offset)
+local function encode_rec(self, cols, vals, buf, offset, buf_sz)
 	offset = offset or 0
 	local rec_sz = rec_size(self, cols, vals)
 	assert(buf_sz - offset >= rec_sz, 'buffer too short')
@@ -381,10 +403,12 @@ local function encode_rec(self, cols, vals, buf, buf_sz, offset)
 		col.set(set_buf, val, len)
 		offset = offset + (col.len or len) * col.elem_size
 		if i < #cols then
+			pr('-', col.name, NEXT_OFFSET, offset)
 			set_buf._offsets_[NEXT_OFFSET] = offset
 			NEXT_OFFSET = NEXT_OFFSET + 1
 		end
 	end
+	return rec_sz
 end
 
 local function encode_rec_col(self, cols, col, val, buf, offset, rec_sz)
@@ -397,33 +421,33 @@ local function encode_rec_col(self, cols, col, val, buf, offset, rec_sz)
 end
 
 function Db:encode_key(tbl, vals, buf, buf_sz, offset)
-	return encode_rec(self, key_cols(self, tbl), vals, buf, buf_sz, offset)
+	return encode_rec(self, key_cols(self, tbl), vals, buf, offset, buf_sz)
 end
 
 function Db:encode_val(tbl, vals, buf, buf_sz, offset)
-	return encode_rec(self, val_cols(self, tbl), vals, buf, buf_sz, offset)
+	return encode_rec(self, val_cols(self, tbl), vals, buf, offset, buf_sz)
 end
 
-function Db:encode_key_col(tbl, col, val, buf, offset, rec_sz)
+function Db:encode_key_col(tbl, col, val, buf, rec_sz, offset)
 	return encode_rec_col(self, key_cols(self, tbl), col, val, buf, offset, rec_sz)
 end
 
-function Db:encode_val_col(tbl, col, val, buf, offset, rec_sz)
+function Db:encode_val_col(tbl, col, val, buf, rec_sz, offset)
 	return encode_rec_col(self, val_cols(self, tbl), col, val, buf, offset, rec_sz)
 end
 
 local function rec_col_tostring(self, cols, col, buf, offset, rec_sz)
-	local buf = cast(cols.pct, buf + offset)
+	local buf = cast(cols.pct, buf + (offset or 0))
 	local col = assertf(cols[col], 'unknown column: %s', col)
 	return col.tostring(buf, rec_sz)
 end
 
 function Db:key_tostring(tbl, col, buf, rec_sz, offset)
-	return rec_col_tostring(self, key_cols(self, tbl), col, buf, rec_sz, offset)
+	return rec_col_tostring(self, key_cols(self, tbl), col, buf, offset, rec_sz)
 end
 
 function Db:val_tostring(tbl, col, buf, rec_sz, offset)
-	return rec_col_tostring(self, val_cols(self, tbl), col, buf, rec_sz, offset)
+	return rec_col_tostring(self, val_cols(self, tbl), col, buf, offset, rec_sz)
 end
 
 --test -----------------------------------------------------------------------
@@ -439,15 +463,15 @@ if not ... then
 		email = 'admin@some.com',
 		name = 'John Galt',
 	}
-	local key_sz = db:max_key_size'users'
-	local val_sz = db:max_val_size'users'
-	local buf_sz = key_sz + val_sz
+	local key_max_sz = db:max_key_size'users'
+	local val_max_sz = db:max_val_size'users'
+	local buf_sz = key_max_sz + val_max_sz
 	local buf = u8a(buf_sz)
-	db:encode_key('users', u, buf, buf_sz)
-	db:encode_val('users', u, buf, buf_sz, key_sz)
-	db:encode_val_col('users', 'name', 'Dagny Taggart', buf, 0, sz)
-	pr(db:val_tostring('users', 'email', buf, buf_sz, 0))
-	pr(db:val_tostring('users', 'name' , buf, buf_sz, key_sz))
+	local key_sz = db:encode_key('users', u, buf, buf_sz)
+	local val_sz = db:encode_val('users', u, buf, buf_sz, key_max_sz)
+	db:encode_val_col('users', 'name', 'Dagny Taggart', buf, val_sz, key_max_sz)
+	pr(db:val_tostring('users', 'email', buf, key_sz))
+	pr(db:val_tostring('users', 'name' , buf, val_sz, key_max_sz))
 	--db:decode_val('users', u, buf, sz)
 	db:close()
 

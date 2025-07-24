@@ -1,5 +1,3 @@
---go@ c:\tools\plink.exe -i c:\users\woods\.ssh\id_ed25519.ppk root@172.20.10.9 ~/sdk/bin/debian12/luajit sdk/lua/mdbx.lua
---go@ ssh -ic:\users\cosmin\.ssh\id_ed25519 root@10.0.0.8 ~/sdk/bin/linux/luajit sdk/lua/mdbx.lua
 --[[
 
 	libmdbx binding.
