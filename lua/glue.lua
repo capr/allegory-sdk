@@ -2336,6 +2336,8 @@ i32 = ctype'int32_t'
 u32 = ctype'uint32_t'
 u64 = ctype'uint64_t'
 i64 = ctype'int64_t'
+f32 = ctype'float'
+f64 = ctype'double'
 
 voidp   = ctype'void*'
 intptr  = ctype'intptr_t'
