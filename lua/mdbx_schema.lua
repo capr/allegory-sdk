@@ -28,13 +28,78 @@ local col_ct = {
 }
 
 local key_col_ct = {
-	double = 'union { uint64_t u; double d; }',
+	double   = 'uint64_t',
+	float    = 'uint32_t',
 }
 
-local col_union_ct = {
-	--double   = 'union { double d; uint64_t u; uint8_t b[8]; }'
-	--uint64_t = 'union { double d; uint64_t u; uint8_t b[8]; }'
-}
+local u = ctype'union { uint64_t u; double f; struct { int32_t s1; int32_t s2; }; }'
+local function decode_f64(u)
+	u.u = u
+	if shr(u.u, 63) ~= 0 then
+		u.u = xor(u.8, 0x8000000000000000ULL)
+	else
+		u.u = bnot(u.u)
+	end
+	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	return tonumber(u.f)
+end
+local function encode_f64(f)
+	u.f = f
+	if shr(u.u, 63) ~= 0 then
+		u.u = bnot(u.u)
+	else
+		u.u = xor(u.u, 0x8000000000000000ULL)
+	end
+	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	return u.u
+end
+
+local u = ctype'union { uint32_t u; float f; int32_t s; }'
+local function decode_f32(u)
+	uf.u = u
+	if shr(uf.u, 31) ~= 0 then
+		u.u = xor(u.u, 0x80000000)
+	else
+		u.u = bnot(u.u)
+	end
+	u.s = bswap(u.s)
+	return tonumber(u.f)
+end
+local function encode_f32(f)
+	u.f = f
+	if shr(u.u, 31) ~= 0 then
+		u.u = bnot(u.u)
+	else
+		u.u = xor(u.u, 0x80000000)
+	end
+	u.s = bswap(u.s)
+	return u.u
+end
+
+local u = ctype'union { uint64_t u; int64_t i; struct { int32_t s1; int32_t s2; } }'
+local function decode_u64(u)
+	u.u = u
+	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	return u.u
+end
+local function encode_u64(u)
+	u.u = u
+
+	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	return u.u
+end
+local function decode_i64(i)
+	u.i = i
+
+	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	return u.i
+end
+local function encode_i64(i)
+	u.i = i
+
+	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	return u.i
+end
 
 local Db = mdbx.Db
 
@@ -86,7 +151,6 @@ function Db:load_schema()
 			end
 			--typecheck the column while we're at it.
 			col.elem_ct = assertf(elem_ct, 'unknown col type %s', col.type)
-			col.elem_ct = col_union_ct[col.elem_ct] or col.elem_ct
 			col.elem_size = sizeof(col.elem_ct)
 			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
 			--index fields by name and check for duplicate names.
@@ -167,8 +231,7 @@ function Db:load_schema()
 				local col = cols[fixsize_n+1]
 				ct = ct .. '\t' .. col.elem_ct .. ' ' .. col.name .. (
 						col.maxlen and '[?]' or
-						col.len and '[' .. col.len ..']' or
-						''
+						col.len and '[' .. col.len ..']' or ''
 					) .. ';\n'
 			end
 			--all other cols are at dyn. offsets so can't be struct fields.
@@ -195,56 +258,6 @@ function Db:load_schema()
 				local elem_p_ct = ctype(elem_ct..'*')
 				local COL = col.name
 
-				--[[
-				if cols == key_cols then
-
-					elseif col.elem_ct == 'uint64_t' then
-						encode = function(v)
-							assert(false)
-							--for i = 0, 7 do
-							--	buf[i] = band(shr(v, (7 - i) * 8), 0xFF)
-							--end
-						end
-					elseif col.elem_ct == 'double' then
-						encode = function(v)
-							local u = cast(u64, v)
-							if shr(u, 63) ~= 0 then
-								u = bnot(u)
-							else
-								u = xor(u, 0x8000000000000000ULL)
-							end
-							return u
-						end
-						decode = function(u)
-							if shr(u, 63) ~= 0 then
-								u = xor(u, 0x8000000000000000ULL)
-							else
-								u = bnot(u)
-							end
-							return tonumber(cast(f64, u))
-						end
-					elseif col.elem_ct == 'float' then
-						encode = function(v)
-							local u = cast(u32, v)
-							if shr(u, 31) ~= 0 then
-								u = bnot(u)
-							else
-								u = xor(u, 0x80000000)
-							end
-							return u
-						end
-						decode = function(u)
-							if shr(u, 31) ~= 0 then
-								u = xor(u, 0x80000000)
-							else
-								u = bnot(u)
-							end
-							return tonumber(cast(f32, u))
-						end
-					end
-				end
-				]]
-
 				if i <= fixsize_n+1 then --value at fixed offset
 					if col.len or col.maxlen then --fixsize or varsize at fixed offset
 						col.geti = function(buf, i)
@@ -254,7 +267,7 @@ function Db:load_schema()
 							buf[COL][i-1] = val
 						end
 						if cols == key_cols then
-							if elem_ct == 'uint32_t' then
+							if elem_ct == 'uint32_t' or elem_ct == 'int32_t' then
 								local bswap = bswap
 								col.geti = function(buf, i)
 									return bswap(buf[COL][i-1])
@@ -262,7 +275,7 @@ function Db:load_schema()
 								col.seti = function(buf, i, val)
 									buf[COL][i-1] = bswap(val)
 								end
-							elseif elem_ct == 'uint16_t' then
+							elseif elem_ct == 'uint16_t' or elem_ct == 'int16_t' then
 								local bswap = bswap
 								col.geti = function(buf, i)
 									return bswap(shl(buf[COL][i-1], 16))
@@ -272,18 +285,25 @@ function Db:load_schema()
 								end
 							elseif elem_ct == 'double' then
 								col.geti = function(buf, i)
-									return bswap(shl(buf[COL][i-1], 16))
+									return decode_f64(buf[COL][i-1])
 								end
 								col.seti = function(buf, i, val)
-									buf[COL][i-1] = bswap(shl(val, 16))
+									buf[COL][i-1] = encode_f64(val)
 								end
-							encode = function(v)
-								local u = cast(u64, v)
-								if then
-									return shr(u, 63) ~= 0 and bnot(u) or xor(u, 0x8000000000000000ULL)
+							elseif elem_ct == 'uint64_t' then
+								col.geti = function(buf, i)
+									return decode_u64(buf[COL][i-1])
 								end
-								return u
-							end
+								col.seti = function(buf, i, val)
+									buf[COL][i-1] = encode_u64(val)
+								end
+							elseif elem_ct == 'int64_t' then
+								col.geti = function(buf, i)
+									return decode_i64(buf[COL][i-1])
+								end
+								col.seti = function(buf, i, val)
+									buf[COL][i-1] = encode_i64(val)
+								end
 							end
 						end
 						local typeof = typeof
@@ -328,7 +348,7 @@ function Db:load_schema()
 							return buf[COL]
 						end
 						if cols == key_cols then
-							if elem_ct == 'uint32_t' then
+							if elem_ct == 'uint32_t' or elem_ct == 'int32_t' then
 								local bswap = bswap
 								col.get = function(buf)
 									return bswap(buf[COL])
@@ -336,13 +356,41 @@ function Db:load_schema()
 								col.set = function(buf, val)
 									buf[COL] = bswap(val)
 								end
-							elseif elem_ct == 'uint16_t' then
+							elseif elem_ct == 'uint16_t' or elem_ct == 'int16_t' then
 								local bswap = bswap
 								col.get = function(buf)
 									return bswap(shl(buf[COL], 16))
 								end
 								col.set = function(buf, val)
 									buf[COL] = bswap(shl(16, val))
+								end
+							elseif elem_ct == 'double' then
+								col.get = function(buf, i)
+									return decode_f64(buf[COL])
+								end
+								col.set = function(buf, val)
+									buf[COL] = encode_f64(val)
+								end
+							elseif elem_ct == 'float' then
+								col.get = function(buf)
+									return decode_f32(buf[COL])
+								end
+								col.set = function(buf, val)
+									buf[COL] = encode_f32(val)
+								end
+							elseif elem_ct == 'uint64_t' then
+								col.get = function(buf)
+									return decode_u64(buf[COL])
+								end
+								col.set = function(buf, val)
+									buf[COL] = encode_u64(val)
+								end
+							elseif elem_ct == 'int64_t' then
+								col.get = function(buf)
+									return decode_i64(buf[COL])
+								end
+								col.set = function(buf, val)
+									buf[COL] = encode_i64(val)
 								end
 							end
 						end
@@ -380,6 +428,34 @@ function Db:load_schema()
 								end
 								seti = function(buf, i, val)
 									getp(buf)[i] = bswap(shl(val, 16))
+								end
+							elseif elem_ct == 'double' then
+								col.geti = function(buf, i)
+									return decode_f64(getp(buf)[i])
+								end
+								col.seti = function(buf, i, val)
+									getp(buf)[i] = encode_f64(val)
+								end
+							elseif elem_ct == 'float' then
+								col.geti = function(buf, i)
+									return decode_f32(getp(buf)[i])
+								end
+								col.seti = function(buf, i, val)
+									getp(buf)[i] = encode_f32(val)
+								end
+							elseif elem_ct == 'uint64_t' then
+								col.geti = function(buf, i)
+									return decode_u64(getp(buf)[i])
+								end
+								col.seti = function(buf, i, val)
+									getp(buf)[i] = encode_u64(val)
+								end
+							elseif elem_ct == 'int64_t' then
+								col.geti = function(buf, i)
+									return decode_i64(getp(buf)[i])
+								end
+								col.seti = function(buf, i, val)
+									getp(buf)[i] = encode_i64(val)
 								end
 							end
 						end
