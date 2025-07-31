@@ -390,6 +390,9 @@ local function logarg(v)
 		local s = pp(v, pp_opt)
 		return #s < 50 and pp(v, pp_opt_compact) or s
 	elseif type(v) ~= 'string' then
+		if isctype(v, i64) or isctype(v, u64) then
+			return tostring(v)
+		end
 		return debug_id(v)
 	end
 	if v:find'[%z\1-\8\11\12\14-\31\127-\255]' then --binary, make it hexblock
