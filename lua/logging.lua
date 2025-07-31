@@ -390,7 +390,7 @@ local function logarg(v)
 		local s = pp(v, pp_opt)
 		return #s < 50 and pp(v, pp_opt_compact) or s
 	elseif type(v) ~= 'string' then
-		if isctype(v, i64) or isctype(v, u64) then
+		if type(v) == 'cdata' and (isctype(v, i64) or isctype(v, u64)) then
 			return tostring(v)
 		end
 		return debug_id(v)

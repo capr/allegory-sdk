@@ -32,19 +32,19 @@ local key_col_ct = {
 	float    = 'uint32_t',
 }
 
-local u = ctype'union { uint64_t u; double f; struct { int32_t s1; int32_t s2; }; }'
-local function decode_f64(u)
-	u.u = u
+local u = new'union { uint64_t u; double f; struct { int32_t s1; int32_t s2; }; }'
+local function decode_f64(v)
+	u.u = v
 	if shr(u.u, 63) ~= 0 then
-		u.u = xor(u.8, 0x8000000000000000ULL)
+		u.u = xor(u.u, 0x8000000000000000ULL)
 	else
 		u.u = bnot(u.u)
 	end
 	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
 	return tonumber(u.f)
 end
-local function encode_f64(f)
-	u.f = f
+local function encode_f64(v)
+	u.f = v
 	if shr(u.u, 63) ~= 0 then
 		u.u = bnot(u.u)
 	else
@@ -54,9 +54,9 @@ local function encode_f64(f)
 	return u.u
 end
 
-local u = ctype'union { uint32_t u; float f; int32_t s; }'
-local function decode_f32(u)
-	uf.u = u
+local u = new'union { uint32_t u; float f; int32_t s; }'
+local function decode_f32(v)
+	u.u = v
 	if shr(uf.u, 31) ~= 0 then
 		u.u = xor(u.u, 0x80000000)
 	else
@@ -65,8 +65,8 @@ local function decode_f32(u)
 	u.s = bswap(u.s)
 	return tonumber(u.f)
 end
-local function encode_f32(f)
-	u.f = f
+local function encode_f32(v)
+	u.f = v
 	if shr(u.u, 31) ~= 0 then
 		u.u = bnot(u.u)
 	else
@@ -76,47 +76,46 @@ local function encode_f32(f)
 	return u.u
 end
 
-local u = ctype'union { uint64_t u; int64_t i; struct { int32_t s1; int32_t s2; } }'
-local function decode_u64(u)
-	u.u = u
+local u = new'union { uint64_t u; int64_t i; struct { int32_t s1; int32_t s2; }; }'
+local function decode_u64(v)
+	u.u = v
 	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
 	return u.u
 end
-local function encode_u64(u)
-	u.u = u
-
+local encode_u64 = decode_u64
+local function decode_i64(v)
+	u.i = v
 	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
-	return u.u
-end
-local function decode_i64(i)
-	u.i = i
-
-	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	u.u = xor(u.u, 0x8000000000000000ULL)
 	return u.i
 end
-local function encode_i64(i)
-	u.i = i
-
+local function encode_i64(v)
+	u.i = v
+	u.u = xor(u.u, 0x8000000000000000ULL)
 	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
 	return u.i
 end
 
 local Db = mdbx.Db
 
-function Db:load_schema()
+function Db:load_schema(schema)
 
-	local schema_file = self.dir..'/schema.lua'
-	if not self.readonly then
-		mkdir(self.dir)
-		if not exists(schema_file) then
-			save(schema_file, 'return {}')
+	if schema then
+		self.schema = schema
+	else
+		local schema_file = self.dir..'/schema.lua'
+		if not self.readonly then
+			mkdir(self.dir)
+			if not exists(schema_file) then
+				save(schema_file, 'return {}')
+			end
 		end
+		self.schema = eval_file(schema_file)
 	end
-	self.schema = eval_file(schema_file)
 
 	self:open_tables(self.schema.tables)
 
-	--compute column layout and encoding parameters based on schema.
+	--compute field layout and encoding parameters based on schema.
 	--NOTE: changing this algorithm or making it non-deterministic in any way
 	--will trash your existing databses, so better version it or something!
 	for table_name, table_schema in pairs(self.schema.tables or {}) do
@@ -149,12 +148,12 @@ function Db:load_schema()
 				val_cols[col.name] = col
 				col.index = #val_cols
 			end
-			--typecheck the column while we're at it.
+			--typecheck the field while we're at it.
 			col.elem_ct = assertf(elem_ct, 'unknown col type %s', col.type)
 			col.elem_size = sizeof(col.elem_ct)
 			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
 			--index fields by name and check for duplicate names.
-			assertf(not table_schema.fields[col.name], 'duplicate column name: %s', col.name)
+			assertf(not table_schema.fields[col.name], 'duplicate field name: %s', col.name)
 			table_schema.fields[col.name] = col
 		end
 		assert(#key_cols < 2^16)
@@ -501,7 +500,7 @@ function Db:load_schema()
 					end
 				end
 
-				if col.resize == true then --varsize column with columns following it.
+				if col.resize == true then --varsize field with fields following it.
 					local pct = cols.pct
 					local OFFSET = dot_index
 					col.resize = function(buf, offset, rec_sz, len)
@@ -598,7 +597,7 @@ local function encode_rec(self, cols, vals, buf, offset, buf_sz)
 		col.set(set_buf, val, len)
 		offset = offset + (col.len or len) * col.elem_size
 		if i < #cols then
-			pr('-', col.name, NEXT_OFFSET, offset)
+			pr('setofs', col.name, NEXT_OFFSET, offset)
 			set_buf._offsets_[NEXT_OFFSET] = offset
 			NEXT_OFFSET = NEXT_OFFSET + 1
 		end
@@ -607,7 +606,7 @@ local function encode_rec(self, cols, vals, buf, offset, buf_sz)
 end
 
 local function encode_rec_col(self, cols, col, val, buf, offset, rec_sz)
-	local col = assertf(cols[col], 'unknown column: %s', col)
+	local col = assertf(cols[col], 'unknown field: %s', col)
 	local val_len = val_len(col, val)
 	rec_sz = col.resize(buf, offset, rec_sz, val_len) or rec_sz
 	local set_buf = cast(cols.pct, buf + offset)
@@ -633,8 +632,14 @@ end
 
 local function rec_col_tostring(self, cols, col, buf, offset, rec_sz)
 	local buf = cast(cols.pct, buf + (offset or 0))
-	local col = assertf(cols[col], 'unknown column: %s', col)
+	local col = assertf(cols[col], 'unknown field: %s', col)
 	return col.tostring(buf, rec_sz)
+end
+
+local function rec_col_decode(self, cols, col, buf, offset, rec_sz)
+	local buf = cast(cols.pct, buf + (offset or 0))
+	local col = assertf(cols[col], 'unknown field: %s', col)
+	return col.decode(buf, rec_sz)
 end
 
 function Db:key_tostring(tbl, col, buf, rec_sz, offset)
@@ -645,10 +650,43 @@ function Db:val_tostring(tbl, col, buf, rec_sz, offset)
 	return rec_col_tostring(self, val_cols(self, tbl), col, buf, offset, rec_sz)
 end
 
+function Db:decode_key(tbl, col, buf, rec_sz, offset)
+	return rec_col_decode(self, val_cols(self, tbl), col, buf, offset, rec_sz)
+end
+
+function Db:decode_val(tbl, col, buf, rec_sz, offset)
+	return rec_col_decode(self, val_cols(self, tbl), col, buf, offset, rec_sz)
+end
+
 --test -----------------------------------------------------------------------
 
 if not ... then
 
+	rm'mdbx_schema_test/mdbx.dat'
+	rm'mdbx_schema_test/mdbx.lck'
+	local db = mdbx.open('mdbx_schema_test')
+	local schema = {tables = {}}
+	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
+	for t in words(types) do
+		schema.tables[t] = {fields = {{name = 'id', type = t}}, pk = 'id'}
+	end
+	db:load_schema(schema)
+	for t in words(types) do
+		local key_max_sz = db:max_key_size(t)
+		local val_max_sz = db:max_val_size(t)
+		local buf_sz = key_max_sz + val_max_sz
+		local buf = u8a(buf_sz)
+		for i = -5, 5 do
+			local r = {id = i}
+			local key_sz = db:encode_key(t, r, buf, buf_sz)
+			local val_sz = db:encode_val(t, r, buf, buf_sz, key_max_sz)
+			db:
+			--db:get_key(t, )
+		end
+	end
+	db:close()
+
+	--[[
 	local db = mdbx.open('mdbx_schema_test')
 	db:load_schema()
 	local u = {
@@ -665,9 +703,10 @@ if not ... then
 	local key_sz = db:encode_key('users', u, buf, buf_sz)
 	local val_sz = db:encode_val('users', u, buf, buf_sz, key_max_sz)
 	db:encode_val_col('users', 'name', 'Dagny Taggart', buf, val_sz, key_max_sz)
-	pr(db:val_tostring('users', 'email', buf, key_sz))
+	pr(db:val_tostring('users', 'email', buf, val_sz, key_max_sz))
 	pr(db:val_tostring('users', 'name' , buf, val_sz, key_max_sz))
 	--db:decode_val('users', u, buf, sz)
 	db:close()
+	]]
 
 end
