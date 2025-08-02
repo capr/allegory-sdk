@@ -203,6 +203,7 @@ BITS
 	band                         = bit.band
 	bor                          = bit.bor
 	xor                          = bit.bxor
+	bxor                         = bit.bxor
 	getbit(x, mask) -> bit         get the value of a single bit from x
 	setbit(x, mask, bits) -> x     set the value of a single bit on x
 	setbits(x, mask, bits) -> x    set the value of multiple bits over x
@@ -2199,6 +2200,7 @@ shr  = bit.rshift
 band = bit.band
 bor  = bit.bor
 xor  = bit.bxor
+bxor = bit.bxor
 bswap = bit.bswap
 
 local

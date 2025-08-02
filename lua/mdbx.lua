@@ -23,8 +23,8 @@ typedef int pid_t;
 typedef unsigned long int real_pthread_t;
 typedef struct { real_pthread_t _; } pthread_t;
 struct MDBX_val { /* iovec with renamed fields */
-	void   *data;
-	size_t  size;
+	uint8_t* data;
+	size_t   size;
 };
 
 typedef int mdbx_filehandle_t;

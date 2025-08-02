@@ -1,14 +1,10 @@
---TODO: big-endian ints.
---TODO: signed ints.
---TODO: floats & doubles.
 --TODO: descending keys.
---TODO: .
 
 require'mdbx'
 
-local cast = cast
-local copy = copy
-local u8p = u8p
+local
+	typeof, tonumber, shl, shr, xor, bnot, bswap, u8p, copy, cast =
+	typeof, tonumber, shl, shr, xor, bnot, bswap, u8p, copy, cast
 
 local col_ct = {
 	double = 'double',
@@ -57,7 +53,7 @@ end
 local u = new'union { uint32_t u; float f; int32_t s; }'
 local function decode_f32(v)
 	u.u = v
-	if shr(uf.u, 31) ~= 0 then
+	if shr(u.u, 31) ~= 0 then
 		u.u = xor(u.u, 0x80000000)
 	else
 		u.u = bnot(u.u)
@@ -120,9 +116,14 @@ function Db:load_schema(schema)
 	--will trash your existing databses, so better version it or something!
 	for table_name, table_schema in pairs(self.schema.tables or {}) do
 
+		--index fields by name and check for duplicate names.
+		for i,col in ipairs(table_schema.fields) do
+			assertf(not table_schema.fields[col.name], 'duplicate field name: %s', col.name)
+			table_schema.fields[col.name] = col
+		end
+
 		--split cols into key cols and val cols based on pk.
-		local pk_cols = {}
-		local pk_order = {}
+		local i = 1
 		for s in words(table_schema.pk) do
 			local pk, order = s:match'^(.-):(.*)'
 			if not pk then
@@ -131,17 +132,19 @@ function Db:load_schema(schema)
 				assert(order == 'desc' or order == 'asc')
 				assert(#pk > 0)
 			end
-			add(pk_cols, pk)
-			add(pk_order, order)
+			local col = assertf(table_schema.fields[pk], 'pk field not found: %s', pk)
+			col.order = order
+			col.index = i
+			i = i + 1
 		end
+
 		local key_cols = {}
 		local val_cols = {}
-		for i,col in ipairs(table_schema.fields) do
+		for _,col in ipairs(table_schema.fields) do
 			local elem_ct = col_ct[col.type]
-			if indexof(col.name, pk_cols) then
-				add(key_cols, col)
+			if col.index then --part of pk
+				key_cols[col.index] = col
 				key_cols[col.name] = col
-				col.index = #key_cols
 				elem_ct = key_col_ct[col.name] or elem_ct
 			else
 				add(val_cols, col)
@@ -152,29 +155,25 @@ function Db:load_schema(schema)
 			col.elem_ct = assertf(elem_ct, 'unknown col type %s', col.type)
 			col.elem_size = sizeof(col.elem_ct)
 			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
-			--index fields by name and check for duplicate names.
-			assertf(not table_schema.fields[col.name], 'duplicate field name: %s', col.name)
-			table_schema.fields[col.name] = col
 		end
+
 		assert(#key_cols < 2^16)
 		assert(#val_cols < 2^16)
+
+		--move varsize cols at the end to minimize the size of the dyn offset table.
+		--order cols by elem_size to maintain alignment.
+		sort(val_cols, function(col1, col2)
+			--elem_size fits in 4bit; col_index fits in 16bit; 4+16 = 20 bits,
+			--so any bit from bit 21+ can be used for extra conditions.
+			local i1 = (col1.maxlen and 2^22 or 0) + (2^4-1 - col1.elem_size) * 2^16 + col1.index
+			local i2 = (col2.maxlen and 2^22 or 0) + (2^4-1 - col2.elem_size) * 2^16 + col2.index
+			return i1 < i2
+		end)
 
 		table_schema.key_cols = key_cols
 		table_schema.val_cols = val_cols
 
 		for _,cols in ipairs{key_cols, val_cols} do
-
-			if cols == val_cols then --we can layout val_cols freely.
-				--move varsize cols at the end to minimize the size of the dyn offset table.
-				--order cols by elem_size to maintain alignment.
-				sort(cols, function(col1, col2)
-					--elem_size fits in 4bit; col_index fits in 16bit; 4+16 = 20 bits,
-					--so any bit from bit 21+ can be used for extra conditions.
-					local i1 = (col1.maxlen and 2^22 or 0) + (2^4-1 - col1.elem_size) * 2^16 + col1.index
-					local i2 = (col2.maxlen and 2^22 or 0) + (2^4-1 - col2.elem_size) * 2^16 + col2.index
-					return i1 < i2
-				end)
-			end
 
 			--compute dynamic offset table (d.o.t.) length.
 			--all cols after the first varsize col need a dyn offset.
@@ -235,7 +234,7 @@ function Db:load_schema(schema)
 			end
 			--all other cols are at dyn. offsets so can't be struct fields.
 			ct = ct .. '}'
-			pr(ct)
+			--pr(ct)
 			ct = ctype(ct)
 			cols.ct = ct
 			cols.pct = ctype('$*', ct)
@@ -244,268 +243,241 @@ function Db:load_schema(schema)
 			local dot_index = -1
 			local function pass1(v) return v end
 			for i,col in ipairs(cols) do
-				if col.len then
-					local len = col.len
-					local elem_size = col.elem_size
-					col.size = function()
-						return len * elem_size
-					end
-					col.resize = noop
-				end
+
 				local elem_size = col.elem_size
 				local elem_ct = col.elem_ct
 				local elem_p_ct = ctype(elem_ct..'*')
 				local COL = col.name
 
+				local geti, seti, getp, getsize, getlen, resize
+
+				local isarray = col.len or col.maxlen
+
 				if i <= fixsize_n+1 then --value at fixed offset
-					if col.len or col.maxlen then --fixsize or varsize at fixed offset
-						col.geti = function(buf, i)
-							return buf[COL][i-1]
+					if isarray then --fixsize or varsize at fixed offset
+						function geti(buf, i)
+							return buf[COL][i]
 						end
-						col.seti = function(buf, i, val)
-							buf[COL][i-1] = val
+						function seti(buf, i, val)
+							buf[COL][i] = val
 						end
-						if cols == key_cols then
-							if elem_ct == 'uint32_t' or elem_ct == 'int32_t' then
-								local bswap = bswap
-								col.geti = function(buf, i)
-									return bswap(buf[COL][i-1])
-								end
-								col.seti = function(buf, i, val)
-									buf[COL][i-1] = bswap(val)
-								end
-							elseif elem_ct == 'uint16_t' or elem_ct == 'int16_t' then
-								local bswap = bswap
-								col.geti = function(buf, i)
-									return bswap(shl(buf[COL][i-1], 16))
-								end
-								col.seti = function(buf, i, val)
-									buf[COL][i-1] = bswap(shl(val, 16))
-								end
-							elseif elem_ct == 'double' then
-								col.geti = function(buf, i)
-									return decode_f64(buf[COL][i-1])
-								end
-								col.seti = function(buf, i, val)
-									buf[COL][i-1] = encode_f64(val)
-								end
-							elseif elem_ct == 'uint64_t' then
-								col.geti = function(buf, i)
-									return decode_u64(buf[COL][i-1])
-								end
-								col.seti = function(buf, i, val)
-									buf[COL][i-1] = encode_u64(val)
-								end
-							elseif elem_ct == 'int64_t' then
-								col.geti = function(buf, i)
-									return decode_i64(buf[COL][i-1])
-								end
-								col.seti = function(buf, i, val)
-									buf[COL][i-1] = encode_i64(val)
-								end
-							end
-						end
-						local typeof = typeof
-						local seti = col.seti
-						col.set = function(buf, val, len)
-							local tval = typeof(val)
-							if tval == 'string' or tval == 'cdata' then
-								copy(buf[COL], val, len * elem_size)
-							elseif tval == 'table' then
-								for i = 1, len do
-									seti(buf, i, val[i])
-								end
-							else
-								assertf(false, 'invalid val type %s', tval)
-							end
-						end
-						col.tostring = function(buf, rec_sz)
-							local sz = col.size(buf, rec_sz)
-							return str(buf[COL], sz)
+						function getp(buf)
+							return cast(elem_p_ct, buf[COL])
 						end
 						if col.maxlen then --varsize at fixed offset (first col after d.o.t.)
 							local col_offset = offsetof(cols.ct, COL)
 							if dot_len == 0 then --last col, no d.o.t.
-								col.size = function(buf, rec_sz)
+								function getsize(buf, rec_sz)
 									local next_offset = rec_sz
 									return next_offset - col_offset
 								end
-								col.resize = noop
+								resize = noop
 							else --d.o.t. follows
-								col.size = function(buf, rec_sz)
+								function getsize(buf, rec_sz)
 									local next_offset = buf._offsets_[0]
 									return next_offset - col_offset
 								end
-								col.resize = true
+								resize = true
 							end
 						end
 					else --single value at fixed offset
-						col.set = function(buf, val)
-							buf[COL] = val
-						end
-						col.get = function(buf)
+						function geti(buf)
 							return buf[COL]
 						end
-						if cols == key_cols then
-							if elem_ct == 'uint32_t' or elem_ct == 'int32_t' then
-								local bswap = bswap
-								col.get = function(buf)
-									return bswap(buf[COL])
-								end
-								col.set = function(buf, val)
-									buf[COL] = bswap(val)
-								end
-							elseif elem_ct == 'uint16_t' or elem_ct == 'int16_t' then
-								local bswap = bswap
-								col.get = function(buf)
-									return bswap(shl(buf[COL], 16))
-								end
-								col.set = function(buf, val)
-									buf[COL] = bswap(shl(16, val))
-								end
-							elseif elem_ct == 'double' then
-								col.get = function(buf, i)
-									return decode_f64(buf[COL])
-								end
-								col.set = function(buf, val)
-									buf[COL] = encode_f64(val)
-								end
-							elseif elem_ct == 'float' then
-								col.get = function(buf)
-									return decode_f32(buf[COL])
-								end
-								col.set = function(buf, val)
-									buf[COL] = encode_f32(val)
-								end
-							elseif elem_ct == 'uint64_t' then
-								col.get = function(buf)
-									return decode_u64(buf[COL])
-								end
-								col.set = function(buf, val)
-									buf[COL] = encode_u64(val)
-								end
-							elseif elem_ct == 'int64_t' then
-								col.get = function(buf)
-									return decode_i64(buf[COL])
-								end
-								col.set = function(buf, val)
-									buf[COL] = encode_i64(val)
-								end
-							end
+						function seti(buf, i, val)
+							buf[COL] = val
+						end
+						local offset = offsetof(ct, COL)
+						function getp(buf)
+							return cast(elem_p_ct, cast(u8p, buf) + offset)
 						end
 					end
 				else --value at dynamic offset
 					dot_index = dot_index + 1
 					local OFFSET = dot_index
-					local getp = function(buf)
+					function getp(buf)
 						local offset = buf._offsets_[OFFSET]
 						return cast(elem_p_ct, cast(u8p, buf) + offset)
 					end
-					local geti = function(buf, i)
-						return getp(buf)[i-1]
+					function geti(buf, i)
+						return getp(buf)[i]
 					end
-					local seti = function(buf, i, val)
-						getp(buf)[i-1] = val
+					function seti(buf, i, val)
+						getp(buf)[i] = val
 					end
-					col.tostring = function(buf, rec_sz)
-						local sz = col.size(buf, rec_sz)
-						local offset = buf._offsets_[OFFSET]
-						return str(cast(u8p, buf) + offset, sz)
-					end
-					if col.len or col.maxlen then --fixsize or varsize at dyn offset
-						if cols == key_cols then
-							if elem_ct == 'uint32_t' then
-								geti = function(buf, i)
-									return bswap(getp(buf)[i])
-								end
-								seti = function(buf, i, val)
-									getp(buf)[i] = bswap(val)
-								end
-							elseif elem_ct == 'uint16_t' then
-								geti = function(buf, i)
-									return bswap(shl(getp(buf)[i], 16))
-								end
-								seti = function(buf, i, val)
-									getp(buf)[i] = bswap(shl(val, 16))
-								end
-							elseif elem_ct == 'double' then
-								col.geti = function(buf, i)
-									return decode_f64(getp(buf)[i])
-								end
-								col.seti = function(buf, i, val)
-									getp(buf)[i] = encode_f64(val)
-								end
-							elseif elem_ct == 'float' then
-								col.geti = function(buf, i)
-									return decode_f32(getp(buf)[i])
-								end
-								col.seti = function(buf, i, val)
-									getp(buf)[i] = encode_f32(val)
-								end
-							elseif elem_ct == 'uint64_t' then
-								col.geti = function(buf, i)
-									return decode_u64(getp(buf)[i])
-								end
-								col.seti = function(buf, i, val)
-									getp(buf)[i] = encode_u64(val)
-								end
-							elseif elem_ct == 'int64_t' then
-								col.geti = function(buf, i)
-									return decode_i64(getp(buf)[i])
-								end
-								col.seti = function(buf, i, val)
-									getp(buf)[i] = encode_i64(val)
-								end
-							end
-						end
-						local typeof = typeof
-						col.geti = geti
-						col.seti = seti
-						col.set = function(buf, val, len)
-							local tval = typeof(val)
-							local offset = buf._offsets_[OFFSET]
-							local seti = col.seti
-							if tval == 'string' or tval == 'cdata' then
-								copy(cast(u8p, buf) + offset, val, len * elem_size)
-							elseif tval == 'table' then
-								for i = 1, len do
-									seti(buf, i, val[i])
-								end
-							else
-								assertf(false, 'invalid val type %s', tval)
-							end
-						end
+					if isarray then --fixsize or varsize at dyn offset
 						if col.maxlen then --varsize at dyn offset
 							if OFFSET == dot_len-1 then --last col, sz based on rec_sz
-								col.size = function(buf, rec_sz)
+								function getsize(buf, rec_sz)
 									local next_offset = rec_sz
 									return next_offset - buf._offsets_[OFFSET]
 								end
-								col.resize = noop
+								resize = noop
 							else
-								col.size = function(buf, rec_sz)
+								function getsize(buf, rec_sz)
 									local next_offset = buf._offsets_[OFFSET+1]
 									return next_offset - buf._offsets_[OFFSET]
 								end
-								col.resize = true
+								resize = true
 							end
 						end
 					else --single value at dyn offset
-						col.get = function(buf)
-							return geti(buf, 1)
+						--nothing to do.
+					end
+				end
+
+				if cols == key_cols then
+					local rawgeti = geti
+					local rawseti = seti
+					if elem_ct == 'uint32_t' or elem_ct == 'int32_t' then
+						function geti(buf, i)
+							return bswap(rawgeti(buf, i))
 						end
-						col.set = function(buf, val)
-							seti(buf, 1, val)
+						function seti(buf, i, val)
+							rawseti(buf, i, bswap(val))
+						end
+					elseif elem_ct == 'uint16_t' then
+						function geti(buf, i)
+							return bswap(shl(rawgeti(buf, i), 16))
+						end
+						function seti(buf, i, val)
+							rawseti(buf, i, bswap(shl(val, 16)))
+						end
+					elseif elem_ct == 'int8_t' then
+						function geti(buf, i)
+							return band(tonumber(rawgeti(buf, i)), 0xff) - 0x80 --flip sign
+						end
+						function seti(buf, i, val)
+							rawseti(buf, i, xor(band(val, 0xff), 0x80)) --flip sign
+						end
+					elseif elem_ct == 'int16_t' then
+						function geti(buf, i)
+							local x = bswap(shl(tonumber(rawgeti(buf, i)), 16)) --swap lo/hi
+							local y = x - 0x8000 --flip sign
+							return y
+						end
+						function seti(buf, i, val)
+							local x = xor(band(val, 0xffff), 0x8000) --flip sign
+							local y = bswap(shl(x, 16)) --swap lo/hi
+							rawseti(buf, i, y)
+						end
+					elseif elem_ct == 'int32_t' then
+						function geti(buf, i)
+							local x = bswap(tonumber(rawgeti(buf, i))) --swap bytes
+							local y = x - 0x80000000 --flip sign
+							return y
+						end
+						function seti(buf, i, val)
+							local x = xor(band(val, 0xffffffff), 0x80000000) --flip sign
+							local x = bswap(x) --swap bytes
+							rawseti(buf, i, x)
+						end
+					elseif elem_ct == 'double' then
+						function geti(buf, i)
+							return decode_f64(rawgeti(buf, i))
+						end
+						function seti(buf, i, val)
+							rawseti(buf, i, encode_f64(val))
+						end
+					elseif elem_ct == 'float' then
+						function geti(buf, i)
+							return decode_f32(rawgeti(buf, i))
+						end
+						function seti(buf, i, val)
+							rawseti(buf, i, encode_f32(val))
+						end
+					elseif elem_ct == 'uint64_t' then
+						function geti(buf, i)
+							return decode_u64(rawgeti(buf, i))
+						end
+						function seti(buf, i, val)
+							rawseti(buf, i, encode_u64(val))
+						end
+					elseif elem_ct == 'int64_t' then
+						function geti(buf, i)
+							return decode_i64(rawgeti(buf, i))
+						end
+						function seti(buf, i, val)
+							rawseti(buf, i, encode_i64(val))
 						end
 					end
 				end
 
-				if col.resize == true then --varsize field with fields following it.
+				if col.len then
+					local len = col.len
+					function getlen()
+						return len
+					end
+					assert(not getsize)
+					function getsize()
+						return len * elem_size
+					end
+					resize = noop
+				else
+					local elem_size_bits = ln(elem_size) / ln(2)
+					if elem_size_bits == floor(elem_size_bits) then --power-of-two
+						function getlen(buf, rec_sz)
+							return shr(getsize(buf, rec_sz), elem_size_bits)
+						end
+					else
+						function getlen(buf, rec_sz)
+							return getsize(buf, rec_sz) / elem_size
+						end
+					end
+				end
+
+				local rawgeti = geti
+				local rawseti = seti
+
+				function geti(buf, rec_sz, i)
+					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
+					return rawgeti(buf, i)
+				end
+				function seti(buf, rec_sz, i, val)
+					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
+					rawseti(buf, i, val)
+				end
+
+				local maxsize = (col.len or col.maxlen or 1) * elem_size
+				function col.rawset(buf, rec_sz, val, sz)
+					sz = min(maxsize, sz or #val) --truncate
+					copy(getp(buf), val, sz)
+				end
+
+				function col.rawget(buf, rec_sz)
+					local sz = getsize(buf, rec_sz)
+					return cast(voidp, getp(buf)), sz
+				end
+
+				if isarray then
+					local maxlen = col.len or col.maxlen
+					function set(buf, rec_sz, val, len)
+						assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
+						len = min(maxlen, len or #val) --truncate
+						for i = 1, len do
+							rawseti(buf, val[i], i-1)
+						end
+					end
+				else
+					function get(buf, rec_sz)
+						return rawgeti(buf, 0)
+					end
+					function set(buf, rec_sz, val)
+						rawseti(buf, 0, val)
+					end
+				end
+
+				function col.rawstr(buf, rec_sz)
+					local sz = getsize(buf, rec_sz)
+					return str(getp(buf), sz)
+				end
+
+				if resize == true then --varsize field with fields following it.
 					local pct = cols.pct
 					local OFFSET = dot_index
-					col.resize = function(buf, offset, rec_sz, len)
+					function resize(buf, offset, rec_sz, len)
 						local set_buf = cast(pct, buf + offset)
-						local sz0 = col.size(set_buf, rec_sz)
+						local sz0 = getsize(set_buf, rec_sz)
 						local shift_sz = len * elem_size - sz0
 						local next_offset = set_buf._offsets_[OFFSET+1]
 						if shift_sz > 0 then --grow: shift right
@@ -525,6 +497,15 @@ function Db:load_schema(schema)
 						return rec_sz + shift_sz
 					end
 				end
+
+				col.geti = geti
+				col.seti = seti
+				col.get = get
+				col.set = set
+				col.getsize = getsize
+				col.getlen = getlen
+				col.getp = getp
+				col.resize = resize
 
 			end --for col in cols
 
@@ -586,7 +567,7 @@ local function encode_rec(self, cols, vals, buf, offset, buf_sz)
 		local col = cols[i]
 		local val = vals[col.name]
 		local len = val_len(col, val)
-		col.set(set_buf, val, len)
+		col.set(set_buf, rec_sz, val, len)
 	end
 	local offset = sizeof(cols.ct, 0)
 	local NEXT_OFFSET = 0
@@ -594,10 +575,9 @@ local function encode_rec(self, cols, vals, buf, offset, buf_sz)
 		local col = cols[i]
 		local val = vals[col.name]
 		local len = val_len(col, val)
-		col.set(set_buf, val, len)
+		col.set(set_buf, rec_sz, val, len)
 		offset = offset + (col.len or len) * col.elem_size
 		if i < #cols then
-			pr('setofs', col.name, NEXT_OFFSET, offset)
 			set_buf._offsets_[NEXT_OFFSET] = offset
 			NEXT_OFFSET = NEXT_OFFSET + 1
 		end
@@ -610,7 +590,7 @@ local function encode_rec_col(self, cols, col, val, buf, offset, rec_sz)
 	local val_len = val_len(col, val)
 	rec_sz = col.resize(buf, offset, rec_sz, val_len) or rec_sz
 	local set_buf = cast(cols.pct, buf + offset)
-	col.set(set_buf, val, val_len)
+	col.set(set_buf, rec_sz, val, val_len)
 	return rec_sz
 end
 
@@ -637,9 +617,9 @@ local function rec_col_tostring(self, cols, col, buf, offset, rec_sz)
 end
 
 local function rec_col_decode(self, cols, col, buf, offset, rec_sz)
-	local buf = cast(cols.pct, buf + (offset or 0))
+	local buf = cast(cols.pct, offset and buf + offset or buf)
 	local col = assertf(cols[col], 'unknown field: %s', col)
-	return col.decode(buf, rec_sz)
+	return col.get(buf, rec_sz)
 end
 
 function Db:key_tostring(tbl, col, buf, rec_sz, offset)
@@ -651,7 +631,7 @@ function Db:val_tostring(tbl, col, buf, rec_sz, offset)
 end
 
 function Db:decode_key(tbl, col, buf, rec_sz, offset)
-	return rec_col_decode(self, val_cols(self, tbl), col, buf, offset, rec_sz)
+	return rec_col_decode(self, key_cols(self, tbl), col, buf, offset, rec_sz)
 end
 
 function Db:decode_val(tbl, col, buf, rec_sz, offset)
@@ -666,23 +646,39 @@ if not ... then
 	rm'mdbx_schema_test/mdbx.lck'
 	local db = mdbx.open('mdbx_schema_test')
 	local schema = {tables = {}}
-	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
+	local types = 'i32' -- 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
 	for t in words(types) do
 		schema.tables[t] = {fields = {{name = 'id', type = t}}, pk = 'id'}
 	end
 	db:load_schema(schema)
-	for t in words(types) do
-		local key_max_sz = db:max_key_size(t)
-		local val_max_sz = db:max_val_size(t)
+	for typ in words(types) do
+		local key_max_sz = db:max_key_size(typ)
+		local val_max_sz = db:max_val_size(typ)
 		local buf_sz = key_max_sz + val_max_sz
 		local buf = u8a(buf_sz)
-		for i = -5, 5 do
+		local tx = db:tx'w'
+		local bits = tonumber(typ:sub(2))
+		local ntyp = typ:sub(1,1)
+		local nums =
+			ntyp == 'u' and {0,1,2,2^bits-1} or
+			ntyp == 'i' and {-2^(bits-1),-(2^(bits-1)-1),-2,-1,0,1,2,2^(bits-1)-2,2^(bits-1)-1} or
+			ntyp == 'f' and {-2^52,-2,-1,-0.1,-0,0,0.1,1,2^52}
+		assert(nums)
+		for _,i in ipairs(nums) do
 			local r = {id = i}
-			local key_sz = db:encode_key(t, r, buf, buf_sz)
-			local val_sz = db:encode_val(t, r, buf, buf_sz, key_max_sz)
-			db:
-			--db:get_key(t, )
+			local key_sz = db:encode_key(typ, r, buf, buf_sz)
+			local val_sz = db:encode_val(typ, r, buf, buf_sz, key_max_sz)
+			tx:put(typ, buf, key_sz, buf + key_max_sz, val_sz)
 		end
+		tx:commit()
+		tx = db:tx'r'
+		for k,v in tx:each(typ) do
+			local id = db:decode_key(typ, 'id', k.data, k.size)
+			--local k = str(k.data, k.size)
+			--local v = str(v.data, v.size)
+			pr(typ, id)
+		end
+		tx:commit()
 	end
 	db:close()
 
