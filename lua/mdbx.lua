@@ -806,9 +806,7 @@ function Db:open_tables(tables)
 	local tx = self:tx'w'
 	local iter = isstr(tables) and words or pairs
 	for table_name in iter(tables) do
-		check(C.mdbx_dbi_open(tx.txn[0], table_name, C.MDBX_CREATE, dbi))
-		local dbi = dbi[0]
-		self.dbis[table_name] = dbi
+		tx:open_table(table_name, true)
 	end
 	tx:commit()
 end
@@ -888,6 +886,13 @@ function Tx:abort()
 	end
 end
 
+function Tx:open_table(table_name, create)
+	local dbi = new'MDBX_dbi[1]'
+	check(C.mdbx_dbi_open(self.txn[0], table_name, create and C.MDBX_CREATE or 0, dbi))
+	local dbi = dbi[0]
+	self.db.dbis[table_name] = dbi
+end
+
 do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
@@ -905,9 +910,9 @@ do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
 function Tx:put(tab, key_data, key_size, val_data, val_size, flags)
-	key.data = key_data
+	key.data = cast('char*', key_data)
 	key.size = key_size
-	val.data = val_data
+	val.data = cast('char*', val_data)
 	val.size = val_size
 	self:put_kv(tab, key, val, flags)
 end

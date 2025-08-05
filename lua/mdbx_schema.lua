@@ -36,23 +36,27 @@ local col_ct = {
 }
 
 local key_col_ct = {
-	double   = 'uint64_t',
-	float    = 'uint32_t',
-	i8       = 'uint8_t',
+	f64 = 'uint64_t',
+	f32 = 'uint32_t',
+	i8  = 'uint8_t',
 }
 
 local u = new'union { uint64_t u; double f; struct { int32_t s1; int32_t s2; }; }'
-local function decode_f64(v)
+local function decode_f64(v, desc)
 	u.u = v
+	if desc then
+		u.s1 = bnot(u.s1)
+		u.s2 = bnot(u.s2)
+	end
+	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
 	if shr(u.u, 63) ~= 0 then
 		u.u = xor(u.u, 0x8000000000000000ULL)
 	else
 		u.u = bnot(u.u)
 	end
-	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
 	return tonumber(u.f)
 end
-local function encode_f64(v)
+local function encode_f64(v, desc)
 	u.f = v
 	if shr(u.u, 63) ~= 0 then
 		u.u = bnot(u.u)
@@ -60,21 +64,26 @@ local function encode_f64(v)
 		u.u = xor(u.u, 0x8000000000000000ULL)
 	end
 	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
+	if desc then
+		u.s1 = bnot(u.s1)
+		u.s2 = bnot(u.s2)
+	end
 	return u.u
 end
 
 local u = new'union { uint32_t u; float f; int32_t s; }'
-local function decode_f32(v)
+local function decode_f32(v, desc)
 	u.u = v
+	if desc then u.s = bnot(u.s) end
+	u.s = bswap(u.s)
 	if shr(u.u, 31) ~= 0 then
 		u.u = xor(u.u, 0x80000000)
 	else
 		u.u = bnot(u.u)
 	end
-	u.s = bswap(u.s)
 	return tonumber(u.f)
 end
-local function encode_f32(v)
+local function encode_f32(v, desc)
 	u.f = v
 	if shr(u.u, 31) ~= 0 then
 		u.u = bnot(u.u)
@@ -82,6 +91,7 @@ local function encode_f32(v)
 		u.u = xor(u.u, 0x80000000)
 	end
 	u.s = bswap(u.s)
+	if desc then u.s = bnot(u.s) end
 	return u.u
 end
 
@@ -472,17 +482,17 @@ function Db:load_schema(schema)
 						end
 					elseif t == 'f64' then
 						function geti(buf, i)
-							return decode_f64(rawgeti(buf, i))
+							return decode_f64(rawgeti(buf, i), desc)
 						end
 						function seti(buf, i, val)
-							rawseti(buf, i, encode_f64(val))
+							rawseti(buf, i, encode_f64(val, desc))
 						end
 					elseif t == 'f32' then
 						function geti(buf, i)
-							return decode_f32(rawgeti(buf, i))
+							return decode_f32(rawgeti(buf, i), desc)
 						end
 						function seti(buf, i, val)
-							rawseti(buf, i, encode_f32(val))
+							rawseti(buf, i, encode_f32(val, desc))
 						end
 					end
 				end
@@ -744,7 +754,7 @@ if not ... then
 	rm'mdbx_schema_test/mdbx.lck'
 	local db = mdbx.open('mdbx_schema_test')
 	local schema = {tables = {}}
-	local types = 'u8 u16 u32 u64 i8 i16 i32 i64' -- f32 f64'
+	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
 	local tables = {}
 	for order in words'asc desc' do
 		for typ in words(types) do
@@ -771,9 +781,10 @@ if not ... then
 		local bits = tonumber(typ:sub(2))
 		local ntyp = typ:sub(1,1)
 		local nums =
-			ntyp == 'u' and {0,1,2,2ULL^bits-1} or
-			ntyp == 'i' and {-2LL^(bits-1),-(2LL^(bits-1)-1),-2,-1,0,1,2,2LL^(bits-1)-2,2LL^(bits-1)-1} or
-			ntyp == 'f' and {-2^52,-2,-1,-0.1,-0,0,0.1,1,2^52}
+			ntyp == 'u'  and {0,1,2,2ULL^bits-1} or
+			ntyp == 'i'  and {-2LL^(bits-1),-(2LL^(bits-1)-1),-2,-1,0,1,2,2LL^(bits-1)-2,2LL^(bits-1)-1} or
+			typ == 'f64' and {-2^52,-2,-1,-0.1,-0,0,0.1,1,2^52} or
+			typ == 'f32' and {-2^23,-2,-1,cast('float', -0.1),-0,0,cast('float', 0.1),1,2^23}
 		assert(nums)
 		for _,i in ipairs(nums) do
 			local r = {id = i}
@@ -792,7 +803,7 @@ if not ... then
 			--local k = str(k.data, k.size)
 			--local v = str(v.data, v.size)
 			pr(tbl.name, id)
-			assertf(id == nums[i], '%d ~= %d', id, nums[i])
+			assertf(id == nums[i], '%q ~= %q', id, nums[i])
 			i = i + 1
 		end
 		tx:commit()
