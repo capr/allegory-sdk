@@ -4,7 +4,7 @@
 	Written by Cosmin Apreutsei. Public Domain.
 
 	libmdbx is a super-fast mmap-based MVCC key-value store in 40 KLOC of C.
-	libmdbx offers ACID with serializable semantics, good for read-heavy loads.
+	libmdbx provides ACID with serializable semantics, good for read-heavy loads.
 
 	API
 
