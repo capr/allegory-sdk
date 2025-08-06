@@ -14,7 +14,29 @@
 
 ]]
 
---TODO: ci_ai keys
+--[[
+TODO: ci_ai keys
+local function lower_strip(s)
+	local dst = ffi.new('uint8_t*[1]')
+	local opts = 1 + 2 + 512 -- NULLTERM | DECOMPOSE | CASEFOLD
+	local len = utf8proc.utf8proc_map(s, 0, dst, opts)
+	if len < 0 then return nil end
+	local p, out = dst[0], {}
+	local i = 0
+	while i < len do
+		local cp = ffi.new('int32_t[1]')
+		local l = utf8proc.utf8proc_iterate(p + i, len - i, cp)
+		if l <= 0 then break end
+		if utf8proc.utf8proc_category(cp[0]) ~= 9 then
+			local buf = ffi.new('uint8_t[4]')
+			local n = utf8proc.utf8proc_encode_char(cp[0], buf)
+			out[#out+1] = ffi.string(buf, n)
+		end
+		i = i + l
+	end
+	return table.concat(out)
+end
+]]
 
 require'mdbx'
 
@@ -178,15 +200,34 @@ function Db:load_schema(schema)
 		--split cols into key cols and val cols based on pk.
 		local i = 1
 		for s in words(table_schema.pk) do
-			local pk, order = s:match'^(.-):(.*)'
+			local pk, s1 = s:match'^(.-):(.*)'
+			local order = 'asc'
+			local collation = 'utf8'
 			if not pk then
-				pk, order = s, 'asc'
+				pk = s
 			else
-				assert(order == 'desc' or order == 'asc')
-				assert(#pk > 0)
+				local s2, s3 = s1:match'^(.-):(.*)'
+				if s2 then
+					if s2 == 'asc' or s2 == 'desc' then
+						order, collation = s2, s3
+					else
+						collation, order = s2, s3
+					end
+				else
+					if s1 == 'asc' or s1 == 'desc' then
+						order = s1
+					else
+						collation = s1
+					end
+				end
+				assertf(order == 'desc' or order == 'asc', 'invalid order: %s', order)
+				assertf(collation == 'utf8_ai_ci' or collation == 'utf8', 'invalid collation: %s', collation)
+				assert(#pk > 0, 'pk is empty')
 			end
+
 			local col = assertf(table_schema.fields[pk], 'pk field not found: %s', pk)
 			col.order = order
+			col.collation = collation
 			col.index = i
 			i = i + 1
 		end
@@ -508,7 +549,7 @@ function Db:load_schema(schema)
 					end
 					resize = noop
 				else
-					local elem_size_bits = ln(elem_size) / ln(2)
+					local elem_size_bits = log2(elem_size)
 					if elem_size_bits == floor(elem_size_bits) then --power-of-two
 						function getlen(buf, rec_sz)
 							return shr(getsize(buf, rec_sz), elem_size_bits)
