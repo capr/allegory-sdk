@@ -1,0 +1,19 @@
+#!/bin/sh
+cd "${0%build}" || exit 1
+
+build() {
+	${X}gcc -c -std=c99 -O2 $C -Wsign-conversion -Wall -Wextra -pedantic -Isrc -DUTF8PROC_EXPORTS src/utf8proc.c
+	${X}gcc *.o -shared -o ../../bin/$P/$D $L
+	rm -f      ../../bin/$P/$A
+	${X}ar rcs ../../bin/$P/$A *.o
+	rm *.o
+}
+
+if [ "$OSTYPE" = "msys" ]; then
+	P=windows L="-s -static-libgcc" D=utf8proc.dll A=utf8proc.a build
+elif [ "${OSTYPE#darwin}" != "$OSTYPE" ]; then
+	P=osx C="-arch x86_64" L="-arch x86_64 -install_name @rpath/libutf8proc.dylib" \
+	D=utf8proc.dylib A=utf8proc.a build
+else
+	P=linux C="-fPIC" L="-s -static-libgcc" D=libutf8proc.so A=libutf8proc.a build
+fi

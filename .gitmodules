@@ -64,3 +64,6 @@
 [submodule "c/mdbx/src"]
 	path = c/mdbx/src
 	url = git@github.com:erthink/libmdbx.git
+[submodule "c/utf8proc/src"]
+	path = c/utf8proc/src
+	url = git@github.com:JuliaStrings/utf8proc.git
