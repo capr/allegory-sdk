@@ -31,6 +31,7 @@ MATH
 	sqrt                         = math.sqrt
 	ln                           = math.log
 	log10                        = math.log10
+	log2                         = math.log(x, 2)
 	sin                          = math.sin
 	cos                          = math.cos
 	tan                          = math.tan
@@ -317,6 +318,7 @@ abs    = math.abs
 sqrt   = math.sqrt
 ln     = math.log
 log10  = math.log10
+log2   = function(x) return math.log(x, 2) end --base arg is Lua5.2/LuaJIT
 sin    = math.sin
 cos    = math.cos
 tan    = math.tan
