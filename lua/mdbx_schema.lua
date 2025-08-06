@@ -14,30 +14,6 @@
 
 ]]
 
---[[
-TODO: ci_ai keys
-local function lower_strip(s)
-	local dst = ffi.new('uint8_t*[1]')
-	local opts = 1 + 2 + 512 -- NULLTERM | DECOMPOSE | CASEFOLD
-	local len = utf8proc.utf8proc_map(s, 0, dst, opts)
-	if len < 0 then return nil end
-	local p, out = dst[0], {}
-	local i = 0
-	while i < len do
-		local cp = ffi.new('int32_t[1]')
-		local l = utf8proc.utf8proc_iterate(p + i, len - i, cp)
-		if l <= 0 then break end
-		if utf8proc.utf8proc_category(cp[0]) ~= 9 then
-			local buf = ffi.new('uint8_t[4]')
-			local n = utf8proc.utf8proc_encode_char(cp[0], buf)
-			out[#out+1] = ffi.string(buf, n)
-		end
-		i = i + l
-	end
-	return table.concat(out)
-end
-]]
-
 require'mdbx'
 
 local
@@ -55,6 +31,7 @@ local col_ct = {
 	i16    = 'int16_t',
 	u8     = 'uint8_t',
 	i8     = 'int8_t',
+	utf8   = 'uint8_t',
 }
 
 local key_col_ct = {
@@ -149,6 +126,15 @@ local function encode_i64(v, desc)
 	return u.i
 end
 
+local buf = buffer()
+local map_opt = bor(UTF8_DECOMPOSE, UTF8_CASEFOLD, UTF8_STRIPMARK)
+--TODO: optimize: only compute min_sz if utf8_map() fails with the existing buffer!
+local function encode_ai_ci(s, len)
+	local _, min_sz = utf8_map(s, len, map_opt, nil, false)
+	local out, out_sz = buf(min_sz)
+	return utf8_map(s, len, map_opt, out, out_sz)
+end
+
 local Db = mdbx.Db
 
 local is_null_set_null_funcs = memoize_multiret(function(i)
@@ -202,7 +188,7 @@ function Db:load_schema(schema)
 		for s in words(table_schema.pk) do
 			local pk, s1 = s:match'^(.-):(.*)'
 			local order = 'asc'
-			local collation = 'utf8'
+			local collation
 			if not pk then
 				pk = s
 			else
@@ -221,13 +207,16 @@ function Db:load_schema(schema)
 					end
 				end
 				assertf(order == 'desc' or order == 'asc', 'invalid order: %s', order)
-				assertf(collation == 'utf8_ai_ci' or collation == 'utf8', 'invalid collation: %s', collation)
+				assertf(not collation or collation == 'utf8_ai_ci' or collation == 'utf8',
+					'invalid collation: %s', collation)
 				assert(#pk > 0, 'pk is empty')
 			end
 
 			local col = assertf(table_schema.fields[pk], 'pk field not found: %s', pk)
 			col.order = order
-			col.collation = collation
+			if col.type == 'utf8' then
+				col.collation = collation or 'utf8'
+			end
 			col.index = i
 			i = i + 1
 		end
@@ -496,7 +485,7 @@ function Db:load_schema(schema)
 							if desc then x = bnot(x) end
 							rawseti(buf, i, x) --int32 -> uint8 (truncate)
 						end
-					elseif t == 'u8' then
+					elseif t == 'u8' or t == 'utf8' then
 						function geti(buf, i)
 							local x = rawgeti(buf, i)
 							if desc then x = band(bnot(x), 0xff) end
@@ -574,23 +563,58 @@ function Db:load_schema(schema)
 				end
 
 				local maxsize = (col.len or col.maxlen or 1) * elem_size
-				function col.rawset(buf, rec_sz, val, sz)
+				local function rawset(buf, rec_sz, val, sz)
 					sz = min(maxsize, sz or #val) --truncate
 					copy(getp(buf), val, sz)
 				end
 
-				function col.rawget(buf, rec_sz)
+				local function rawget(buf, rec_sz)
 					local sz = getsize(buf, rec_sz)
-					return cast(voidp, getp(buf)), sz
+					return cast(u8p, getp(buf)), sz
+				end
+
+				local function rawstr(buf, rec_sz)
+					return str(rawget(buf, rec_sz))
 				end
 
 				if isarray then
 					local maxlen = col.len or col.maxlen
-					function set(buf, rec_sz, val, len)
-						assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
-						len = min(maxlen, len or #val) --truncate
-						for i = 1, len do
-							rawseti(buf, val[i], i-1)
+					if col.type == 'utf8' then
+						local desc = col.order == 'desc'
+						local ai_ci = col.collation == 'utf8_ai_ci'
+						if desc or ai_ci then
+							local rawgeti = geti
+							local rawseti = seti
+							function set(buf, rec_sz, s, len)
+								local len = min(maxlen, len or #s) --truncate
+								local p
+								if ai_ci then
+									p, len = encode_ai_ci(s, len)
+								else
+									p = cast(u8p, s)
+								end
+								if desc then
+									for i = 0, len-1 do
+										rawseti(buf, i, p[i])
+									end
+								else
+									rawset(buf, rec_sz, p, len)
+								end
+							end
+							function get(buf, rec_sz, out, len)
+								--
+							end
+						else
+							get = rawget
+							set = rawset
+						end
+					else
+						function set(buf, rec_sz, val, len)
+							assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
+							len = min(maxlen, len or #val) --truncate
+							for i = 1, len do
+								rawseti(buf, i-1, val[i])
+							end
 						end
 					end
 				else
@@ -600,11 +624,6 @@ function Db:load_schema(schema)
 					function set(buf, rec_sz, val)
 						rawseti(buf, 0, val)
 					end
-				end
-
-				function col.rawstr(buf, rec_sz)
-					local sz = getsize(buf, rec_sz)
-					return str(getp(buf), sz)
 				end
 
 				--varsize field with more fields following it. resizing it
@@ -637,6 +656,9 @@ function Db:load_schema(schema)
 				col.seti = seti
 				col.get = get
 				col.set = set
+				col.rawset = rawset
+				col.rawget = rawget
+				col.rawstr = rawstr
 				col.getsize = getsize
 				col.getlen = getlen
 				col.getp = getp
