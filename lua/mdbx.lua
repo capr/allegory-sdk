@@ -753,14 +753,12 @@ int mdbx_env_chk_encount_problem(MDBX_chk_context_t *ctx);
 require'fs'
 require'sock'
 
-mdbx = {}
-
 local function check(rc)
 	if rc == 0 then return end
 	error(str(C.mdbx_strerror(rc)), 2)
 end
 
-local Db = {}; mdbx.Db = Db
+local Db = {}; mdbx_db = Db
 
 function Db:close()
 	for table_name,dbi in pairs(self.dbis) do
@@ -774,7 +772,7 @@ end
 
 --opt.readonly
 --opt.file_mode
-function mdbx.open(dir, opt)
+function mdbx_open(dir, opt)
 	opt = opt or {}
 
 	local env = new'MDBX_env*[1]'
@@ -801,16 +799,6 @@ function mdbx.open(dir, opt)
 	return db
 end
 
-function Db:open_tables(tables)
-	local dbi = new'MDBX_dbi[1]'
-	local tx = self:tx'w'
-	local iter = isstr(tables) and words or pairs
-	for table_name in iter(tables) do
-		tx:open_table(table_name, true)
-	end
-	tx:commit()
-end
-
 function Db:dbi(table_name)
 	return assertf(self.dbis[table_name], 'table not found: %s', table_name)
 end
@@ -819,7 +807,7 @@ function Db:db_max_key_size()
 	return C.mdbx_env_get_maxkeysize_ex(self.env, C.MDBX_DB_DEFAULTS)
 end
 
-local Tx = {}; mdbx.Tx = Tx
+local Tx = {}; mdbx_tx = Tx
 
 function Db:tx(flags, parent_tx)
 	flags = flags or (parent_tx and not parent_tx:is_readonly() and 'w') or 'r'
@@ -967,9 +955,11 @@ end
 
 if not ... then
 
-	local db = mdbx.open('testdb')
+	local db = mdbx_open('testdb')
 
-	db:open_tables'users'
+	local tx = db:tx'w'
+	tx:open_table('users', true)
+	tx:commit()
 
 	s = _('%03x %d foo bar', 32, 3141592)
 

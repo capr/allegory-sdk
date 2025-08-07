@@ -15,6 +15,7 @@
 ]]
 
 require'mdbx'
+require'utf8proc'
 
 local
 	typeof, tonumber, shl, shr, xor, bnot, bswap, u8p, copy, cast =
@@ -126,16 +127,19 @@ local function encode_i64(v, desc)
 	return u.i
 end
 
-local buf = buffer()
+local buf = buffer(); buf(256)
 local map_opt = bor(UTF8_DECOMPOSE, UTF8_CASEFOLD, UTF8_STRIPMARK)
---TODO: optimize: only compute min_sz if utf8_map() fails with the existing buffer!
 local function encode_ai_ci(s, len)
-	local _, min_sz = utf8_map(s, len, map_opt, nil, false)
-	local out, out_sz = buf(min_sz)
-	return utf8_map(s, len, map_opt, out, out_sz)
+	local out, out_sz = buf()
+	local out, sz = utf8_map(s, len, map_opt, out, out_sz)
+	if not out and sz > 0 then --buffer to small, reallocate and retry
+		out, out_sz = buf(sz)
+		out, sz = utf8_map(s, len, map_opt, out, out_sz)
+	end
+	return out, sz
 end
 
-local Db = mdbx.Db
+local Db = mdbx_db
 
 local is_null_set_null_funcs = memoize_multiret(function(i)
 	local byte_i = shr(i-1, 3)
@@ -170,7 +174,11 @@ function Db:load_schema(schema)
 		self.schema = eval_file(schema_file)
 	end
 
-	self:open_tables(self.schema.tables)
+	local tx = self:tx'w'
+	for table_name in pairs(schema.tables) do
+		tx:open_table(table_name, true)
+	end
+	tx:commit()
 
 	--compute field layout and encoding parameters based on schema.
 	--NOTE: changing this algorithm or making it non-deterministic in any way
@@ -815,7 +823,7 @@ if not ... then
 
 	rm'mdbx_schema_test/mdbx.dat'
 	rm'mdbx_schema_test/mdbx.lck'
-	local db = mdbx.open('mdbx_schema_test')
+	local db = mdbx_open('mdbx_schema_test')
 	local schema = {tables = {}}
 	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
 	local tables = {}
@@ -874,7 +882,7 @@ if not ... then
 	db:close()
 
 	--[[
-	local db = mdbx.open('mdbx_schema_test')
+	local db = mdbx_open('mdbx_schema_test')
 	db:load_schema()
 	local u = {
 		uid = 1234,
