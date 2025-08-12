@@ -559,18 +559,6 @@ function Db:load_schema(schema)
 					end
 				end
 
-				local rawgeti = geti
-				local rawseti = seti
-
-				function geti(buf, rec_sz, i)
-					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
-					return rawgeti(buf, i)
-				end
-				function seti(buf, rec_sz, i, val)
-					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
-					rawseti(buf, i, val)
-				end
-
 				local maxsize = (col.len or col.maxlen or 1) * elem_size
 				local function rawset(buf, rec_sz, val, sz)
 					sz = min(maxsize, sz or #val) --truncate
@@ -628,10 +616,10 @@ function Db:load_schema(schema)
 					end
 				else
 					function get(buf, rec_sz)
-						return rawgeti(buf, 0)
+						return geti(buf, 0)
 					end
 					function set(buf, rec_sz, val)
-						rawseti(buf, 0, val)
+						seti(buf, 0, val)
 					end
 				end
 
@@ -661,8 +649,15 @@ function Db:load_schema(schema)
 					col.is_null, col.set_null = is_null_set_null_funcs(i)
 				end
 
-				col.geti = geti
-				col.seti = seti
+				function col.geti(buf, rec_sz, i)
+					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
+					return geti(buf, i)
+				end
+				function col.seti(buf, rec_sz, i, val)
+					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
+					rawseti(buf, i, val)
+				end
+
 				col.get = get
 				col.set = set
 				col.rawset = rawset
@@ -797,6 +792,7 @@ function Db:is_null(tbl, col, buf, offset)
 end
 
 local function rec_col_decode(self, cols, col, buf, offset, rec_sz)
+	rec_sz = tonumber(rec_sz)
 	local buf = cast(cols.pct, offset and buf + offset or buf)
 	local col = assertf(cols[col], 'unknown field: %s', col)
 	return col.get(buf, rec_sz)
@@ -818,6 +814,18 @@ function Db:decode_val(tbl, col, buf, rec_sz, offset)
 	return rec_col_decode(self, val_cols(self, tbl), col, buf, offset, rec_sz)
 end
 
+function mdbx_tx:put_records(tbl_name, records)
+	local key_max_sz = self.db:max_key_size(tbl_name)
+	local val_max_sz = self.db:max_val_size(tbl_name)
+	local buf_sz = key_max_sz + val_max_sz
+	local buf = u8a(buf_sz)
+	for _,rec in ipairs(records) do
+		local key_sz = self.db:encode_key(tbl_name, rec, buf, buf_sz)
+		local val_sz = self.db:encode_val(tbl_name, rec, buf, buf_sz, key_max_sz)
+		self:put(tbl_name, buf, key_sz, buf + key_max_sz, val_sz)
+	end
+end
+
 --test -----------------------------------------------------------------------
 
 if not ... then
@@ -827,8 +835,12 @@ if not ... then
 	local db = mdbx_open('mdbx_schema_test')
 	local schema = {tables = {}}
 	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
-	local tables = {}
+	local num_tables = {}
+	local varsize1_tables = {}
+	local varsize2_tables = {}
 	for order in words'asc desc' do
+
+		--numeric at fixed offset.
 		for typ in words(types) do
 			local name = typ..':'..order
 			local tbl = {
@@ -838,17 +850,39 @@ if not ... then
 				fields = {{name = 'id', type = typ}},
 				pk = 'id:'..order,
 			}
-			add(tables, tbl)
+			add(num_tables, tbl)
 			schema.tables[tbl.name] = tbl
 		end
+
+		--varsize at fixed offset and utf8 enc/dec.
+		local tbl = {
+			name = 'varsize1'..':'..order,
+			fields = {
+				{name = 's', type = 'utf8', maxlen = 100},
+			},
+			pk = 's:'..order,
+		}
+		add(varsize1_tables, tbl)
+		schema.tables[tbl.name] = tbl
+
+		--varsize at dyn offset.
+		local tbl = {
+			name = 'varsize2'..':'..order,
+			fields = {
+				{name = 's1', type = 'utf8', maxlen = 100},
+				{name = 's2', type = 'utf8', maxlen = 100},
+			},
+			pk = 's1 s2:'..order,
+		}
+		add(varsize2_tables, tbl)
+		schema.tables[tbl.name] = tbl
+
 	end
 	db:load_schema(schema)
-	for _,tbl in ipairs(tables) do
+
+	--test int and float decoders and encoders
+	for _,tbl in ipairs(num_tables) do
 		local typ = tbl.test_type
-		local key_max_sz = db:max_key_size(tbl.name)
-		local val_max_sz = db:max_val_size(tbl.name)
-		local buf_sz = key_max_sz + val_max_sz
-		local buf = u8a(buf_sz)
 		local tx = db:tx'w'
 		local bits = tonumber(typ:sub(2))
 		local ntyp = typ:sub(1,1)
@@ -858,12 +892,11 @@ if not ... then
 			typ == 'f64' and {-2^52,-2,-1,-0.1,-0,0,0.1,1,2^52} or
 			typ == 'f32' and {-2^23,-2,-1,cast('float', -0.1),-0,0,cast('float', 0.1),1,2^23}
 		assert(nums)
+		local t = {}
 		for _,i in ipairs(nums) do
-			local r = {id = i}
-			local key_sz = db:encode_key(tbl.name, r, buf, buf_sz)
-			local val_sz = db:encode_val(tbl.name, r, buf, buf_sz, key_max_sz)
-			tx:put(tbl.name, buf, key_sz, buf + key_max_sz, val_sz)
+			add(t, {id = i})
 		end
+		tx:put_records(tbl.name, t)
 		tx:commit()
 		if tbl.fields.id.order == 'desc' then
 			reverse(nums)
@@ -880,6 +913,40 @@ if not ... then
 		end
 		tx:commit()
 	end
+
+	--test varsize1
+	for _,tbl in ipairs(varsize1_tables) do
+		local t = {
+			{s = 'a' },
+			{s = 'bb'},
+			{s = 'aa'},
+			{s = 'b' },
+		}
+		local tx = db:tx'w'
+		tx:put_records(tbl.name, t)
+		tx:commit()
+
+		local tx = db:tx()
+		for k,v in tx:each(tbl.name) do
+			local s, len = db:decode_key(tbl.name, 's', k.data, tonumber(k.size))
+			pr(str(s, len))
+		end
+		tx:commit()
+	end
+
+	--test varsize2
+	for _,tbl in ipairs(varsize2_tables) do
+		local t = {
+			{s1 = 'a'    , s2 = 'b' , },
+			{s1 = 'aa'   , s2 = 'bb', },
+			{s1 = 'b'    , s2 = 'a' , },
+			{s1 = 'bb'   , s2 = 'aa', },
+		}
+		local tx = db:tx'w'
+		tx:put_records(tbl.name, t)
+		tx:commit()
+	end
+
 	db:close()
 
 	--[[
