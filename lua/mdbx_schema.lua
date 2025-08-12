@@ -10,7 +10,8 @@
 		- nullable values
 
 	Keys:
-		- composite keys with per-field ordering, utf-8 ai_ci.
+		- composite keys with per-field ordering
+		- utf-8 ai_ci collation
 
 ]]
 
