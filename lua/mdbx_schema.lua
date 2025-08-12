@@ -42,6 +42,39 @@ local key_col_ct = {
 	i8  = 'uint8_t',
 }
 
+local function decode_u8(x, desc)
+	if desc then x = band(bnot(x), 0xff) end
+	return x
+end
+local function encode_u8(x, desc)
+	local x = tonumber(x) --(u)int64 -> number (truncate)
+	if desc then x = bnot(x) end
+	return x --uint32 -> uint8 (truncate)
+end
+
+function decode_u16(x, desc)
+	if desc then x = bnot(x) end
+	return bswap(shl(x, 16)) --BE->LE & truncate
+end
+function encode_u16(x, desc)
+	local x = tonumber(x) --(u)int64 -> number (truncate)
+	local x = bswap(shl(x, 16)) --LE->BE
+	if desc then x = bnot(x) end
+	return x
+end
+
+function decode_u32(x, desc)
+	if desc then x = bnot(x) end
+	local x = bswap(x) --BE->LE
+	return x + shr(x, 31) * 0x100000000 --because bitops are signed
+end
+function encode_u32(x, desc)
+	local x = tonumber(x) --(u)int64 -> number (truncate)
+	local x = bswap(x) --LE->BE
+	if desc then x = bnot(x) end
+	return x
+end
+
 local u = new'union { uint64_t u; double f; struct { int32_t s1; int32_t s2; }; }'
 local function decode_f64(v, desc)
 	u.u = v
@@ -287,12 +320,31 @@ function Db:load_schema(schema)
 			end
 
 			--compute offset C type based on how large the offsets can be.
+			local set_offset, get_offset
 			if max_rec_size - dot_len < 2^8 then
 				offset_ct = 'uint8_t'
+				function get_offset(buf, i)
+					return buf._offsets_[i]
+				end
+				function set_offset(buf, i, offset)
+					buf._offsets_[i] = offset
+				end
 			elseif max_rec_size - dot_len * 2 < 2^16 then
 				offset_ct = 'uint16_t'
+				function get_offset(buf, i)
+					return decode_u16(buf._offsets_[i], desc)
+				end
+				function set_offset(buf, i, offset)
+					buf._offsets_[i] = offset
+				end
 			elseif max_rec_size - dot_len * 4 < 2^32 then
 				offset_ct = 'uint32_t'
+				function get_offset(buf, i)
+					return buf._offsets_[i]
+				end
+				function set_offset(buf, i, offset)
+					buf._offsets_[i] = offset
+				end
 			end
 
 			--compute max row size, including d.o.t.
@@ -372,7 +424,7 @@ function Db:load_schema(schema)
 								resize = noop
 							else --d.o.t. follows
 								function getsize(buf, rec_sz)
-									local next_offset = buf._offsets_[0]
+									local next_offset = get_offset(buf, 0)
 									return next_offset - col_offset
 								end
 								resize = true
@@ -394,7 +446,7 @@ function Db:load_schema(schema)
 					dot_index = dot_index + 1
 					local OFFSET = dot_index
 					function getp(buf)
-						local offset = buf._offsets_[OFFSET]
+						local offset = get_offset(buf, OFFSET)
 						return cast(elem_p_ct, cast(u8p, buf) + offset)
 					end
 					function geti(buf, i)
@@ -408,13 +460,13 @@ function Db:load_schema(schema)
 							if OFFSET == dot_len-1 then --last col, sz based on rec_sz
 								function getsize(buf, rec_sz)
 									local next_offset = rec_sz
-									return next_offset - buf._offsets_[OFFSET]
+									return next_offset - get_offset(buf, OFFSET)
 								end
 								resize = noop
 							else
 								function getsize(buf, rec_sz)
-									local next_offset = buf._offsets_[OFFSET+1]
-									return next_offset - buf._offsets_[OFFSET]
+									local next_offset = get_offset(buf, OFFSET+1)
+									return next_offset - get_offset(buf, OFFSET)
 								end
 								resize = true
 							end
@@ -431,16 +483,10 @@ function Db:load_schema(schema)
 					local t = col.type
 					if t == 'u32' then
 						function geti(buf, i)
-							local x = rawgeti(buf, i)
-							if desc then x = bnot(x) end
-							local x = bswap(x) --BE->LE
-							return x + shr(x, 31) * 0x100000000 --because bitops are signed
+							return decode_u32(rawgeti(buf, i), desc)
 						end
 						function seti(buf, i, x)
-							local x = tonumber(x) --(u)int64 -> number (truncate)
-							local x = bswap(x) --LE->BE
-							if desc then x = bnot(x) end
-							rawseti(buf, i, x)
+							rawseti(buf, i, encode_u32(x, desc))
 						end
 					elseif t == 'i32' then
 						function geti(buf, i)
@@ -458,15 +504,10 @@ function Db:load_schema(schema)
 						end
 					elseif t == 'u16' then
 						function geti(buf, i)
-							local x = rawgeti(buf, i)
-							if desc then x = bnot(x) end
-							return bswap(shl(x, 16)) --BE->LE & truncate
+							return decode_u16(rawgeti(buf, i), desc)
 						end
 						function seti(buf, i, x)
-							local x = tonumber(x) --(u)int64 -> number (truncate)
-							local x = bswap(shl(x, 16)) --LE->BE
-							if desc then x = bnot(x) end
-							rawseti(buf, i, x)
+							rawseti(buf, i, encode_u16(x, desc))
 						end
 					elseif t == 'i16' then
 						function geti(buf, i)
@@ -496,14 +537,10 @@ function Db:load_schema(schema)
 						end
 					elseif t == 'u8' or t == 'utf8' then
 						function geti(buf, i)
-							local x = rawgeti(buf, i)
-							if desc then x = band(bnot(x), 0xff) end
-							return x
+							return decode_u8(rawgeti(buf, i), desc)
 						end
 						function seti(buf, i, x)
-							local x = tonumber(x) --(u)int64 -> number (truncate)
-							if desc then x = bnot(x) end
-							rawseti(buf, i, x) --uint32 -> uint8 (truncate)
+							rawseti(buf, i, encode_u8(x, desc)) --uint32 -> uint8 (truncate)
 						end
 					elseif t == 'u64' then
 						function geti(buf, i)
@@ -598,11 +635,23 @@ function Db:load_schema(schema)
 									rawset(buf, rec_sz, p, len)
 								end
 							end
-							function get(buf, rec_sz, out, len)
-								--
+							function get(buf, rec_sz, out, out_len)
+								local p, p_len = rawget(buf, rec_sz)
+								local len = min(p_len, out_len or 1/0) --truncate
+								local out = out and cast(u8p, out) or u8a(len)
+								for i = 0, len-1 do
+									out[i] = rawgeti(buf, i)
+								end
+								return out, len
 							end
 						else
-							get = rawget
+							function get(buf, rec_sz, out, out_len)
+								local p, p_len = rawget(buf, rec_sz)
+								local len = min(p_len, out_len or 1/0) --truncate
+								local out = out and cast(u8p, out) or u8a(len)
+								copy(out, p, len)
+								return out, len
+							end
 							set = rawset
 						end
 					else
@@ -633,13 +682,13 @@ function Db:load_schema(schema)
 						local sz0 = getsize(set_buf, rec_sz)
 						local sz1 = len * elem_size
 						local shift_sz = sz1 - sz0 --positive for growth
-						local next_offset = set_buf._offsets_[OFFSET+1]
+						local next_offset = get_offset(set_buf, OFFSET+1)
 						copy(
 							buf + offset + next_offset + shift_sz,
 							buf + offset + next_offset,
 							rec_sz - next_offset)
 						for i = OFFSET+1, dot_len-1 do
-							set_buf._offsets_[i] = set_buf._offsets_[i] + shift_sz
+							set_offset(set_buf, i, get_offset(set_buf, i) + shift_sz)
 						end
 						return rec_sz + shift_sz
 					end
@@ -662,10 +711,10 @@ function Db:load_schema(schema)
 				col.set = set
 				col.rawset = rawset
 				col.rawget = rawget
+				col.getp = getp
 				col.rawstr = rawstr
 				col.getsize = getsize
 				col.getlen = getlen
-				col.getp = getp
 				col.resize = resize
 
 			end --for col in cols
@@ -739,7 +788,7 @@ local function encode_rec(self, cols, vals, buf, offset, buf_sz)
 		col.set(set_buf, rec_sz, val, len)
 		offset = offset + (col.len or len) * col.elem_size
 		if i < #cols then
-			set_buf._offsets_[NEXT_OFFSET] = offset
+			set_offset(set_buf, NEXT_OFFSET, offset)
 			NEXT_OFFSET = NEXT_OFFSET + 1
 		end
 	end
@@ -791,11 +840,11 @@ function Db:is_null(tbl, col, buf, offset)
 	return col.is_null(buf)
 end
 
-local function rec_col_decode(self, cols, col, buf, offset, rec_sz)
+local function rec_col_decode(self, cols, col, buf, offset, rec_sz, out, out_len)
 	rec_sz = tonumber(rec_sz)
 	local buf = cast(cols.pct, offset and buf + offset or buf)
 	local col = assertf(cols[col], 'unknown field: %s', col)
-	return col.get(buf, rec_sz)
+	return col.get(buf, rec_sz, out, out_len)
 end
 
 function Db:key_tostring(tbl, col, buf, rec_sz, offset)
@@ -806,12 +855,12 @@ function Db:val_tostring(tbl, col, buf, rec_sz, offset)
 	return rec_col_tostring(self, val_cols(self, tbl), col, buf, offset, rec_sz)
 end
 
-function Db:decode_key(tbl, col, buf, rec_sz, offset)
-	return rec_col_decode(self, key_cols(self, tbl), col, buf, offset, rec_sz)
+function Db:decode_key(tbl, col, buf, rec_sz, offset, out, out_len)
+	return rec_col_decode(self, key_cols(self, tbl), col, buf, offset, rec_sz, out, out_len)
 end
 
-function Db:decode_val(tbl, col, buf, rec_sz, offset)
-	return rec_col_decode(self, val_cols(self, tbl), col, buf, offset, rec_sz)
+function Db:decode_val(tbl, col, buf, rec_sz, offset, out, out_len)
+	return rec_col_decode(self, val_cols(self, tbl), col, buf, offset, rec_sz, out, out_len)
 end
 
 function mdbx_tx:put_records(tbl_name, records)
@@ -938,9 +987,9 @@ if not ... then
 	for _,tbl in ipairs(varsize2_tables) do
 		local t = {
 			{s1 = 'a'    , s2 = 'b' , },
+			{s1 = 'bb'   , s2 = 'aa', },
 			{s1 = 'aa'   , s2 = 'bb', },
 			{s1 = 'b'    , s2 = 'a' , },
-			{s1 = 'bb'   , s2 = 'aa', },
 		}
 		local tx = db:tx'w'
 		tx:put_records(tbl.name, t)
