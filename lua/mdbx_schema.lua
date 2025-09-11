@@ -189,6 +189,7 @@ local is_null_set_null_funcs = memoize_multiret(function(i)
 		else
 			buf._nulls_[byte_i] = band(buf._nulls_[byte_i], bnot(mask))
 		end
+		return is_null
 	end
 	return is_null, set_null
 end)
@@ -331,19 +332,37 @@ function Db:load_schema(schema)
 				end
 			elseif max_rec_size - dot_len * 2 < 2^16 then
 				offset_ct = 'uint16_t'
-				function get_offset(buf, i)
-					return decode_u16(buf._offsets_[i], desc)
-				end
-				function set_offset(buf, i, offset)
-					buf._offsets_[i] = offset
+				if cols == key_cols then
+					function get_offset(buf, i)
+						return decode_u16(buf._offsets_[i], desc)
+					end
+					function set_offset(buf, i, offset)
+						buf._offsets_[i] = encode_u16(offset, desc)
+					end
+				else
+					function get_offset(buf, i)
+						return buf._offsets_[i]
+					end
+					function set_offset(buf, i, offset)
+						buf._offsets_[i] = offset
+					end
 				end
 			elseif max_rec_size - dot_len * 4 < 2^32 then
 				offset_ct = 'uint32_t'
-				function get_offset(buf, i)
-					return buf._offsets_[i]
-				end
-				function set_offset(buf, i, offset)
-					buf._offsets_[i] = offset
+				if cols == key_cols then
+					function get_offset(buf, i)
+						return decode_u32(buf._offsets_[i], desc)
+					end
+					function set_offset(buf, i, offset)
+						buf._offsets_[i] = encode_u32(offset, desc)
+					end
+				else
+					function get_offset(buf, i)
+						return buf._offsets_[i]
+					end
+					function set_offset(buf, i, offset)
+						buf._offsets_[i] = offset
+					end
 				end
 			end
 
@@ -355,11 +374,11 @@ function Db:load_schema(schema)
 			end
 			cols.max_rec_size = max_rec_size
 
-			--compute row layout: fixsize cols, d.o.t., varsize cols.
+			--compute row layout: null bits, fixsize cols, d.o.t., varsize cols.
 			local ct = {'struct __attribute__((__packed__)) {\n'}
 			--add the nulls bit array
 			if cols == val_cols then
-				local n = ceil(#cols / 8) --number of byes needed to hold all the bits.
+				local n = ceil(#cols / 8) --number of bytes needed to hold all the bits.
 				append(ct, '\t', 'uint8_t _nulls_[', n, '];\n')
 			end
 			--cols at a fixed offset: direct access.
@@ -611,6 +630,11 @@ function Db:load_schema(schema)
 					return str(rawget(buf, rec_sz))
 				end
 
+				local is_null, set_null
+				if cols == val_cols then
+					is_null, set_null = is_null_set_null_funcs(i)
+				end
+
 				if isarray then
 					local maxlen = col.len or col.maxlen
 					if col.type == 'utf8' then
@@ -620,6 +644,9 @@ function Db:load_schema(schema)
 							local rawgeti = geti
 							local rawseti = seti
 							function set(buf, rec_sz, s, len)
+								if set_null and set_null(buf, s == nil) then
+									return
+								end
 								local len = min(maxlen, len or #s) --truncate
 								local p
 								if ai_ci then
@@ -636,6 +663,9 @@ function Db:load_schema(schema)
 								end
 							end
 							function get(buf, rec_sz, out, out_len)
+								if is_null and is_null(buf) then
+									return nil
+								end
 								local p, p_len = rawget(buf, rec_sz)
 								local len = min(p_len, out_len or 1/0) --truncate
 								local out = out and cast(u8p, out) or u8a(len)
@@ -646,16 +676,27 @@ function Db:load_schema(schema)
 							end
 						else
 							function get(buf, rec_sz, out, out_len)
+								if is_null and is_null(buf) then
+									return nil
+								end
 								local p, p_len = rawget(buf, rec_sz)
 								local len = min(p_len, out_len or 1/0) --truncate
 								local out = out and cast(u8p, out) or u8a(len)
 								copy(out, p, len)
 								return out, len
 							end
-							set = rawset
+							function set(buf, rec_sz, val, len)
+								if set_null and set_null(buf, val == nil)
+									return
+								end
+								rawset(buf, rec_sz, s, len)
+							end
 						end
 					else
 						function set(buf, rec_sz, val, len)
+							if set_null and set_null(buf, val == nil) then
+								return
+							end
 							assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
 							len = min(maxlen, len or #val) --truncate
 							for i = 1, len do
@@ -665,9 +706,15 @@ function Db:load_schema(schema)
 					end
 				else
 					function get(buf, rec_sz)
+						if is_null and is_null(buf) then
+							return nil
+						end
 						return geti(buf, 0)
 					end
 					function set(buf, rec_sz, val)
+						if set_null and set_null(buf, val == nil) then
+							return
+						end
 						seti(buf, 0, val)
 					end
 				end
@@ -694,10 +741,6 @@ function Db:load_schema(schema)
 					end
 				end
 
-				if cols == val_cols then
-					col.is_null, col.set_null = is_null_set_null_funcs(i)
-				end
-
 				function col.geti(buf, rec_sz, i)
 					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
 					return geti(buf, i)
@@ -716,6 +759,8 @@ function Db:load_schema(schema)
 				col.getsize = getsize
 				col.getlen = getlen
 				col.resize = resize
+				col.set_offset = set_offset
+				col.get_offset = get_offset
 
 			end --for col in cols
 
@@ -788,7 +833,7 @@ local function encode_rec(self, cols, vals, buf, offset, buf_sz)
 		col.set(set_buf, rec_sz, val, len)
 		offset = offset + (col.len or len) * col.elem_size
 		if i < #cols then
-			set_offset(set_buf, NEXT_OFFSET, offset)
+			col.set_offset(set_buf, NEXT_OFFSET, offset)
 			NEXT_OFFSET = NEXT_OFFSET + 1
 		end
 	end
@@ -824,13 +869,6 @@ local function rec_col_tostring(self, cols, col, buf, offset, rec_sz)
 	local col = assertf(cols[col], 'unknown field: %s', col)
 	local buf = cast(cols.pct, buf + (offset or 0))
 	return col.tostring(buf, rec_sz)
-end
-
-function Db:set_null(tbl, col, is_null, buf, offset)
-	local cols = val_cols(self, tbl)
-	local col = assertf(cols[col], 'unknown field: %s', col)
-	local buf = cast(cols.pct, buf + (offset or 0))
-	col.set_null(buf, is_null)
 end
 
 function Db:is_null(tbl, col, buf, offset)
@@ -982,18 +1020,33 @@ if not ... then
 		end
 		tx:commit()
 	end
+	pr()
 
 	--test varsize2
 	for _,tbl in ipairs(varsize2_tables) do
 		local t = {
-			{s1 = 'a'    , s2 = 'b' , },
-			{s1 = 'bb'   , s2 = 'aa', },
-			{s1 = 'aa'   , s2 = 'bb', },
-			{s1 = 'b'    , s2 = 'a' , },
+			{s1 = 'a'  , s2 = 'b' , },
+			{s1 = 'a'  , s2 = 'a' , },
+			{s1 = 'bb' , s2 = 'aa', },
+			{s1 = 'bb' , s2 = 'bb', },
+			{s1 = 'aa' , s2 = 'bb', },
+			{s1 = 'b'  , s2 = 'a' , },
+			{s1 = nil  , s2 = 'a' , },
+			{s1 = 'a'  , s2 = nil , },
 		}
 		local tx = db:tx'w'
 		tx:put_records(tbl.name, t)
 		tx:commit()
+
+		local tx = db:tx()
+		pr(tbl.pk)
+		for k,v in tx:each(tbl.name) do
+			local s1, len = db:decode_key(tbl.name, 's1', k.data, tonumber(k.size))
+			local s2, len = db:decode_key(tbl.name, 's2', k.data, tonumber(k.size))
+			pr(str(s1, len), str(s2, len))
+		end
+		tx:commit()
+		pr()
 	end
 
 	db:close()
