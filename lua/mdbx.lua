@@ -874,9 +874,9 @@ function Tx:abort()
 	end
 end
 
-function Tx:open_table(table_name, create)
+function Tx:open_table(table_name, flags)
 	local dbi = new'MDBX_dbi[1]'
-	check(C.mdbx_dbi_open(self.txn[0], table_name, create and C.MDBX_CREATE or 0, dbi))
+	check(C.mdbx_dbi_open(self.txn[0], table_name, flags or 0, dbi))
 	local dbi = dbi[0]
 	self.db.dbis[table_name] = dbi
 end
@@ -958,7 +958,7 @@ if not ... then
 	local db = mdbx_open('testdb')
 
 	local tx = db:tx'w'
-	tx:open_table('users', true)
+	tx:open_table('users', C.MDBX_CREATE)
 	tx:commit()
 
 	s = _('%03x %d foo bar', 32, 3141592)
