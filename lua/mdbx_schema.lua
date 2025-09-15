@@ -194,6 +194,43 @@ local is_null_set_null_funcs = memoize_multiret(function(i)
 	return is_null, set_null
 end)
 
+local function get_offset_direct(buf, i)
+	return buf._offsets_[i]
+end
+local function set_offset_direct(buf, i, offset)
+	buf._offsets_[i] = offset
+end
+local get_offset_set_offset_funcs = memoize_multiret(function(offset_ct, is_key_col, desc)
+	local get_offset = get_offset_direct
+	local set_offset = set_offset_direct
+	if is_key_col then
+		if offset_ct == 'uint8_t' then
+			function get_offset(buf, i)
+				return decode_u8(buf._offsets_[i], desc)
+			end
+			function set_offset(buf, i, offset)
+				pr(i, desc, encode_u8(offset, desc))
+				buf._offsets_[i] = encode_u8(offset, desc)
+			end
+		elseif offset_ct == 'uint16_t' then
+			function get_offset(buf, i)
+				return decode_u16(buf._offsets_[i], desc)
+			end
+			function set_offset(buf, i, offset)
+				buf._offsets_[i] = encode_u16(offset, desc)
+			end
+		elseif offset_ct == 'uint32_t' then
+			function get_offset(buf, i)
+				return decode_u32(buf._offsets_[i], desc)
+			end
+			function set_offset(buf, i, offset)
+				buf._offsets_[i] = encode_u32(offset, desc)
+			end
+		end
+	end
+	return get_offset, set_offset
+end)
+
 function Db:load_schema(schema)
 
 	if schema then
@@ -321,49 +358,16 @@ function Db:load_schema(schema)
 			end
 
 			--compute offset C type based on how large the offsets can be.
-			local set_offset, get_offset
-			if max_rec_size - dot_len < 2^8 then
+			local max_offset = max_rec_size - dot_len
+			local offset_ct
+			if max_offset < 2^8 then
 				offset_ct = 'uint8_t'
-				function get_offset(buf, i)
-					return buf._offsets_[i]
-				end
-				function set_offset(buf, i, offset)
-					buf._offsets_[i] = offset
-				end
-			elseif max_rec_size - dot_len * 2 < 2^16 then
+			elseif max_offset * 2 < 2^16 then
 				offset_ct = 'uint16_t'
-				if cols == key_cols then
-					function get_offset(buf, i)
-						return decode_u16(buf._offsets_[i], desc)
-					end
-					function set_offset(buf, i, offset)
-						buf._offsets_[i] = encode_u16(offset, desc)
-					end
-				else
-					function get_offset(buf, i)
-						return buf._offsets_[i]
-					end
-					function set_offset(buf, i, offset)
-						buf._offsets_[i] = offset
-					end
-				end
-			elseif max_rec_size - dot_len * 4 < 2^32 then
+			elseif max_offset * 4 < 2^32 then
 				offset_ct = 'uint32_t'
-				if cols == key_cols then
-					function get_offset(buf, i)
-						return decode_u32(buf._offsets_[i], desc)
-					end
-					function set_offset(buf, i, offset)
-						buf._offsets_[i] = encode_u32(offset, desc)
-					end
-				else
-					function get_offset(buf, i)
-						return buf._offsets_[i]
-					end
-					function set_offset(buf, i, offset)
-						buf._offsets_[i] = offset
-					end
-				end
+			else
+				assert(false)
 			end
 
 			--compute max row size, including d.o.t.
@@ -418,9 +422,16 @@ function Db:load_schema(schema)
 				local elem_p_ct = ctype(col.elem_ct..'*')
 				local COL = col.name
 
-				local geti, seti, getp, getsize, getlen, resize
+				local geti, seti, getp, getsize, getlen, clear, resize
 
 				local isarray = col.len or col.maxlen
+				local desc = col.order == 'desc'
+
+				local get_offset, set_offset = get_offset_set_offset_funcs(
+					offset_ct,
+					cols == key_cols,
+					desc
+				)
 
 				if i <= fixsize_n+1 then --value at fixed offset
 					if isarray then --fixsize or varsize at fixed offset
@@ -498,7 +509,6 @@ function Db:load_schema(schema)
 				if cols == key_cols then
 					local rawgeti = geti
 					local rawseti = seti
-					local desc = col.order == 'desc'
 					local t = col.type
 					if t == 'u32' then
 						function geti(buf, i)
@@ -601,6 +611,9 @@ function Db:load_schema(schema)
 					function getsize()
 						return len * elem_size
 					end
+					function clear(buf)
+						fill(getp(buf), len * elem_size)
+					end
 					resize = noop
 				else
 					local elem_size_bits = log2(elem_size)
@@ -613,6 +626,7 @@ function Db:load_schema(schema)
 							return getsize(buf, rec_sz) / elem_size
 						end
 					end
+					clear = noop
 				end
 
 				local maxsize = (col.len or col.maxlen or 1) * elem_size
@@ -645,8 +659,10 @@ function Db:load_schema(schema)
 							local rawseti = seti
 							function set(buf, rec_sz, s, len)
 								if set_null and set_null(buf, s == nil) then
+									clear(buf)
 									return
 								end
+								clear(buf)
 								local len = min(maxlen, len or #s) --truncate
 								local p
 								if ai_ci then
@@ -686,17 +702,21 @@ function Db:load_schema(schema)
 								return out, len
 							end
 							function set(buf, rec_sz, val, len)
-								if set_null and set_null(buf, val == nil)
+								if set_null and set_null(buf, val == nil) then
+									clear(buf)
 									return
 								end
-								rawset(buf, rec_sz, s, len)
+								clear(buf)
+								rawset(buf, rec_sz, val, len)
 							end
 						end
 					else
 						function set(buf, rec_sz, val, len)
 							if set_null and set_null(buf, val == nil) then
+								clear(buf)
 								return
 							end
+							clear(buf)
 							assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
 							len = min(maxlen, len or #val) --truncate
 							for i = 1, len do
@@ -725,6 +745,7 @@ function Db:load_schema(schema)
 					local pct = cols.pct
 					local OFFSET = dot_index
 					function resize(buf, offset, rec_sz, len)
+						assert(false)
 						local set_buf = cast(pct, buf + offset)
 						local sz0 = getsize(set_buf, rec_sz)
 						local sz1 = len * elem_size
@@ -735,6 +756,7 @@ function Db:load_schema(schema)
 							buf + offset + next_offset,
 							rec_sz - next_offset)
 						for i = OFFSET+1, dot_len-1 do
+							local set_offset = set_offset_funcs[i]
 							set_offset(set_buf, i, get_offset(set_buf, i) + shift_sz)
 						end
 						return rec_sz + shift_sz
@@ -773,6 +795,7 @@ function Db:load_schema(schema)
 end
 
 local function val_len(col, val) --truncates the value if needed.
+	if val == nil then return 0 end
 	local max_len = col.maxlen or col.len
 	return max_len and min(#val, max_len) or 1
 end
@@ -782,7 +805,8 @@ local function rec_size(self, cols, vals)
 	for i = cols.fixsize_n+1, #cols do
 		local col = cols[i]
 		local padded_val_len = col.len
-			or col.maxlen and min(#vals[col.name], col.maxlen)
+			or col.maxlen
+				and min(vals[col.name] == nil and 0 or #vals[col.name], col.maxlen)
 			or 1
 		sz = sz + padded_val_len * col.elem_size
 	end
@@ -1041,9 +1065,9 @@ if not ... then
 		local tx = db:tx()
 		pr(tbl.pk)
 		for k,v in tx:each(tbl.name) do
-			local s1, len = db:decode_key(tbl.name, 's1', k.data, tonumber(k.size))
-			local s2, len = db:decode_key(tbl.name, 's2', k.data, tonumber(k.size))
-			pr(str(s1, len), str(s2, len))
+			local s1, len1 = db:decode_key(tbl.name, 's1', k.data, tonumber(k.size))
+			local s2, len2 = db:decode_key(tbl.name, 's2', k.data, tonumber(k.size))
+			pr(str(s1, len1), str(s2, len2))
 		end
 		tx:commit()
 		pr()
