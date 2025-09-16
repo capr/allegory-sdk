@@ -316,28 +316,30 @@ function Db:load_schema(schema)
 			local is_val_col = cols == val_cols
 			local is_key_col = cols == key_cols
 
-			--compute dynamic offset table (d.o.t.) length.
-			--all cols after the first varsize col need a dyn offset.
+			--compute dynamic offset table (d.o.t.) length for val cols.
+			--all val cols after the first varsize col need a dyn offset.
+			--key cols can't have an offset table instead we use \0 separator.
 			local dot_len = 0
 			local fixsize_n = #cols
 			for i,col in ipairs(cols) do
 				if col.maxlen then --first varsize col
-					dot_len = #cols - i
+					if is_val_col then
+						dot_len = #cols - i
+					end
 					fixsize_n = i - 1
 					break
 				end
 			end
 			cols.fixsize_n = fixsize_n
-			--a final offset is added after the last col if it's a varsize desc
-			--key col so that larger values come first on that col.
-			if is_key_col and cols[#cols].maxlen and cols[#cols].desc then
-				dot_len = dot_len + 1
-			end
 
 			--compute max row size, excluding d.o.t.
 			local max_rec_size = 0
 			for _,col in ipairs(cols) do
-				max_rec_size = max_rec_size + (col.maxlen or col.len or 1) * col.elem_size
+				local len = col.maxlen or col.len or 1
+				if is_key_col and col.maxlen then
+					len = len + 1 --varsize key cols are \0-terminated
+				end
+				max_rec_size = max_rec_size + len * col.elem_size
 			end
 
 			--compute the number of bytes needed to hold all the null bits.
@@ -345,18 +347,20 @@ function Db:load_schema(schema)
 
 			--compute offset C type based on how large the offsets can be.
 			local offset_ct
-			if max_rec_size + nulls_size + dot_len < 2^8 then
-				offset_ct = 'uint8_t'
-			elseif max_rec_size + nulls_size + dot_len * 2 < 2^16 then
-				offset_ct = 'uint16_t'
-			elseif max_rec_size + nulls_size + dot_len * 4 < 2^32 then
-				offset_ct = 'uint32_t'
-			else
-				offset_ct = 'uint64_t'
+			if is_val_col then
+				if max_rec_size + nulls_size + dot_len < 2^8 then
+					offset_ct = 'uint8_t'
+				elseif max_rec_size + nulls_size + dot_len * 2 < 2^16 then
+					offset_ct = 'uint16_t'
+				elseif max_rec_size + nulls_size + dot_len * 4 < 2^32 then
+					offset_ct = 'uint32_t'
+				else
+					offset_ct = 'uint64_t'
+				end
 			end
 
 			--compute max row size, including d.o.t.
-			local max_rec_size = max_rec_size + dot_len * sizeof(offset_ct)
+			local max_rec_size = max_rec_size + dot_len * (offset_ct and sizeof(offset_ct) or 0)
 			if is_key_col then
 				assert(max_rec_size <= self:db_max_key_size(),
 					'pk too big: %d bytes (max is %d bytes)', max_rec_size, self:db_max_key_size())
@@ -366,7 +370,7 @@ function Db:load_schema(schema)
 			--compute row layout: null bits, fixsize cols, d.o.t., varsize cols.
 			local ct = {'struct __attribute__((__packed__)) {\n'}
 			--add the nulls bit array
-			if is_val_col then
+			if nulls_size > 0 then
 				append(ct, '\t', 'uint8_t _nulls_[', nulls_size, '];\n')
 			end
 			--cols of fixed size: direct access.
@@ -377,7 +381,7 @@ function Db:load_schema(schema)
 				append(ct, ';\n')
 			end
 			--d.o.t. for cols at a dynamic offset.
-			if dot_len > 0 then
+			if offset_ct then
 				append(ct, '\t', offset_ct, ' _offsets_[', dot_len, '];\n')
 			end
 			--first col after d.o.t. at fixed offset (varsize or not).
@@ -397,57 +401,6 @@ function Db:load_schema(schema)
 			cols.ct = ct
 			cols.pct = ctype('$*', ct)
 
-			--generate offset getters and setters for each col at a dyn offset.
-			for col_i = fixsize_n+2, #cols do
-				local COL = fixsize_n+2 - col_i
-				local col = cols[col_i]
-				--the offset of this col is the len+delta of the prev col,
-				--which is why we encode this offset with the desc of the prev col.
-				local desc = cols[col_i-1].order == 'desc'
-				local get_offset, set_offset
-				if is_key_col then --offsets must be encoded for keys.
-					if offset_ct == 'uint8_t' then
-						function get_offset(buf)
-							return decode_u8(buf._offsets_[COL], desc)
-						end
-						function set_offset(buf, offset)
-							buf._offsets_[COL] = encode_u8(offset, desc)
-						end
-					elseif offset_ct == 'uint16_t' then
-						function get_offset(buf)
-							return decode_u16(buf._offsets_[COL], desc)
-						end
-						function set_offset(buf, offset)
-							buf._offsets_[COL] = encode_u16(offset, desc)
-						end
-					elseif offset_ct == 'uint32_t' then
-						function get_offset(buf)
-							return decode_u32(buf._offsets_[COL], desc)
-						end
-						function set_offset(buf, offset)
-							buf._offsets_[COL] = encode_u32(offset, desc)
-						end
-					elseif offset_ct == 'uint64_t' then
-						function get_offset(buf)
-							return decode_u64(buf._offsets_[COL], desc)
-						end
-						function set_offset(buf, offset)
-							buf._offsets_[COL] = encode_u64(offset, desc)
-						end
-					end
-				else
-					function get_offset(buf)
-						return buf._offsets_[COL]
-					end
-					function set_offset(buf, offset)
-						assert(false)
-						buf._offsets_[COL] = offset
-					end
-				end
-				cols[col_i].get_offset = get_offset
-				cols[col_i].set_offset = set_offset
-			end
-
 			--generate value encoders and decoders
 			for col_i,col in ipairs(cols) do
 
@@ -456,8 +409,9 @@ function Db:load_schema(schema)
 				local COL = col.name
 				local desc = col.order == 'desc'
 				local isarray = col.len or col.maxlen
+				local OFFSET = fixsize_n+2 - col_i
 
-				local geti, seti, getp, getsize, getlen, clear
+				local geti, seti, getp, getp2, getsize, getlen, clear
 				local resize = noop
 
 				if col_i <= fixsize_n+1 then --value at fixed offset
@@ -473,16 +427,34 @@ function Db:load_schema(schema)
 						end
 						if col.maxlen then --varsize at fixed offset (first col after d.o.t.)
 							local col_offset = offsetof(cols.ct, COL)
-							if dot_len == 0 then --last col, no d.o.t.
+							local is_last_col = col_i == #cols
+							if is_last_col then --last col, size derived from rec size
 								function getsize(buf, rec_sz)
 									return rec_sz - col_offset
 								end
-							else --d.o.t. follows
-								local next_col_offset = cols[col_i+1].get_offset
+							elseif is_val_col then
+								assert(OFFSET >= 0 and OFFSET + 1 < dot_len) --d.o.t. follows
 								function getsize(buf, rec_sz)
-									return next_col_offset(buf) - col_offset
+									return buf._offsets_[OFFSET+1] - col_offset
 								end
 								resize = true
+							else --non-last varsize key col at fixed offset, size at \0
+								function getsize(buf, rec_sz)
+									for i = 0, col.maxlen do
+										if buf[COL][i] == 0 then
+											return i
+										end
+									end
+									assert(false, '\\0 missing')
+								end
+							end
+							function getp2(buf, rec_sz)
+								return getp(buf) + getsize(buf, rec_sz)
+							end
+						else --fixsize at fixed offset
+							local size = ((col.len or 1) + (is_key_col and 1 or 0)) * elem_size
+							function getp2(buf, rec_sz)
+								return getp(buf) + size
 							end
 						end
 					else --single value at fixed offset
@@ -496,36 +468,73 @@ function Db:load_schema(schema)
 						function getp(buf)
 							return cast(elem_p_ct, cast(u8p, buf) + offset)
 						end
+						function getp2(buf)
+							return getp(buf) + elem_size
+						end
 					end
 				else --value at dynamic offset
-					local get_offset = col.get_offset
-					function getp(buf)
-						local offset = get_offset(buf)
-						return cast(elem_p_ct, cast(u8p, buf) + offset)
-					end
-					function geti(buf, i)
-						return getp(buf)[i]
-					end
-					function seti(buf, i, val)
-						getp(buf)[i] = val
+					if is_val_col then
+						function getp(buf)
+							local offset = buf._offsets_[OFFSET]
+							return cast(elem_p_ct, cast(u8p, buf) + offset)
+						end
+						if col_i < #cols then
+							assert(OFFSET >= 0 and OFFSET+1 < dot_len)
+							function getp2(buf)
+								local offset2 = buf._offsets_[OFFSET+1]
+								return cast(elem_p_ct, cast(u8p, buf) + offset2)
+							end
+						else
+							function getp2(buf, rec_sz)
+								return cast(elem_p_ct, cast(u8p, buf) + rec_sz)
+							end
+						end
+						function geti(buf, i)
+							return getp(buf)[i]
+						end
+						function seti(buf, i, val)
+							getp(buf)[i] = val
+						end
+					else
+						local prev_getp2 = cols[col_i-1].getp2
+						function getp(buf)
+							return prev_getp2(buf)
+						end
+						function getp2(buf)
+							return prev_getp2(buf)
+						end
 					end
 					if isarray then --fixsize or varsize at dyn offset
 						if col.maxlen then --varsize at dyn offset
-							local get_offset = col.get_offset
 							if col_i < #cols then
-								local get_next_offset = cols[col_i+1].get_offset
-								function getsize(buf, rec_sz)
-									return get_next_offset(buf) - get_offset(buf)
+								if is_key_col then
+									function getsize(buf, rec_sz)
+										local p = getp(buf)
+										for i = 0, col.maxlen do
+											if p[i] == 0 then
+												return i
+											end
+										end
+										assert(false , '\\0 missing')
+									end
+								else
+									assert(OFFSET >= 0 and OFFSET+1 < dot_len)
+									function getsize(buf, rec_sz)
+										return buf._offsets_[OFFSET+1] - buf._offsets_[OFFSET]
+									end
+									resize = true
 								end
-								resize = true
 							else
+								assert(OFFSET >= 0)
 								function getsize(buf, rec_sz)
-									return rec_sz - get_offset(buf)
+									return rec_sz - buf._offsets_[OFFSET]
 								end
 							end
 						end
 					else --single value at dyn offset
-						--nothing to do.
+						function getp2(buf)
+							return getp(buf) + elem_size
+						end
 					end
 				end
 
@@ -644,7 +653,7 @@ function Db:load_schema(schema)
 						function getlen(buf, rec_sz)
 							return shr(getsize(buf, rec_sz), elem_size_bits)
 						end
-					else
+					else --not-yet-used
 						function getlen(buf, rec_sz)
 							return getsize(buf, rec_sz) / elem_size
 						end
@@ -758,7 +767,6 @@ function Db:load_schema(schema)
 				--requires shifting all those fields left or right.
 				if resize == true then
 					local pct = cols.pct
-					local get_next_offset = cols[col_i+1].get_offset
 					function resize(buf, offset, rec_sz, len)
 						local set_buf = cast(pct, buf + offset)
 						local sz0 = getsize(set_buf, rec_sz)
@@ -771,7 +779,7 @@ function Db:load_schema(schema)
 							rec_sz - next_offset)
 						for col_i = OFFSET+1, dot_len-1 do
 							local col = cols[col_i]
-							col.set_offset(set_buf, col.get_offset(set_buf) + shift_sz)
+							set_buf._offsets_[OFFSET] = set_buf._offsets_[OFFSET] + shift_sz
 						end
 						return rec_sz + shift_sz
 					end
@@ -822,7 +830,7 @@ local function val_len(col, val) --truncates the value if needed.
 end
 
 local function rec_size(self, cols, vals)
-	local sz = sizeof(cols.ct, 0) --fixsize cols + d.o.t.
+	local sz = sizeof(cols.ct, 0) --null bits + fixsize cols + d.o.t.
 	for col_i = cols.fixsize_n+1, #cols do
 		local col = cols[col_i]
 		local padded_val_len = col.len
