@@ -22,6 +22,8 @@ local
 	typeof, tonumber, shl, shr, band, bor, xor, bnot, bswap, u8p, copy, cast =
 	typeof, tonumber, shl, shr, band, bor, xor, bnot, bswap, u8p, copy, cast
 
+assert(ffi.abi'le')
+
 local col_ct = {
 	f64    = 'double',
 	f32    = 'float',
@@ -40,6 +42,13 @@ local key_col_ct = {
 	f64 = 'uint64_t',
 	f32 = 'uint32_t',
 	i8  = 'uint8_t',
+}
+
+--types than ce stored in little-endian with MDBX_REVERSEKEY.
+local le_col_type = {
+	u64 = true,
+	u32 = true,
+	u16 = true,
 }
 
 local function decode_u8(x, desc)
@@ -290,13 +299,16 @@ function Db:load_schema(schema)
 			return i1 < i2
 		end)
 
-		--reverse key order if the last col is desc because the last col doesn't
-		--have an offset-of-the-next-col to negate (it's implied by the rec size).
-		local reverse_keys = key_cols[#key_cols].order == 'desc'
+		--MDBX_REVERSEKEY allows us to store uints in little endian, exploit that
+		--in the simple case of a single uint key.
+		local le_key = #key_cols == 1
+			and key_cols[1].order == 'asc'
+			and le_col_type[key_cols[1].type]
+			and true or nil
 
 		table_schema.key_cols = key_cols
 		table_schema.val_cols = val_cols
-		table_schema.reverse_keys = reverse_keys
+		table_schema.reverse_keys = le_key
 
 		--compute key and val layout and create col getters and setters.
 		for _,cols in ipairs{key_cols, val_cols} do
@@ -316,6 +328,11 @@ function Db:load_schema(schema)
 				end
 			end
 			cols.fixsize_n = fixsize_n
+			--a final offset is added after the last col if it's a varsize desc
+			--key col so that larger values come first on that col.
+			if is_key_col and cols[#cols].maxlen and cols[#cols].desc then
+				dot_len = dot_len + 1
+			end
 
 			--compute max row size, excluding d.o.t.
 			local max_rec_size = 0
@@ -323,17 +340,19 @@ function Db:load_schema(schema)
 				max_rec_size = max_rec_size + (col.maxlen or col.len or 1) * col.elem_size
 			end
 
+			--compute the number of bytes needed to hold all the null bits.
+			local nulls_size = is_val_col and ceil(#cols / 8) or 0
+
 			--compute offset C type based on how large the offsets can be.
-			local max_offset = max_rec_size - dot_len
 			local offset_ct
-			if max_offset < 2^8 then
+			if max_rec_size + nulls_size + dot_len < 2^8 then
 				offset_ct = 'uint8_t'
-			elseif max_offset * 2 < 2^16 then
+			elseif max_rec_size + nulls_size + dot_len * 2 < 2^16 then
 				offset_ct = 'uint16_t'
-			elseif max_offset * 4 < 2^32 then
+			elseif max_rec_size + nulls_size + dot_len * 4 < 2^32 then
 				offset_ct = 'uint32_t'
 			else
-				assert(false)
+				offset_ct = 'uint64_t'
 			end
 
 			--compute max row size, including d.o.t.
@@ -348,8 +367,7 @@ function Db:load_schema(schema)
 			local ct = {'struct __attribute__((__packed__)) {\n'}
 			--add the nulls bit array
 			if is_val_col then
-				local n = ceil(#cols / 8) --number of bytes needed to hold all the bits.
-				append(ct, '\t', 'uint8_t _nulls_[', n, '];\n')
+				append(ct, '\t', 'uint8_t _nulls_[', nulls_size, '];\n')
 			end
 			--cols of fixed size: direct access.
 			for i=1,fixsize_n do
@@ -386,7 +404,6 @@ function Db:load_schema(schema)
 				--the offset of this col is the len+delta of the prev col,
 				--which is why we encode this offset with the desc of the prev col.
 				local desc = cols[col_i-1].order == 'desc'
-				if reverse_keys then desc = not desc end
 				local get_offset, set_offset
 				if is_key_col then --offsets must be encoded for keys.
 					if offset_ct == 'uint8_t' then
@@ -410,6 +427,13 @@ function Db:load_schema(schema)
 						function set_offset(buf, offset)
 							buf._offsets_[COL] = encode_u32(offset, desc)
 						end
+					elseif offset_ct == 'uint64_t' then
+						function get_offset(buf)
+							return decode_u64(buf._offsets_[COL], desc)
+						end
+						function set_offset(buf, offset)
+							buf._offsets_[COL] = encode_u64(offset, desc)
+						end
 					end
 				else
 					function get_offset(buf)
@@ -431,7 +455,6 @@ function Db:load_schema(schema)
 				local elem_p_ct = ctype(col.elem_ct..'*')
 				local COL = col.name
 				local desc = col.order == 'desc'
-				if reverse_keys then desc = not desc end
 				local isarray = col.len or col.maxlen
 
 				local geti, seti, getp, getsize, getlen, clear
@@ -511,7 +534,7 @@ function Db:load_schema(schema)
 					local rawgeti = geti
 					local rawseti = seti
 					local t = col.type
-					if t == 'u32' then
+					if t == 'u32' and not le_key then
 						function geti(buf, i)
 							return decode_u32(rawgeti(buf, i), desc)
 						end
@@ -532,7 +555,7 @@ function Db:load_schema(schema)
 							if desc then x = bnot(x) end
 							rawseti(buf, i, x)
 						end
-					elseif t == 'u16' then
+					elseif t == 'u16' and not le_key then
 						function geti(buf, i)
 							return decode_u16(rawgeti(buf, i), desc)
 						end
@@ -572,7 +595,7 @@ function Db:load_schema(schema)
 						function seti(buf, i, x)
 							rawseti(buf, i, encode_u8(x, desc)) --uint32 -> uint8 (truncate)
 						end
-					elseif t == 'u64' then
+					elseif t == 'u64' and not le_key then
 						function geti(buf, i)
 							return decode_u64(rawgeti(buf, i), desc)
 						end
@@ -1030,11 +1053,13 @@ if not ... then
 		tx:commit()
 
 		local tx = db:tx()
+		pr('***', tbl.pk, '***')
 		for k,v in tx:each(tbl.name) do
 			local s, len = db:decode_key(tbl.name, 's', k.data, tonumber(k.size))
 			pr(str(s, len))
 		end
 		tx:commit()
+		pr()
 	end
 	pr()
 
@@ -1043,6 +1068,11 @@ if not ... then
 		local t = {
 			{s1 = 'a'  , s2 = 'b' , },
 			{s1 = 'a'  , s2 = 'a' , },
+			{s1 = 'a'  , s2 = 'aa', },
+			{s1 = 'a'  , s2 = 'bb', },
+			{s1 = 'aa' , s2 = 'a' , },
+			{s1 = 'aa' , s2 = 'b' , },
+			{s1 = 'bb' , s2 = 'a' , },
 			{s1 = 'bb' , s2 = 'aa', },
 			{s1 = 'bb' , s2 = 'bb', },
 			{s1 = 'aa' , s2 = 'bb', },
@@ -1055,7 +1085,7 @@ if not ... then
 		tx:commit()
 
 		local tx = db:tx()
-		pr(tbl.pk)
+		pr('***', tbl.pk, '***')
 		for k,v in tx:each(tbl.name) do
 			local s1, len1 = db:decode_key(tbl.name, 's1', k.data, tonumber(k.size))
 			local s2, len2 = db:decode_key(tbl.name, 's2', k.data, tonumber(k.size))
