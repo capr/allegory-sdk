@@ -13,7 +13,6 @@
 ]]
 
 require'glue'
-require'ffi'
 local isnum = isnum
 local C = ffi.load'mdbx'
 
