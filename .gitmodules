@@ -67,3 +67,6 @@
 [submodule "c/utf8proc/src"]
 	path = c/utf8proc/src
 	url = git@github.com:JuliaStrings/utf8proc.git
+[submodule "c/mir"]
+	path = c/mir
+	url = git@github.com:vnmakarov/mir.git
