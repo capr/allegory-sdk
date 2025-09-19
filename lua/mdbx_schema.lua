@@ -13,6 +13,10 @@
 		- composite keys with per-field ordering
 		- utf-8 ai_ci collation
 
+	Limitations:
+		- keys are not nullable
+		- multi-value keys are \0-terminated so they are not 8-bit clean!
+
 ]]
 
 require'mdbx'
@@ -51,41 +55,81 @@ local le_col_type = {
 	u16 = true,
 }
 
-local function decode_u8(x, desc)
+local decode = {}
+local encode = {}
+
+function decode.u8(x, desc)
 	if desc then x = band(bnot(x), 0xff) end
 	return x
 end
-local function encode_u8(x, desc)
+function encode.u8(x, desc)
 	local x = tonumber(x) --(u)int64 -> number (truncate)
 	if desc then x = bnot(x) end
 	return x --uint32 -> uint8 (truncate)
 end
 
-function decode_u16(x, desc)
+function decode.u16(x, desc)
 	if desc then x = bnot(x) end
 	return bswap(shl(x, 16)) --BE->LE & truncate
 end
-function encode_u16(x, desc)
+function encode.u16(x, desc)
 	local x = tonumber(x) --(u)int64 -> number (truncate)
 	local x = bswap(shl(x, 16)) --LE->BE
 	if desc then x = bnot(x) end
 	return x
 end
 
-function decode_u32(x, desc)
+function decode.u32(x, desc)
 	if desc then x = bnot(x) end
 	local x = bswap(x) --BE->LE
 	return x + shr(x, 31) * 0x100000000 --because bitops are signed
 end
-function encode_u32(x, desc)
+function encode.u32(x, desc)
 	local x = tonumber(x) --(u)int64 -> number (truncate)
 	local x = bswap(x) --LE->BE
 	if desc then x = bnot(x) end
 	return x
 end
 
+function decode.i8(x, desc)
+	if desc then x = band(bnot(x), 0xff) end
+	return x - 0x80 --flip sign
+end
+function encode.i8(x, desc)
+	local x = tonumber(x) --(u)int64 -> number (truncate)
+	local x = xor(x, 0x80) --flip int8 sign bit
+	if desc then x = bnot(x) end
+	return x --int32 -> uint8 (truncate)
+end
+
+function decode.i16(x, desc)
+	if desc then x = bnot(x) end
+	local x = bswap(shl(x, 16)) --BE->LE & truncate
+	return x - 0x8000 --flip sign
+end
+function encode.i16(x, desc)
+	local x = tonumber(x) --(u)int64 -> number (truncate)
+	local x = xor(x, 0x8000) --flip 16bit sign bit
+	local x = bswap(shl(x, 16)) --LE->BE
+	if desc then x = bnot(x) end
+	return x --int32 -> int16 (truncate)
+end
+
+function decode.i32(x, desc)
+	if desc then x = bnot(x) end
+	local x = bswap(x) --BE->LE
+	return xor(x, 0x80000000) --flip sign
+end
+function encode.i32(x, desc)
+	local x = tonumber(x) --(u)int64 -> number (truncate)
+	local x = xor(x, 0x80000000) --flip sign
+	local x = bswap(x) --LE->BE
+	if desc then x = bnot(x) end
+	return x
+end
+
 local u = new'union { uint64_t u; double f; struct { int32_t s1; int32_t s2; }; }'
-local function decode_f64(v, desc)
+function decode.f64(v, desc)
 	u.u = v
 	if desc then
 		u.s1 = bnot(u.s1)
@@ -99,7 +143,7 @@ local function decode_f64(v, desc)
 	end
 	return tonumber(u.f)
 end
-local function encode_f64(v, desc)
+function encode.f64(v, desc)
 	u.f = v
 	if shr(u.u, 63) ~= 0 then
 		u.u = bnot(u.u)
@@ -115,7 +159,7 @@ local function encode_f64(v, desc)
 end
 
 local u = new'union { uint32_t u; float f; int32_t s; }'
-local function decode_f32(v, desc)
+function decode.f32(v, desc)
 	u.u = v
 	if desc then u.s = bnot(u.s) end
 	u.s = bswap(u.s)
@@ -126,7 +170,7 @@ local function decode_f32(v, desc)
 	end
 	return tonumber(u.f)
 end
-local function encode_f32(v, desc)
+function encode.f32(v, desc)
 	u.f = v
 	if shr(u.u, 31) ~= 0 then
 		u.u = bnot(u.u)
@@ -139,7 +183,7 @@ local function encode_f32(v, desc)
 end
 
 local u = new'union { uint64_t u; int64_t i; struct { int32_t s1; int32_t s2; }; }'
-local function decode_u64(v, desc)
+function decode.u64(v, desc)
 	u.u = v
 	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
 	if desc then
@@ -148,8 +192,8 @@ local function decode_u64(v, desc)
 	end
 	return u.u
 end
-local encode_u64 = decode_u64
-local function decode_i64(v, desc)
+encode.u64 = decode.u64
+function decode.i64(v, desc)
 	u.i = v
 	if desc then
 		u.s1 = bnot(u.s1)
@@ -159,7 +203,7 @@ local function decode_i64(v, desc)
 	u.u = xor(u.u, 0x8000000000000000ULL)
 	return u.i
 end
-local function encode_i64(v, desc)
+function encode.i64(v, desc)
 	u.i = v
 	u.u = xor(u.u, 0x8000000000000000ULL)
 	u.s1, u.s2 = bswap(u.s2), bswap(u.s1)
@@ -267,7 +311,7 @@ function Db:load_schema(schema)
 			i = i + 1
 		end
 
-		--split cols into key cols and val cols based on pk.
+		--split fields into key cols and val cols based on pk.
 		local key_cols = {}
 		local val_cols = {}
 		for _,col in ipairs(table_schema.fields) do
@@ -299,8 +343,8 @@ function Db:load_schema(schema)
 			return i1 < i2
 		end)
 
-		--MDBX_REVERSEKEY allows us to store uints in little endian, exploit that
-		--in the simple case of a single uint key.
+		--MDBX_REVERSEKEY allows us to store uints in little endian,
+		--exploit that in the simple case of a single uint key.
 		local le_key = #key_cols == 1
 			and key_cols[1].order == 'asc'
 			and le_col_type[key_cols[1].type]
@@ -310,11 +354,11 @@ function Db:load_schema(schema)
 		table_schema.val_cols = val_cols
 		table_schema.reverse_keys = le_key
 
-		--compute key and val layout and create col getters and setters.
+		--compute key and val layout and create field getters and setters.
 		for _,cols in ipairs{key_cols, val_cols} do
 
-			local is_val_col = cols == val_cols
-			local is_key_col = cols == key_cols
+			local is_val = cols == val_cols
+			local is_key = cols == key_cols
 
 			--compute dynamic offset table (d.o.t.) length for val cols.
 			--all val cols after the first varsize col need a dyn offset.
@@ -323,7 +367,7 @@ function Db:load_schema(schema)
 			local fixsize_n = #cols
 			for i,col in ipairs(cols) do
 				if col.maxlen then --first varsize col
-					if is_val_col then
+					if is_val then
 						dot_len = #cols - i
 					end
 					fixsize_n = i - 1
@@ -332,36 +376,42 @@ function Db:load_schema(schema)
 			end
 			cols.fixsize_n = fixsize_n
 
+			--compute the number of bytes needed to hold all the null bits.
+			local nulls_size = is_val and ceil(#cols / 8) or 0
+
 			--compute max row size, excluding d.o.t.
-			local max_rec_size = 0
-			for _,col in ipairs(cols) do
+			local max_rec_size = nulls_size
+			for col_i,col in ipairs(cols) do
 				local len = col.maxlen or col.len or 1
-				if is_key_col and col.maxlen then
-					len = len + 1 --varsize key cols are \0-terminated
+				if is_key and col.maxlen and col_i < #cols then
+					len = len + 1 --varsize key cols are \0-terminated except the last one.
 				end
 				max_rec_size = max_rec_size + len * col.elem_size
 			end
 
-			--compute the number of bytes needed to hold all the null bits.
-			local nulls_size = is_val_col and ceil(#cols / 8) or 0
-
 			--compute offset C type based on how large the offsets can be.
+			--also compute d.o.t. size and update max_rec_size to include d.o.t.
 			local offset_ct
-			if is_val_col then
-				if max_rec_size + nulls_size + dot_len < 2^8 then
+			local dot_size = 0
+			if is_val then
+				if max_rec_size + dot_len < 2^8 then
 					offset_ct = 'uint8_t'
-				elseif max_rec_size + nulls_size + dot_len * 2 < 2^16 then
+					dot_size = dot_len
+				elseif max_rec_size + dot_len * 2 < 2^16 then
 					offset_ct = 'uint16_t'
-				elseif max_rec_size + nulls_size + dot_len * 4 < 2^32 then
+					dot_size = dot_len * 2
+				elseif max_rec_size + dot_len * 4 < 2^32 then
 					offset_ct = 'uint32_t'
+					dot_size = dot_len * 4
 				else
 					offset_ct = 'uint64_t'
+					dot_size = dot_len * 8
 				end
 			end
+			max_rec_size = max_rec_size + dot_size
 
 			--compute max row size, including d.o.t.
-			local max_rec_size = max_rec_size + dot_len * (offset_ct and sizeof(offset_ct) or 0)
-			if is_key_col then
+			if is_key then
 				assert(max_rec_size <= self:db_max_key_size(),
 					'pk too big: %d bytes (max is %d bytes)', max_rec_size, self:db_max_key_size())
 			end
@@ -376,9 +426,7 @@ function Db:load_schema(schema)
 			--cols of fixed size: direct access.
 			for i=1,fixsize_n do
 				local col = cols[i]
-				append(ct, '\t', col.elem_ct, ' ', col.name)
-				if col.len then append(ct, '[', col.len, ']') end
-				append(ct, ';\n')
+				append(ct, '\t', col.elem_ct, ' ', col.name, '[', col.len or 1, '];\n')
 			end
 			--d.o.t. for cols at a dynamic offset.
 			if offset_ct then
@@ -387,11 +435,8 @@ function Db:load_schema(schema)
 			--first col after d.o.t. at fixed offset (varsize or not).
 			if fixsize_n < #cols then
 				local col = cols[fixsize_n+1]
-				append(ct, '\t', col.elem_ct, ' ', col.name)
-				if col.maxlen then append(ct, '[?]')
-				elseif col.len then append(ct, '[', col.len, ']')
-				end
-				append(ct, ';\n')
+				append(ct, '\t', col.elem_ct, ' ', col.name,
+					'[', col.maxlen and '?' or col.len or 1, '];\n')
 			end
 			--all other cols are at dyn. offsets so can't be struct fields.
 			append(ct, '}')
@@ -401,324 +446,219 @@ function Db:load_schema(schema)
 			cols.ct = ct
 			cols.pct = ctype('$*', ct)
 
-			--generate value encoders and decoders
+			--generate value encoders and decoders. keys are encoded differently
+			--than vals: keys are encoded for lexicographic binary ordering,
+			--which means: no nulls, no offset table for varsize fields, instead
+			--we use \0 as separator, so no 8-bit clean varsize keys either,
+			--value bits are negated to achieve descending order, ints and floats
+			--are encoded so that bit order matches numeric order.
+
 			for col_i,col in ipairs(cols) do
 
 				local elem_size = col.elem_size
 				local elem_p_ct = ctype(col.elem_ct..'*')
 				local COL = col.name
-				local desc = col.order == 'desc'
+				local DOTI = fixsize_n+2 - col_i --col's index in d.o.t.
+				local fixed_offset = col_i <= fixsize_n+1
+				local varsize = col.maxlen and true or false
+				local last_col = col_i == #cols
 				local isarray = col.len or col.maxlen
-				local OFFSET = fixsize_n+2 - col_i
 
-				local geti, seti, getp, getp2, getsize, getlen, clear
-				local resize = noop
-
-				if col_i <= fixsize_n+1 then --value at fixed offset
-					if isarray then --fixsize or varsize at fixed offset
-						function geti(buf, i)
-							return buf[COL][i]
-						end
-						function seti(buf, i, val)
-							buf[COL][i] = val
-						end
-						function getp(buf)
-							return cast(elem_p_ct, buf[COL])
-						end
-						if col.maxlen then --varsize at fixed offset (first col after d.o.t.)
-							local col_offset = offsetof(cols.ct, COL)
-							local is_last_col = col_i == #cols
-							if is_last_col then --last col, size derived from rec size
-								function getsize(buf, rec_sz)
-									return rec_sz - col_offset
-								end
-							elseif is_val_col then
-								assert(OFFSET >= 0 and OFFSET + 1 < dot_len) --d.o.t. follows
-								function getsize(buf, rec_sz)
-									return buf._offsets_[OFFSET+1] - col_offset
-								end
-								resize = true
-							else --non-last varsize key col at fixed offset, size at \0
-								function getsize(buf, rec_sz)
-									for i = 0, col.maxlen do
-										if buf[COL][i] == 0 then
-											return i
-										end
-									end
-									assert(false, '\\0 missing')
-								end
-							end
-							function getp2(buf, rec_sz)
-								return getp(buf) + getsize(buf, rec_sz)
-							end
-						else --fixsize at fixed offset
-							local size = ((col.len or 1) + (is_key_col and 1 or 0)) * elem_size
-							function getp2(buf, rec_sz)
-								return getp(buf) + size
-							end
-						end
-					else --single value at fixed offset
-						function geti(buf)
-							return buf[COL]
-						end
-						function seti(buf, i, val)
-							buf[COL] = val
-						end
-						local offset = offsetof(ct, COL)
-						function getp(buf)
-							return cast(elem_p_ct, cast(u8p, buf) + offset)
-						end
-						function getp2(buf)
-							return getp(buf) + elem_size
-						end
+				--value start pointer getter
+				local getp
+				if fixed_offset then
+					function getp(buf)
+						return cast(elem_p_ct, buf[COL])
 					end
-				else --value at dynamic offset
-					if is_val_col then
-						function getp(buf)
-							local offset = buf._offsets_[OFFSET]
-							return cast(elem_p_ct, cast(u8p, buf) + offset)
-						end
-						if col_i < #cols then
-							assert(OFFSET >= 0 and OFFSET+1 < dot_len)
-							function getp2(buf)
-								local offset2 = buf._offsets_[OFFSET+1]
-								return cast(elem_p_ct, cast(u8p, buf) + offset2)
-							end
-						else
-							function getp2(buf, rec_sz)
-								return cast(elem_p_ct, cast(u8p, buf) + rec_sz)
-							end
-						end
-						function geti(buf, i)
-							return getp(buf)[i]
-						end
-						function seti(buf, i, val)
-							getp(buf)[i] = val
-						end
-					else
-						local prev_getp2 = cols[col_i-1].getp2
-						function getp(buf)
-							return prev_getp2(buf)
-						end
-						function getp2(buf)
-							return prev_getp2(buf)
-						end
-					end
-					if isarray then --fixsize or varsize at dyn offset
-						if col.maxlen then --varsize at dyn offset
-							if col_i < #cols then
-								if is_key_col then
-									function getsize(buf, rec_sz)
-										local p = getp(buf)
-										for i = 0, col.maxlen do
-											if p[i] == 0 then
-												return i
-											end
-										end
-										assert(false , '\\0 missing')
-									end
-								else
-									assert(OFFSET >= 0 and OFFSET+1 < dot_len)
-									function getsize(buf, rec_sz)
-										return buf._offsets_[OFFSET+1] - buf._offsets_[OFFSET]
-									end
-									resize = true
-								end
-							else
-								assert(OFFSET >= 0)
-								function getsize(buf, rec_sz)
-									return rec_sz - buf._offsets_[OFFSET]
-								end
-							end
-						end
-					else --single value at dyn offset
-						function getp2(buf)
-							return getp(buf) + elem_size
-						end
-					end
-				end
-
-				--key vals must be encoded/decoded for binary ordering.
-				if is_key_col then
-					local rawgeti = geti
-					local rawseti = seti
-					local t = col.type
-					if t == 'u32' and not le_key then
-						function geti(buf, i)
-							return decode_u32(rawgeti(buf, i), desc)
-						end
-						function seti(buf, i, x)
-							rawseti(buf, i, encode_u32(x, desc))
-						end
-					elseif t == 'i32' then
-						function geti(buf, i)
-							local x = rawgeti(buf, i)
-							if desc then x = bnot(x) end
-							local x = bswap(x) --BE->LE
-							return xor(x, 0x80000000) --flip sign
-						end
-						function seti(buf, i, x)
-							local x = tonumber(x) --(u)int64 -> number (truncate)
-							local x = xor(x, 0x80000000) --flip sign
-							local x = bswap(x) --LE->BE
-							if desc then x = bnot(x) end
-							rawseti(buf, i, x)
-						end
-					elseif t == 'u16' and not le_key then
-						function geti(buf, i)
-							return decode_u16(rawgeti(buf, i), desc)
-						end
-						function seti(buf, i, x)
-							rawseti(buf, i, encode_u16(x, desc))
-						end
-					elseif t == 'i16' then
-						function geti(buf, i)
-							local x = rawgeti(buf, i)
-							if desc then x = bnot(x) end
-							local x = bswap(shl(x, 16)) --BE->LE & truncate
-							return x - 0x8000 --flip sign
-						end
-						function seti(buf, i, x)
-							local x = tonumber(x) --(u)int64 -> number (truncate)
-							local x = xor(x, 0x8000) --flip 16bit sign bit
-							local x = bswap(shl(x, 16)) --LE->BE
-							if desc then x = bnot(x) end
-							rawseti(buf, i, x) --int32 -> int16 (truncate)
-						end
-					elseif t == 'i8' then
-						function geti(buf, i)
-							local x = rawgeti(buf, i)
-							if desc then x = band(bnot(x), 0xff) end
-							return x - 0x80 --flip sign
-						end
-						function seti(buf, i, x)
-							local x = tonumber(x) --(u)int64 -> number (truncate)
-							local x = xor(x, 0x80) --flip int8 sign bit
-							if desc then x = bnot(x) end
-							rawseti(buf, i, x) --int32 -> uint8 (truncate)
-						end
-					elseif t == 'u8' or t == 'utf8' then
-						function geti(buf, i)
-							return decode_u8(rawgeti(buf, i), desc)
-						end
-						function seti(buf, i, x)
-							rawseti(buf, i, encode_u8(x, desc)) --uint32 -> uint8 (truncate)
-						end
-					elseif t == 'u64' and not le_key then
-						function geti(buf, i)
-							return decode_u64(rawgeti(buf, i), desc)
-						end
-						function seti(buf, i, val)
-							rawseti(buf, i, encode_u64(val, desc))
-						end
-					elseif t == 'i64' then
-						function geti(buf, i)
-							return decode_i64(rawgeti(buf, i), desc)
-						end
-						function seti(buf, i, val)
-							rawseti(buf, i, encode_i64(val, desc))
-						end
-					elseif t == 'f64' then
-						function geti(buf, i)
-							return decode_f64(rawgeti(buf, i), desc)
-						end
-						function seti(buf, i, val)
-							rawseti(buf, i, encode_f64(val, desc))
-						end
-					elseif t == 'f32' then
-						function geti(buf, i)
-							return decode_f32(rawgeti(buf, i), desc)
-						end
-						function seti(buf, i, val)
-							rawseti(buf, i, encode_f32(val, desc))
-						end
-					end
-				end
-
-				if col.len then
-					local len = col.len
-					function getlen()
-						return len
-					end
-					assert(not getsize)
-					function getsize()
-						return len * elem_size
-					end
-					function clear(buf) --fixsize arrays must be cleared before setting.
-						fill(getp(buf), len * elem_size)
+				elseif is_val then
+					assert(DOTI >= 0 and DOTI < dot_len)
+					function getp(buf)
+						return cast(elem_p_ct, cast(u8p, buf) + buf._offsets_[DOTI])
 					end
 				else
+					local prev_col = cols[col_i-1]
+					local prev_getp = prev_col.getp
+					local prev_findsize = prev_col.findsize
+					function getp(buf, rec_sz)
+						local prev_p = prev_getp(buf) --can be recursive
+						local prev_size = prev_findsize(buf, prev_p, rec_sz)
+						return cast(elem_p_ct, cast(u8p, prev_p) + prev_size)
+					end
+				end
+
+				--helper to scan for \0 up-to maxlen
+				local findzero
+				if is_key and varsize then
+					local maxlen = col.maxlen
+					function findzero(p)
+						for i = 0, maxlen do
+							if p[i] == 0 then
+								return i
+							end
+						end
+						assert(false, '\\0 missing')
+					end
+				end
+
+				--size and length getters
+				local findsize, getlen, getsize
+				if not varsize then --fixsize col
+					local len = col.len or 1
+					local size = len * elem_size
+					function getlen(buf, rec_sz)
+						return len
+					end
+					function getsize(buf, rec_sz)
+						return size
+					end
+					function findsize(buf, p, rec_sz)
+						return size
+					end
+				elseif is_key and not last_col then --non-last varsize key col
+					function findsize(buf, p, rec_sz)
+						return findzero(p) * elem_size
+					end
+					function getlen(buf, rec_sz)
+						return findzero(getp(buf))
+					end
+					function getsize(buf, rec_sz)
+						return findzero(getp(buf)) * elem_size
+					end
+				elseif fixed_offset then --varsize col at fixed offset
+					local col_offset = offsetof(cols.ct, COL)
+					if last_col then --last varsize col at fixed offset
+						function getsize(buf, rec_sz)
+							return rec_sz - col_offset
+						end
+						function findsize(buf, p, rec_sz)
+							return getsize(buf, rec_sz)
+						end
+					elseif is_val then --non-last varsize val col at fixed offset
+						assert(DOTI >= 0 and DOTI+1 < dot_len)
+						function getsize(buf, rec_sz)
+							return buf._offsets_[DOTI+1] - col_offset
+						end
+						function findsize(buf, p, rec_sz)
+							return getsize(buf, rec_sz)
+						end
+					end
+				elseif is_val then --varsize val col at dyn. offset
+					if last_col then --last varsize val col at dyn. offset
+						assert(DOTI == dot_len-1)
+						function getsize(buf, rec_sz)
+							return rec_sz - buf._offsets_[DOTI]
+						end
+						function findsize(buf, p, rec_sz)
+							 return getsize(buf, rec_sz)
+						end
+					else --non-last varsize col at dyn. offset
+						assert(DOTI >= 0 and DOTI+1 < dot_len)
+						function getsize(buf, rec_sz)
+							return buf._offsets_[DOTI+1] - buf._offsets_[DOTI]
+						end
+						function findsize(buf, p, rec_sz)
+							return getsize(buf, rec_sz)
+						end
+					end
+				elseif last_col then --last varsize key col at dyn. offset
+					function findsize(buf, p, rec_sz)
+						return rec_sz - (cast(u8p, p) - cast(u8p, buf))
+					end
+					function getsize(buf, rec_sz)
+						return findsize(buf, getp(buf), rec_sz)
+					end
+				end
+				if not findsize then
+					assert(getp and getsize)
+					function findsize(buf, p, rec_sz)
+						return getp(buf) + getsize(buf, rec_sz)
+					end
+				end
+				if not getlen then --infer getlen from getsize
+					assert(getsize)
 					local elem_size_bits = log2(elem_size)
 					if elem_size_bits == floor(elem_size_bits) then --power-of-two
 						function getlen(buf, rec_sz)
 							return shr(getsize(buf, rec_sz), elem_size_bits)
 						end
-					else --not-yet-used
+					else
 						function getlen(buf, rec_sz)
 							return getsize(buf, rec_sz) / elem_size
 						end
 					end
-					clear = noop
 				end
 
+				--fixsize arrays must be cleared before setting.
+				local clear = noop
+				if col.len then
+					function clear(buf)
+						fill(getp(buf), len * elem_size)
+					end
+				end
+
+				--raw getters and setters
 				local maxsize = (col.len or col.maxlen or 1) * elem_size
 				local function rawset(buf, rec_sz, val, sz)
 					sz = min(maxsize, sz or #val) --truncate
 					copy(getp(buf), val, sz)
 				end
-
 				local function rawget(buf, rec_sz)
-					local sz = getsize(buf, rec_sz)
-					return cast(u8p, getp(buf)), sz
+					local p = getp(buf)
+					local sz = findsize(buf, p, rec_sz)
+					return cast(u8p, p), sz
 				end
-
 				local function rawstr(buf, rec_sz)
 					return str(rawget(buf, rec_sz))
 				end
 
+				--key vals must be encoded/decoded for binary ordering.
+				local dec = is_key and not le_key and decode[col.type] or pass
+				local enc = is_key and not le_key and encode[col.type] or pass
+
 				--create final getters and setters.
+				local desc = col.order == 'desc'
 				if isarray then --varsize and fixsize arrays
 					local maxlen = col.len or col.maxlen
 					if col.type == 'utf8' then --utf8 strings
 						local ai_ci = col.collation == 'utf8_ai_ci'
 						if desc or ai_ci then
-							local rawgeti = geti
-							local rawseti = seti
 							function set(buf, rec_sz, s, len)
 								clear(buf)
-								if is_val_col and set_null(buf, col_i, s == nil) then
+								if is_val and set_null(buf, col_i, s == nil) then
 									return
 								end
 								local len = min(maxlen, len or #s) --truncate
-								local p
+								local sp
 								if ai_ci then
-									p, len = encode_ai_ci(s, len)
+									sp, len = encode_ai_ci(s, len)
 								else
-									p = cast(u8p, s)
+									sp = cast(u8p, s)
 								end
 								if desc then
+									local dp = getp(buf)
 									for i = 0, len-1 do
-										rawseti(buf, i, p[i])
+										dp[i] = enc(sp[i], true)
 									end
 								else
-									rawset(buf, rec_sz, p, len)
+									rawset(buf, rec_sz, sp, len)
 								end
 							end
 							function get(buf, rec_sz, out, out_len)
-								if is_val_col and is_null(buf, col_i) then
+								if is_val and is_null(buf, col_i) then
 									return nil
 								end
 								local p, p_len = rawget(buf, rec_sz)
 								local len = min(p_len, out_len or 1/0) --truncate
 								local out = out and cast(u8p, out) or u8a(len)
+								local dp = getp(buf)
 								for i = 0, len-1 do
-									out[i] = rawgeti(buf, i)
+									out[i] = dec(dp[i])
 								end
 								return out, len
 							end
-						else
+						else --raw utf8
 							function get(buf, rec_sz, out, out_len)
-								if is_val_col and is_null(buf, col_i) then
+								if is_val and is_null(buf, col_i) then
 									return nil
 								end
 								local p, p_len = rawget(buf, rec_sz)
@@ -729,7 +669,7 @@ function Db:load_schema(schema)
 							end
 							function set(buf, rec_sz, val, len)
 								clear(buf)
-								if is_val_col and set_null(buf, col_i, val == nil) then
+								if is_val and set_null(buf, col_i, val == nil) then
 									return
 								end
 								rawset(buf, rec_sz, val, len)
@@ -738,7 +678,7 @@ function Db:load_schema(schema)
 					else
 						function set(buf, rec_sz, val, len)
 							clear(buf)
-							if is_val_col and set_null(buf, col_i, val == nil) then
+							if is_val and set_null(buf, col_i, val == nil) then
 								return
 							end
 							assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
@@ -750,16 +690,16 @@ function Db:load_schema(schema)
 					end
 				else
 					function get(buf, rec_sz)
-						if is_val_col and is_null(buf, col_i) then
+						if is_val and is_null(buf, col_i) then
 							return nil
 						end
-						return geti(buf, 0)
+						return dec(getp(buf)[0], desc)
 					end
 					function set(buf, rec_sz, val)
-						if is_val_col and set_null(buf, col_i, val == nil) then
+						if is_val and set_null(buf, col_i, val == nil) then
 							return
 						end
-						seti(buf, 0, val)
+						getp(buf)[0] = enc(val, desc)
 					end
 				end
 
@@ -777,31 +717,24 @@ function Db:load_schema(schema)
 							buf + offset + next_offset + shift_sz,
 							buf + offset + next_offset,
 							rec_sz - next_offset)
-						for col_i = OFFSET+1, dot_len-1 do
+						for col_i = DOTI+1, dot_len-1 do
 							local col = cols[col_i]
-							set_buf._offsets_[OFFSET] = set_buf._offsets_[OFFSET] + shift_sz
+							set_buf._offsets_[DOTI] = set_buf._offsets_[DOTI] + shift_sz
 						end
 						return rec_sz + shift_sz
 					end
 				end
 
-				function col.geti(buf, rec_sz, i)
-					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
-					return geti(buf, i)
-				end
-				function col.seti(buf, rec_sz, i, val)
-					assert(i >= 0 and i <= getlen(buf, rec_sz)-1, 'index out of range')
-					rawseti(buf, i, val)
-				end
-
+				--getp() and findsize() are used in recursive getp() of varsize key cols.
+				col.getp = getp
+				col.findsize = findsize
+				col.getsize = getsize
+				col.getlen = getlen
 				col.get = get
 				col.set = set
 				col.rawset = rawset
 				col.rawget = rawget
-				col.getp = getp
 				col.rawstr = rawstr
-				col.getsize = getsize
-				col.getlen = getlen
 				col.resize = resize
 
 			end --for col in cols
