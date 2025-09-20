@@ -78,7 +78,6 @@ typedef struct schema_col {
 	schema_col_type type;
 	u32      len; // for varsize cols it means max len.
 	u16      index; // index in key_cols or in val_cols depending on is_key flag.
-	bool8    is_key; // whether it's a key column or a val colum
 	bool8    fixsize; // fixed size array (padded) or varsize.
 	bool8    descending; // for key cols
 	// computed layout
@@ -92,18 +91,15 @@ typedef struct schema_table {
 	schema_col* val_cols;
 	u16  n_key_cols;
 	u16  n_val_cols;
-	u8   offset_size; // size of dyn. offsets
+	u8   offset_size; // 1,2,4
 } schema_table;
 
-int  schema_is_null (void* buf, int col_i);
-void schema_set_null(void* buf, int col_i, int is_null);
-void schema_get(schema_table* tbl, int is_key, int col_i, void* buf, int rec_size, void* out, int out_len);
-void schema_set(schema_table* tbl, int is_key, int col_i, void* buf, int rec_size, void* in , int in_len);
+int  schema_get(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* out, u64 out_len);
+int  schema_set(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* in , u64 in_len);
 
 // implementation ------------------------------------------------------------
 
-static int scan(schema_col* col, void* p) { // scan for \0 up-to len
-	int len = col->len;
+static int scan_end(schema_col* col, void* p, int len) { // scan for \0 up-to len
 	if (col->elem_size == 1) {
 		uint8_t* q = p;
 		for (int i = 0; i < len; i++)
@@ -137,17 +133,17 @@ static int get_offset(schema_table* tbl, schema_col* col, void* buf) {
 	assert(0);
 }
 
-static void* get_ptr(schema_table* tbl, schema_col* col, void* buf) {
+static void* get_ptr(schema_table* tbl, int is_key, schema_col* col, void* buf) {
 	if (col->offset != -1) // col at fixed offset
 		return buf + col->offset;
-	if (col->is_key) { // key col at dyn. offset
+	if (is_key) { // key col at dyn. offset
 		void* p = buf;
 		for (int col_i = 0; col_i < col->index-1; col_i++) {
 			schema_col* col1 = &tbl->key_cols[col_i];
 			if (col1->fixsize) {
 				p += col1->len * col1->elem_size;
 			} else { // varsize col
-				p += scan(col1, p);
+				p += scan_end(col1, p, col1->len);
 			}
 		}
 		return p;
@@ -156,12 +152,12 @@ static void* get_ptr(schema_table* tbl, schema_col* col, void* buf) {
 	}
 }
 
-int get_len(schema_table* tbl, schema_col* col, void* buf, void* p, int rec_size) {
+int get_len(schema_table* tbl, int is_key, schema_col* col, void* buf, void* p, int rec_size) {
 	if (col->fixsize)
 		return col->len;
-	if (col->is_key) { // varsize key col
-		if (!p) p = get_ptr(tbl, col, buf);
-		return scan(col, p);
+	if (is_key) { // varsize key col
+		if (!p) p = get_ptr(tbl, is_key, col, buf);
+		return scan_end(col, p, col->len);
 	} else { // varsize val col
 		int offset = get_offset(tbl, col, buf);
 		if (col->index == tbl->n_val_cols-1) { // last col
@@ -173,8 +169,6 @@ int get_len(schema_table* tbl, schema_col* col, void* buf, void* p, int rec_size
 		}
 	}
 }
-
-typedef void (*encdec_t)(void* s, void* d);
 
 static void decode_u8(u8* s, u8* d) {
 	*d = *s;
@@ -241,6 +235,8 @@ static void encode_f64(u64* s, u64* d) {
 	*d = __builtin_bswap64(v);
 }
 
+typedef void (*encdec_t)(void* s, void* d);
+
 /* NOTE: must match schema_col_type enum order! */
 static encdec_t decoders[] = {
 	(encdec_t)&decode_i8,
@@ -290,18 +286,46 @@ static void invert_bits(void* d, void *s, int len) {
 	}
 }
 
-void schema_get(schema_table* tbl, int is_key, int col_i,
-	void* buf, int rec_size,
-	void* out, int out_len
+static int is_null(void* buf, int col_i) {
+	int byte_i = col_i >> 3;
+	int bit_i  = col_i & 7;
+	int mask   = 1 << bit_i;
+	u8* p = buf;
+	return (p[byte_i] & mask) != 0;
+}
+
+static void set_null(void* buf, int col_i, int is_null) {
+	int byte_i = col_i >> 3;
+	int bit_i  = col_i & 7;
+	int mask   = 1 << bit_i;
+	u8* p = buf;
+	if (is_null)
+		p[byte_i] = p[byte_i] | mask;
+	else
+		p[byte_i] = p[byte_i] & ~mask;
+}
+
+int schema_get(schema_table* tbl, int is_key, int col_i,
+	void* buf, u64 rec_size,
+	void* out, u64 out_len
 ) {
+	int ret = 0;
 	schema_col* col = get_col(tbl, is_key, col_i);
-	void* p = get_ptr(tbl, col, buf);
-	int in_len = get_len(tbl, col, buf, p, rec_size);
-	int copy_len = in_len < out_len ? in_len : out_len; // truncate
+	if (!is_key) {
+		if (is_null(buf, col_i))
+			return 1; // signal null
+	}
+	void* p = get_ptr(tbl, is_key, col, buf);
+	int in_len = get_len(tbl, is_key, col, buf, p, rec_size);
+	int copy_len = out_len;
+	if (in_len < out_len) {
+		out_len = in_len;
+		ret = -1; // signal truncation
+	}
 	int elem_size = col->elem_size;
-	if (!col->is_key) { // val col, copy
+	if (!is_key) { // val col, copy
 		memcpy(out, p, copy_len * elem_size);
-		return;
+		return ret;
 	}
 	// key col, decode
 	if (col->descending) { // invert bits
@@ -314,56 +338,68 @@ void schema_get(schema_table* tbl, int is_key, int col_i,
 		p   += elem_size;
 		out += elem_size;
 	}
+	return ret;
 }
-void schema_set(schema_table* tbl, int is_key, int col_i,
-	void* buf, int rec_size,
-	void* in, int in_len
+
+int schema_set(schema_table* tbl, int is_key, int col_i,
+	void* buf, u64 rec_size,
+	void* in, u64 in_len
 ) {
+	int ret = 0;
 	schema_col* col = get_col(tbl, is_key, col_i);
-	void* p = get_ptr(tbl, col, buf);
+	if (!is_key)
+		set_null(buf, col_i, !in);
+	else
+		assert(in);
+	void* p = get_ptr(tbl, is_key, col, buf);
 	int max_len = col->len;
-	int copy_len = max_len < in_len ? max_len : in_len; // truncate
+	int copy_len = in_len;
+	if (max_len < in_len) {
+		copy_len = max_len;
+		ret = -1; // signal truncation
+	}
 	int elem_size = col->elem_size;
 	if (col->fixsize) { // fixsize: pad
 		int pad_len = max_len - copy_len;
 		if (pad_len > 0)
 			memset(p + copy_len, 0, pad_len * elem_size);
 	}
-	if (!col->is_key) { // val col, copy
+	if (!is_key) { // val col, copy
 		memcpy(p, in, copy_len * elem_size);
-		return;
+		return ret;
 	}
 	// key col, encode
+	if (!col->fixsize && col_i < tbl->n_key_cols-1) {
+		// varsize cols can't have embedded zeroes except the last one.
+		// if \0 is detected, stop there.
+		int data_len = scan_end(col, in, copy_len);
+		if (data_len < copy_len) {
+			copy_len = data_len;
+			ret = -2; // signal truncation
+		}
+	}
 	encdec_t encode = encoders[col->type];
-	void* p1 = p;
+	void* d = p;
+	void* s = in;
 	for (int i = 0; i < copy_len; i++) {
-		encode(in, p1);
-		p1 += elem_size;
-		in += elem_size;
+		encode(s, d);
+		s += elem_size;
+		d += elem_size;
 	}
 	if (!col->fixsize && col->index < tbl->n_key_cols-1) {
 		// non-last varsize key col: null-terminate
-		memset(p1, 0, elem_size);
+		memset(d, 0, elem_size);
 		copy_len++; // must invert the \0 too on descending
 	}
 	if (col->descending)
 		invert_bits(p, p, copy_len * elem_size);
+	return ret;
 }
 
-int schema_is_null(void* buf, int col_i) {
-	int byte_i = col_i >> 3;
-	int bit_i  = col_i & 7;
-	int mask   = 1 << bit_i;
-	u8* p = buf;
-	return (p[byte_i] & mask) != 0;
-}
-void schema_set_null(void* buf, int col_i, int is_null) {
-	int byte_i = col_i >> 3;
-	int bit_i  = col_i & 7;
-	int mask   = 1 << bit_i;
-	u8* p = buf;
-	if (is_null)
-		p[byte_i] = p[byte_i] | mask;
-	else
-		p[byte_i] = p[byte_i] & ~mask;
-}
+int schema_resize(schema_table* tbl, int is_key, int col_i,
+	u64 rec_size, u64 len
+) {
+	int ret = 0;
+
+	return ret;
+};

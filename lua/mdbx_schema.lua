@@ -60,7 +60,6 @@ typedef struct schema_col {
 	schema_col_type type;
 	u32      len; // for varsize cols it means max len.
 	u16      index; // index in key_cols or in val_cols depending on is_key flag.
-	bool8    is_key; // whether it's a key column or a val colum
 	bool8    fixsize; // fixed size array (padded) or varsize.
 	bool8    descending;
 	// computed layout
@@ -77,24 +76,12 @@ typedef struct schema_table {
 	u8   offset_size; // size of dyn. offsets
 } schema_table;
 
-int  schema_is_null (void* buf, int col_i);
-void schema_set_null(void* buf, int col_i, int is_null);
-void schema_get(schema_table* tbl, int is_key, int col_i, void* buf, int rec_size, void* out, int out_len);
-void schema_set(schema_table* tbl, int is_key, int col_i, void* buf, int rec_size, void* in , int in_len);
+int  schema_get(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* out, u64 out_len);
+int  schema_set(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* in , u64 in_len);
 ]]
 
 local col_ct = {
-	i8   = 'int8_t',
-	i16  = 'int16_t',
-	i32  = 'int32_t',
-	i64  = 'int64_t',
-	u8   = 'uint8_t',
-	u16  = 'uint16_t',
-	u32  = 'uint32_t',
-	u64  = 'uint64_t',
-	f64  = 'double',
-	f32  = 'float',
-	utf8 = 'uint8_t',
+	utf8 = 'u8',
 }
 
 local schema_col_types = {
@@ -200,7 +187,7 @@ function Db:load_schema(schema)
 		local key_cols = {}
 		local val_cols = {}
 		for _,col in ipairs(table_schema.fields) do
-			local elem_ct = col_ct[col.type]
+			local elem_ct = col_ct[col.type] or col.type
 			if col.index then --part of pk
 				key_cols[col.index] = col
 				key_cols[col.name] = col
@@ -219,6 +206,7 @@ function Db:load_schema(schema)
 
 		--move varsize cols at the end to minimize the size of the dyn offset table.
 		--order cols by elem_size to maintain alignment.
+		--finally, order by index to get stable sorting.
 		sort(val_cols, function(col1, col2)
 			--elem_size fits in 4bit; col_index fits in 16bit; 4+16 = 20 bits,
 			--so any bit from bit 21+ can be used for extra conditions.
@@ -260,37 +248,40 @@ function Db:load_schema(schema)
 			local is_val = cols == val_cols
 			local is_key = cols == key_cols
 
-			--compute dynamic offset table (d.o.t.) length for val cols.
-			--all val cols after the first varsize col are at a dyn offset.
-			--key cols can't have an offset table instead we use \0 separator.
-			local dot_len = 0
+			--find the number of fixsize cols.
 			local fixsize_n = #cols
-			for i,col in ipairs(cols) do
+			for col_i, col in ipairs(cols) do
 				if col.maxlen then --first varsize col
-					if is_val then
-						dot_len = #cols - i
-					end
-					fixsize_n = i - 1
+					fixsize_n = col_i - 1
 					break
 				end
 			end
 
-			--compute the number of bytes needed to hold all the null bits.
-			local nulls_size = is_val and ceil(#cols / 8) or 0
-
-			--compute max row size, excluding d.o.t.
-			local max_rec_size = nulls_size
+			--compute max row size, just the data (which is what it is for keys).
+			local max_rec_size = 0
 			for col_i,col in ipairs(cols) do
 				local len = col.maxlen or col.len or 1
-				if is_key and col.maxlen and col_i < #cols then
-					len = len + 1 --varsize key cols are \0-terminated except the last one.
-				end
 				max_rec_size = max_rec_size + len * col.elem_size
 			end
 
-			--also compute d.o.t. size and update max_rec_size to include d.o.t.
+			if is_key then
+				assert(max_rec_size <= self:db_max_key_size(),
+					'pk too big: %d bytes (max is %d bytes)',
+						max_rec_size, self:db_max_key_size())
+			end
+
+			--compute dynamic offset table (d.o.t.) length for val records.
+			--all val cols after the first varsize col are at a dyn offset.
+			--key cols can't have an offset table instead we use \0 separator.
+			local dot_len = is_val and max(0, #cols - fixsize_n - 1) or 0
+
+			--compute the number of bytes needed to hold all the null bits.
+			local nulls_size = is_val and ceil(#cols / 8) or 0
+
+			--also compute d.o.t. size and update max_rec_size to include nulls and d.o.t.
 			local offset_size = 0
 			if is_val then
+				max_rec_size = max_rec_size + nulls_size
 				if max_rec_size + dot_len < 2^8 then
 					offset_size = 1
 				elseif max_rec_size + dot_len * 2 < 2^16 then
@@ -298,49 +289,43 @@ function Db:load_schema(schema)
 				elseif max_rec_size + dot_len * 4 < 2^32 then
 					offset_size = 4
 				else
-					assert(false, 'record size too big')
+					assert(false, 'value record size too big')
 				end
 				st.offset_size = offset_size
 				max_rec_size = max_rec_size + dot_len * offset_size
 			end
 
-			--compute max row size, including d.o.t.
-			if is_key then
-				assert(max_rec_size <= self:db_max_key_size(),
-					'pk too big: %d bytes (max is %d bytes)', max_rec_size, self:db_max_key_size())
-			end
 			cols.max_rec_size = max_rec_size
 
-			local offset = 0
+			local fixsize_offset = nulls_size
 			for col_i,col in ipairs(cols) do
 
-				local dot_index = is_val and fixsize_n+2 - col_i --col's index in d.o.t.
-				local fixed_offset = col_i <= fixsize_n+1
-
-				local offset = fixed_offset and offset + col.elem_size * (col.len or 1)
-				--local elem_size = col.elem_size
-				--local elem_p_ct = ctype(col.elem_ct..'*')
-				--local COL = col.name
-				--local varsize = col.maxlen and true or false
-				--local last_col = col_i == #cols
-				--local isarray = col.len or col.maxlen
-				--local desc = col.order == 'desc'
-
 				local st_cols = is_key and st_key_cols or st_val_cols
-				st_cols[col_i].type = schema_col_types[col.type]
-				st_cols[col_i].len = col.maxlen or col.len or 1
-				st_cols[col_i].index = col_i
-				st_cols[col_i].is_key = is_key
-				st_cols[col_i].fixsize = col.len and 1 or 0
-				st_cols[col_i].descending = col.order == 'desc'
-				st_cols[col_i].offset = offset or -1
-				if is_val and dot_index and dot_index  then
-					st_cols[col_i].offset_offset = dot_offset + dot_index * offset_size
-				end
-				st_cols[col_i].elem_size = col.elem_size
+				st_cols[col_i-1].type = schema_col_types[col.type]
+				st_cols[col_i-1].len = col.maxlen or col.len or 1
+				st_cols[col_i-1].index = col_i-1
+				st_cols[col_i-1].fixsize = col.maxlen and 0 or 1
+				st_cols[col_i-1].descending = col.order == 'desc'
+				st_cols[col_i-1].elem_size = col.elem_size
 
-				--create final getters and setters.
-				if isarray then --varsize and fixsize arrays
+				--compute and set fixed offset.
+				local at_fixed_offset = col_i <= fixsize_n+1
+				st_cols[col_i-1].offset = at_fixed_offset and fixsize_offset or -1
+
+				--move current fixed offset past this fixsize col.
+				if col_i <= fixsize_n then
+					fixsize_offset = fixsize_offset + col.elem_size * (col.len or 1)
+				end
+
+				--compute and set the offset where the dyn. offset is for this col.
+				if is_val and not at_fixed_offset then
+					local dot_index = fixsize_n+2 - col_i --col's index in d.o.t.
+					assert(dot_index >= 0 and dot_index < dot_len)
+					st_cols[col_i-1].offset_offset = fixsize_offset + dot_index * offset_size
+				end
+
+				--create col getters and setters.
+				if col.len or col.maxlen then --varsize and fixsize arrays
 					local maxlen = col.len or col.maxlen
 					if col.type == 'utf8' then --utf8 strings
 						local ai_ci = col.collation == 'utf8_ai_ci'
@@ -462,6 +447,8 @@ function Db:load_schema(schema)
 
 			end --for col in cols
 
+			cols.first_varsize_offset = fixsize_offset + dot_len * offset_size
+
 		end --for cols in key_cols, val_cols
 
 		--pr(table_schema)
@@ -486,7 +473,7 @@ local function val_len(col, val) --truncates the value if needed.
 end
 
 local function rec_size(self, cols, vals)
-	local sz = sizeof(cols.ct, 0) --null bits + fixsize cols + d.o.t.
+	local sz = self.first_varsize_offset --null bits + fixsize cols + d.o.t.
 	for col_i = cols.fixsize_n+1, #cols do
 		local col = cols[col_i]
 		local padded_val_len = col.len
