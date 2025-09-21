@@ -56,16 +56,13 @@ typedef enum schema_col_type {
 } schema_col_type;
 
 typedef struct schema_col {
-	// definition
-	schema_col_type type;
-	u32      len; // for varsize cols it means max len.
-	u16      index; // index in key_cols or in val_cols depending on is_key flag.
-	bool8    fixsize; // fixed size array (padded) or varsize.
-	bool8    descending;
-	// computed layout
-	u32 offset; // -1 for dyn. offset cols
-	u32 offset_offset; // offset in the buffer where the dyn. offset for this col is.
-	u8  elem_size;
+	int   len; // for varsize cols it means max len.
+	bool8 fixsize; // fixed size array (padded) or varsize.
+	bool8 descending; // for key cols
+	u8    type; // schema_col_type
+	u8    elem_size_shift; // computed
+	bool8 static_offset; // computed: decides what the .offset field means
+	int   offset; // computed: a static offset or the offset where the dyn. offset is.
 } schema_col;
 
 typedef struct schema_table {
@@ -73,11 +70,12 @@ typedef struct schema_table {
 	schema_col* val_cols;
 	u16  n_key_cols;
 	u16  n_val_cols;
-	u8   offset_size; // size of dyn. offsets
+	u8   dyn_offset_size; // 1,2,4
 } schema_table;
 
-int  schema_get(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* out, u64 out_len);
-int  schema_set(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* in , u64 in_len);
+int   schema_get      (schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_len);
+void* schema_set      (schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* in , int in_len, void *p, int add);
+int   schema_mem_size (schema_table* tbl, int is_key, int col_i, void* in, int in_len);
 ]]
 
 local col_ct = {
@@ -119,6 +117,9 @@ end
 
 local Db = mdbx_db
 
+local key_rec_buf = buffer()
+local val_rec_buf = buffer()
+
 function Db:load_schema(schema)
 
 	if schema then
@@ -134,334 +135,312 @@ function Db:load_schema(schema)
 		self.schema = eval_file(schema_file)
 	end
 
+	self.schema.max_key_rec_size = 0
+	self.schema.max_val_rec_size = 0
+	for table_name, table_schema in pairs(self.schema.tables or {}) do
+		self:load_table(table_name, table_schema)
+		self.schema.max_key_rec_size = max(
+			self.schema.max_key_rec_size,
+			table_schema.key_cols.max_rec_size,
+		)
+		self.schema.max_val_rec_size = max(
+			self.schema.max_val_rec_size,
+			table_schema.val_cols.max_rec_size,
+		)
+	end
+
+end
+
+function Db:load_table(table_name, table_schema)
+
 	--compute field layout and encoding parameters based on schema.
 	--NOTE: changing this algorithm or making it non-deterministic in any way
 	--will trash your existing databses, so better version it or something!
-	for table_name, table_schema in pairs(self.schema.tables or {}) do
 
-		--index fields by name and check for duplicate names.
-		for i,col in ipairs(table_schema.fields) do
-			assertf(not table_schema.fields[col.name], 'duplicate field name: %s', col.name)
-			table_schema.fields[col.name] = col
-		end
+	--index fields by name and check for duplicate names.
+	for col_i, col in ipairs(table_schema.fields) do
+		assertf(not table_schema.fields[col.name], 'duplicate field name: %s', col.name)
+		table_schema.fields[col.name] = col
+	end
 
-		--parse pk and set col.order, .type, .collation.
-		local i = 1
-		for s in words(table_schema.pk) do
-			local pk, s1 = s:match'^(.-):(.*)'
-			local order = 'asc'
-			local collation
-			if not pk then
-				pk = s
-			else
-				local s2, s3 = s1:match'^(.-):(.*)'
-				if s2 then
-					if s2 == 'asc' or s2 == 'desc' then
-						order, collation = s2, s3
-					else
-						collation, order = s2, s3
-					end
+	local key_cols = {is_key = true}
+	local val_cols = {is_key = false}
+
+	--parse pk and set col.order, .type, .collation.
+	for s in words(table_schema.pk) do
+		local pk, s1 = s:match'^(.-):(.*)'
+		local order = 'asc'
+		local collation
+		if not pk then
+			pk = s
+		else
+			local s2, s3 = s1:match'^(.-):(.*)'
+			if s2 then
+				if s2 == 'asc' or s2 == 'desc' then
+					order, collation = s2, s3
 				else
-					if s1 == 'asc' or s1 == 'desc' then
-						order = s1
-					else
-						collation = s1
-					end
+					collation, order = s2, s3
 				end
-				assertf(order == 'desc' or order == 'asc', 'invalid order: %s', order)
-				assertf(not collation or collation == 'utf8_ai_ci' or collation == 'utf8',
-					'invalid collation: %s', collation)
-				assert(#pk > 0, 'pk is empty')
-			end
-
-			local col = assertf(table_schema.fields[pk], 'pk field not found: %s', pk)
-			col.order = order
-			if col.type == 'utf8' then
-				col.collation = collation or 'utf8'
-			end
-			col.index = i
-			i = i + 1
-		end
-
-		--split fields into key cols and val cols based on pk.
-		local key_cols = {}
-		local val_cols = {}
-		for _,col in ipairs(table_schema.fields) do
-			local elem_ct = col_ct[col.type] or col.type
-			if col.index then --part of pk
-				key_cols[col.index] = col
-				key_cols[col.name] = col
 			else
-				add(val_cols, col)
-				val_cols[col.name] = col
-				col.index = #val_cols
-			end
-			--typecheck the field while we're at it.
-			col.elem_ct = assertf(elem_ct, 'unknown col type %s', col.type)
-			col.elem_size = sizeof(col.elem_ct)
-			assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
-		end
-		assert(#key_cols < 2^16)
-		assert(#val_cols < 2^16)
-
-		--move varsize cols at the end to minimize the size of the dyn offset table.
-		--order cols by elem_size to maintain alignment.
-		--finally, order by index to get stable sorting.
-		sort(val_cols, function(col1, col2)
-			--elem_size fits in 4bit; col_index fits in 16bit; 4+16 = 20 bits,
-			--so any bit from bit 21+ can be used for extra conditions.
-			local i1 = (col1.maxlen and 2^22 or 0) + (2^4-1 - col1.elem_size) * 2^16 + col1.index
-			local i2 = (col2.maxlen and 2^22 or 0) + (2^4-1 - col2.elem_size) * 2^16 + col2.index
-			return i1 < i2
-		end)
-		for col_i, col in ipairs(val_cols) do
-			col.index = col_i
-		end
-
-		--MDBX_REVERSEKEY allows us to store uints in little endian,
-		--exploit that in the simple case of a single uint key.
-		local le_key = #key_cols == 1
-			and key_cols[1].order == 'asc'
-			and le_col_type[key_cols[1].type]
-			and true or nil
-
-		table_schema.key_cols = key_cols
-		table_schema.val_cols = val_cols
-		table_schema.reverse_keys = le_key
-
-		--allocate the C schema
-		local st = new'schema_table'
-		local st_key_cols = new('schema_col[?]', #key_cols)
-		local st_val_cols = new('schema_col[?]', #val_cols)
-		st.key_cols = st_key_cols
-		st.val_cols = st_val_cols
-		st.n_key_cols = #key_cols
-		st.n_val_cols = #val_cols
-		--anchor these so they don't get collected
-		table_schema._st_key_cols = st_key_cols
-		table_schema._st_val_cols = st_val_cols
-		table_schema._st = st
-
-		--compute key and val layout and create field getters and setters.
-		for _,cols in ipairs{key_cols, val_cols} do
-
-			local is_val = cols == val_cols
-			local is_key = cols == key_cols
-
-			--find the number of fixsize cols.
-			local fixsize_n = #cols
-			for col_i, col in ipairs(cols) do
-				if col.maxlen then --first varsize col
-					fixsize_n = col_i - 1
-					break
-				end
-			end
-
-			--compute max row size, just the data (which is what it is for keys).
-			local max_rec_size = 0
-			for col_i,col in ipairs(cols) do
-				local len = col.maxlen or col.len or 1
-				max_rec_size = max_rec_size + len * col.elem_size
-			end
-
-			if is_key then
-				assert(max_rec_size <= self:db_max_key_size(),
-					'pk too big: %d bytes (max is %d bytes)',
-						max_rec_size, self:db_max_key_size())
-			end
-
-			--compute dynamic offset table (d.o.t.) length for val records.
-			--all val cols after the first varsize col are at a dyn offset.
-			--key cols can't have an offset table instead we use \0 separator.
-			local dot_len = is_val and max(0, #cols - fixsize_n - 1) or 0
-
-			--compute the number of bytes needed to hold all the null bits.
-			local nulls_size = is_val and ceil(#cols / 8) or 0
-
-			--also compute d.o.t. size and update max_rec_size to include nulls and d.o.t.
-			local offset_size = 0
-			if is_val then
-				max_rec_size = max_rec_size + nulls_size
-				if max_rec_size + dot_len < 2^8 then
-					offset_size = 1
-				elseif max_rec_size + dot_len * 2 < 2^16 then
-					offset_size = 2
-				elseif max_rec_size + dot_len * 4 < 2^32 then
-					offset_size = 4
+				if s1 == 'asc' or s1 == 'desc' then
+					order = s1
 				else
-					assert(false, 'value record size too big')
+					collation = s1
 				end
-				st.offset_size = offset_size
-				max_rec_size = max_rec_size + dot_len * offset_size
+			end
+			assertf(order == 'desc' or order == 'asc', 'invalid order: %s', order)
+			assertf(not collation or collation == 'utf8_ai_ci' or collation == 'utf8',
+				'invalid collation: %s', collation)
+			assert(#pk > 0, 'pk is empty')
+		end
+
+		local col = assertf(table_schema.fields[pk], 'pk field not found: %s', pk)
+		col.order = order
+		if col.type == 'utf8' then
+			col.collation = collation or 'utf8'
+		end
+		add(key_cols, col)
+	end
+
+	--build val cols array with all cols that are not in pk.
+	for col_i, col in ipairs(table_schema.fields) do
+		col.index = col_i
+		if not col.order then
+			add(val_cols, col)
+		end
+		--typecheck the field while we're at it.
+		local elem_ct = col_ct[col.type] or col.type
+		col.elem_ct = assertf(elem_ct, 'unknown col type %s', col.type)
+		col.elem_size = sizeof(col.elem_ct)
+		assert(col.elem_size < 2^4) --must fit 4bit (see sort below)
+	end
+
+	assert(#key_cols < 2^16)
+	assert(#val_cols < 2^16)
+
+	--move varsize cols at the end to minimize the size of the dyn offset table.
+	--order cols by elem_size to maintain alignment.
+	--finally, order by index to get stable sorting.
+	sort(val_cols, function(col1, col2)
+		--elem_size fits in 4bit; col index fits in 16bit; 4+16 = 20 bits,
+		--so any bit from bit 21+ can be used for extra conditions.
+		local i1 = (col1.maxlen and 2^22 or 0) + (2^4-1 - col1.elem_size) * 2^16 + col1.index
+		local i2 = (col2.maxlen and 2^22 or 0) + (2^4-1 - col2.elem_size) * 2^16 + col2.index
+		return i1 < i2
+	end)
+
+	--MDBX_REVERSEKEY allows us to store uints in little endian,
+	--exploit that in the simple case of a single uint key.
+	local le_key = #key_cols == 1
+		and key_cols[1].order == 'asc'
+		and le_col_type[key_cols[1].type]
+		and true or nil
+
+	table_schema.key_cols = key_cols
+	table_schema.val_cols = val_cols
+	table_schema.reverse_keys = le_key
+
+	--allocate the C schema
+	local st = new'schema_table'
+	local sc_key_cols = new('schema_col[?]', #key_cols)
+	local sc_val_cols = new('schema_col[?]', #val_cols)
+	st.key_cols = sc_key_cols
+	st.val_cols = sc_val_cols
+	st.n_key_cols = #key_cols
+	st.n_val_cols = #val_cols
+	--anchor these so they don't get collected
+	key_cols._sc = sc_key_cols
+	val_cols._sc = sc_val_cols
+	table_schema._st = st
+
+	--compute key and val layout and create field getters and setters.
+	for _,cols in ipairs{key_cols, val_cols} do
+
+		local is_val = cols == val_cols
+		local is_key = cols == key_cols
+
+		--find the number of fixsize cols.
+		local fixsize_n = #cols
+		for col_i, col in ipairs(cols) do
+			if col.maxlen then --first varsize col
+				fixsize_n = col_i - 1
+				break
+			end
+		end
+		cols.fixsize_n = fixsize_n
+
+		--compute max row size, just the data (which is what it is for keys).
+		local max_rec_size = 0
+		for col_i,col in ipairs(cols) do
+			local maxlen = col.maxlen or col.len or 1
+			max_rec_size = max_rec_size + maxlen * col.elem_size
+		end
+
+		if is_key then
+			assertf(max_rec_size <= self:db_max_key_size(),
+				'pk too big: %d bytes (max is %d bytes)',
+					max_rec_size, self:db_max_key_size())
+		end
+
+		--compute dynamic offset table (d.o.t.) length for val records.
+		--all val cols after the first varsize col are at a dyn offset.
+		--key cols can't have an offset table instead we use \0 separator.
+		local dot_len = is_val and max(0, #cols - fixsize_n - 1) or 0
+
+		--compute the number of bytes needed to hold all the null bits.
+		local nulls_size = is_val and ceil(#cols / 8) or 0
+
+		--also compute d.o.t. size and update max_rec_size to include nulls and d.o.t.
+		local dyn_offset_size = 0
+		if is_val then
+			max_rec_size = max_rec_size + nulls_size
+			if max_rec_size + dot_len < 2^8 then
+				dyn_offset_size = 1
+			elseif max_rec_size + dot_len * 2 < 2^16 then
+				dyn_offset_size = 2
+			elseif max_rec_size + dot_len * 4 < 2^31 then
+				dyn_offset_size = 4
+			else
+				assert(false, 'value record too big')
+			end
+			st.dyn_offset_size = dyn_offset_size
+			max_rec_size = max_rec_size + dot_len * dyn_offset_size
+		end
+
+		assertf(max_rec_size < 2^31,
+			'record too big: %.0f bytes (max is 2GB-1)', max_rec_size)
+
+		cols.max_rec_size = max_rec_size
+
+		local fixsize_offset = nulls_size
+		for col_i,col in ipairs(cols) do
+
+			local sc = is_key and sc_key_cols or sc_val_cols
+			sc[col_i-1].type = schema_col_types[col.type]
+			sc[col_i-1].len = col.maxlen or col.len or 1
+			sc[col_i-1].fixsize = col.maxlen and 0 or 1
+			sc[col_i-1].descending = col.order == 'desc'
+			sc[col_i-1].elem_size_shift = log2(col.elem_size)
+
+			--compute and set fixed offset.
+			local at_fixed_offset = col_i <= fixsize_n+1
+			sc[col_i-1].static_offset = at_fixed_offset
+			if at_fixed_offset then
+				sc[col_i-1].offset = fixsize_offset
 			end
 
-			cols.max_rec_size = max_rec_size
+			--move current fixed offset past this fixsize col.
+			if col_i <= fixsize_n then
+				fixsize_offset = fixsize_offset + col.elem_size * (col.len or 1)
+			end
 
-			local fixsize_offset = nulls_size
-			for col_i,col in ipairs(cols) do
+			--compute and set the offset where the dyn. offset is for this col.
+			if is_val and not at_fixed_offset then
+				local dot_index = fixsize_n+2 - col_i --col's index in d.o.t.
+				assert(dot_index >= 0 and dot_index < dot_len)
+				st_cols[col_i-1].offset_offset = fixsize_offset + dot_index * dyn_offset_size
+			end
 
-				local st_cols = is_key and st_key_cols or st_val_cols
-				st_cols[col_i-1].type = schema_col_types[col.type]
-				st_cols[col_i-1].len = col.maxlen or col.len or 1
-				st_cols[col_i-1].index = col_i-1
-				st_cols[col_i-1].fixsize = col.maxlen and 0 or 1
-				st_cols[col_i-1].descending = col.order == 'desc'
-				st_cols[col_i-1].elem_size = col.elem_size
-
-				--compute and set fixed offset.
-				local at_fixed_offset = col_i <= fixsize_n+1
-				st_cols[col_i-1].offset = at_fixed_offset and fixsize_offset or -1
-
-				--move current fixed offset past this fixsize col.
-				if col_i <= fixsize_n then
-					fixsize_offset = fixsize_offset + col.elem_size * (col.len or 1)
-				end
-
-				--compute and set the offset where the dyn. offset is for this col.
-				if is_val and not at_fixed_offset then
-					local dot_index = fixsize_n+2 - col_i --col's index in d.o.t.
-					assert(dot_index >= 0 and dot_index < dot_len)
-					st_cols[col_i-1].offset_offset = fixsize_offset + dot_index * offset_size
-				end
-
-				--create col getters and setters.
-				if col.len or col.maxlen then --varsize and fixsize arrays
-					local maxlen = col.len or col.maxlen
-					if col.type == 'utf8' then --utf8 strings
-						local ai_ci = col.collation == 'utf8_ai_ci'
-						if desc or ai_ci then
-							function set(buf, rec_sz, s, len)
-								clear(buf)
-								if is_val and set_null(buf, col_i, s == nil) then
-									return
-								end
-								local len = min(maxlen, len or #s) --truncate
-								local sp
-								if ai_ci then
-									sp, len = encode_ai_ci(s, len)
-								else
-									sp = cast(u8p, s)
-								end
-								if desc then
-									local dp = getp(buf)
-									for i = 0, len-1 do
-										dp[i] = enc(sp[i], true)
-									end
-								else
-									rawset(buf, rec_sz, sp, len)
-								end
+			--create col getters and setters.
+			--[[
+			if col.len or col.maxlen then --varsize and fixsize arrays
+				local maxlen = col.len or col.maxlen
+				if col.type == 'utf8' then --utf8 strings
+					local ai_ci = col.collation == 'utf8_ai_ci'
+					if desc or ai_ci then
+						function set(buf, rec_sz, s, len)
+							clear(buf)
+							if is_val and set_null(buf, col_i, s == nil) then
+								return
 							end
-							function get(buf, rec_sz, out, out_len)
-								if is_val and is_null(buf, col_i) then
-									return nil
-								end
-								local p, p_len = rawget(buf, rec_sz)
-								local len = min(p_len, out_len or 1/0) --truncate
-								local out = out and cast(u8p, out) or u8a(len)
+							local len = min(maxlen, len or #s) --truncate
+							local sp
+							if ai_ci then
+								sp, len = encode_ai_ci(s, len)
+							else
+								sp = cast(u8p, s)
+							end
+							if desc then
 								local dp = getp(buf)
 								for i = 0, len-1 do
-									out[i] = dec(dp[i])
+									dp[i] = enc(sp[i], true)
 								end
-								return out, len
-							end
-						else --raw utf8
-							function get(buf, rec_sz, out, out_len)
-								if is_val and is_null(buf, col_i) then
-									return nil
-								end
-								local p, p_len = rawget(buf, rec_sz)
-								local len = min(p_len, out_len or 1/0) --truncate
-								local out = out and cast(u8p, out) or u8a(len)
-								copy(out, p, len)
-								return out, len
-							end
-							function set(buf, rec_sz, val, len)
-								clear(buf)
-								if is_val and set_null(buf, col_i, val == nil) then
-									return
-								end
-								rawset(buf, rec_sz, val, len)
+							else
+								rawset(buf, rec_sz, sp, len)
 							end
 						end
-					else
+						function get(buf, rec_sz, out, out_len)
+							if is_val and is_null(buf, col_i) then
+								return nil
+							end
+							local p, p_len = rawget(buf, rec_sz)
+							local len = min(p_len, out_len or 1/0) --truncate
+							local out = out and cast(u8p, out) or u8a(len)
+							local dp = getp(buf)
+							for i = 0, len-1 do
+								out[i] = dec(dp[i])
+							end
+							return out, len
+						end
+					else --raw utf8
+						function get(buf, rec_sz, out, out_len)
+							if is_val and is_null(buf, col_i) then
+								return nil
+							end
+							local p, p_len = rawget(buf, rec_sz)
+							local len = min(p_len, out_len or 1/0) --truncate
+							local out = out and cast(u8p, out) or u8a(len)
+							copy(out, p, len)
+							return out, len
+						end
 						function set(buf, rec_sz, val, len)
 							clear(buf)
 							if is_val and set_null(buf, col_i, val == nil) then
 								return
 							end
-							assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
-							len = min(maxlen, len or #val) --truncate
-							for i = 1, len do
-								rawseti(buf, i-1, val[i])
-							end
+							rawset(buf, rec_sz, val, len)
 						end
 					end
 				else
-					function get(buf, rec_sz)
-						if is_val and is_null(buf, col_i) then
-							return nil
-						end
-						return dec(getp(buf)[0], desc)
-					end
-					function set(buf, rec_sz, val)
+					function set(buf, rec_sz, val, len)
+						clear(buf)
 						if is_val and set_null(buf, col_i, val == nil) then
 							return
 						end
-						getp(buf)[0] = enc(val, desc)
-					end
-				end
-
-				--varsize field with more fields following it. resizing it
-				--requires shifting all those fields left or right.
-				if resize == true then
-					local pct = cols.pct
-					function resize(buf, offset, rec_sz, len)
-						local set_buf = cast(pct, buf + offset)
-						local sz0 = getsize(set_buf, rec_sz)
-						local sz1 = len * elem_size
-						local shift_sz = sz1 - sz0 --positive for growth
-						local next_offset = get_next_offset(set_buf)
-						copy(
-							buf + offset + next_offset + shift_sz,
-							buf + offset + next_offset,
-							rec_sz - next_offset)
-						for col_i = DOTI+1, dot_len-1 do
-							local col = cols[col_i]
-							set_buf._offsets_[DOTI] = set_buf._offsets_[DOTI] + shift_sz
+						assertf(typeof(val) == 'table', 'invalid val type %s', typeof(val))
+						len = min(maxlen, len or #val) --truncate
+						for i = 1, len do
+							rawseti(buf, i-1, val[i])
 						end
-						return rec_sz + shift_sz
 					end
 				end
+			else
+				function get(buf, rec_sz)
+					if is_val and is_null(buf, col_i) then
+						return nil
+					end
+					return dec(getp(buf)[0], desc)
+				end
+				function set(buf, rec_sz, val)
+					if is_val and set_null(buf, col_i, val == nil) then
+						return
+					end
+					getp(buf)[0] = enc(val, desc)
+				end
+			end
+			]]
 
-				--getp() and findsize() are used in recursive getp() of varsize key cols.
-				col.getp = getp
-				col.findsize = findsize
-				col.getsize = getsize
-				col.getlen = getlen
-				col.get = get
-				col.set = set
-				col.rawset = rawset
-				col.rawget = rawget
-				col.rawstr = rawstr
-				col.resize = resize
+		end --for col in cols
 
-			end --for col in cols
+	end --for cols in key_cols, val_cols
 
-			cols.first_varsize_offset = fixsize_offset + dot_len * offset_size
-
-		end --for cols in key_cols, val_cols
-
-		--pr(table_schema)
-
-	end --for table in schema_tables
+	--pr(table_schema)
 
 	local tx = self:tx'w'
-	for table_name, table_schema in pairs(schema.tables) do
-		tx:open_table(table_name, bor(
-			C.MDBX_CREATE,
-			table_schema.reverse_keys and C.MDBX_REVERSEKEY or 0
-		))
-	end
+	tx:open_table(table_name, bor(
+		C.MDBX_CREATE,
+		table_schema.reverse_keys and C.MDBX_REVERSEKEY or 0
+	))
 	tx:commit()
 
 end
@@ -472,24 +451,13 @@ local function val_len(col, val) --truncates the value if needed.
 	return max_len and min(#val, max_len) or 1
 end
 
-local function rec_size(self, cols, vals)
-	local sz = self.first_varsize_offset --null bits + fixsize cols + d.o.t.
-	for col_i = cols.fixsize_n+1, #cols do
-		local col = cols[col_i]
-		local padded_val_len = col.len
-			or col.maxlen
-				and min(vals[col.name] == nil and 0 or #vals[col.name], col.maxlen)
-			or 1
-		sz = sz + padded_val_len * col.elem_size
-	end
-	return sz
-end
-
 function key_cols(self, tbl)
-	return self.schema.tables[tbl].key_cols
+	local s = self.schema.tables[tbl]
+	return s, s.key_cols
 end
 function val_cols(self, tbl)
-	return self.schema.tables[tbl].val_cols
+	local s = self.schema.tables[tbl]
+	return s, s.val_cols
 end
 
 function Db:encoded_key_size(tbl, vals)
@@ -508,26 +476,17 @@ function Db:max_val_size(tbl)
 	return val_cols(self, tbl).max_rec_size
 end
 
-local function encode_rec(self, cols, vals, buf, offset, buf_sz)
-	offset = offset or 0
-	local rec_sz = rec_size(self, cols, vals)
-	assert(buf_sz - offset >= rec_sz, 'buffer too short')
-	local set_buf = cast(cols.pct, buf + offset)
-	--set offsets first!
-	local next_col_offset = sizeof(cols.ct, 0)
-	for col_i=1,#cols do
-		local col = cols[col_i]
-		local val = vals[col.name]
-		local len = val_len(col, val)
-		next_col_offset = next_col_offset + (col.len or len) * col.elem_size
-		local next_col = cols[col_i+1]
-		local next_col_set_offset = next_col and next_col.set_offset
-		if next_col_set_offset then
-			next_col_set_offset(set_buf, next_col_offset)
-		end
-		col.set(set_buf, rec_sz, val, len)
+local function encode_rec(schema, cols, vals, buf, offset, buf_sz)
+	local is_key = cols.is_key
+	local rec, rec_sz = rec_buf(schema.max_rec_size)
+	local p
+	for col_i, col in ipairs(cols) do
+		--TODO: pick and convert val
+		--
+		p = C.schema_set(schema._st, is_key, col_i-1, rec, rec_sz,
+			val, len, p, true)
 	end
-	return rec_sz
+	return p - rec
 end
 
 local function encode_rec_col(self, cols, col, val, buf, offset, rec_sz)
@@ -540,7 +499,8 @@ local function encode_rec_col(self, cols, col, val, buf, offset, rec_sz)
 end
 
 function Db:encode_key(tbl, vals, buf, buf_sz, offset)
-	return encode_rec(self, key_cols(self, tbl), vals, buf, offset, buf_sz)
+	local schema, cols = key_cols(self, tbl)
+	return encode_rec(schema, cols, vals, buf, offset, buf_sz)
 end
 
 function Db:encode_val(tbl, vals, buf, buf_sz, offset)
@@ -592,14 +552,12 @@ function Db:decode_val(tbl, col, buf, rec_sz, offset, out, out_len)
 end
 
 function mdbx_tx:put_records(tbl_name, records)
-	local key_max_sz = self.db:max_key_size(tbl_name)
-	local val_max_sz = self.db:max_val_size(tbl_name)
-	local buf_sz = key_max_sz + val_max_sz
-	local buf = u8a(buf_sz)
-	for _,rec in ipairs(records) do
-		local key_sz = self.db:encode_key(tbl_name, rec, buf, buf_sz)
-		local val_sz = self.db:encode_val(tbl_name, rec, buf, buf_sz, key_max_sz)
-		self:put(tbl_name, buf, key_sz, buf + key_max_sz, val_sz)
+	local key, key_max_sz = key_buf(self.db.schema.max_key_rec_size)
+	local val, val_max_sz = val_buf(self.db.schema.max_val_rec_size)
+	for _,vals in ipairs(records) do
+		local key_sz = self.db:encode_key(tbl_name, vals, key, key_max_sz)
+		local val_sz = self.db:encode_val(tbl_name, vals, val, val_max_sz)
+		self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
 	end
 end
 

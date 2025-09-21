@@ -17,7 +17,7 @@
 		- composite keys with per-field ascending/descending order.
 
 	Limitations:
-		- multi-value keys are \0-terminated so they are not 8-bit clean!
+		- multi-value keys are 0-terminated so they are not 8-bit clean!
 
 */
 
@@ -64,7 +64,7 @@ is varsize for which len in the definition means max len. Varsize values are
 zero-terminated inside key records, so they are not 8-bit clean except the
 last column. In value records an offset table is used instead so all columns
 are 8-bit clean. The zero terminator is skipped for values with len = max len.
-The offset table contains offsets of offset_size bytes.
+The offset table contains offsets of dyn_offset_size bytes.
 
 Key records are encoded differently than val records because keys are encoded
 for lexicographic binary ordering, which means: no nulls, no offset table for
@@ -74,16 +74,13 @@ encoded so that bit order matches numeric order.
 
 */
 typedef struct schema_col {
-	// definition
-	schema_col_type type;
-	u32      len; // for varsize cols it means max len.
-	u16      index; // index in key_cols or in val_cols depending on is_key flag.
-	bool8    fixsize; // fixed size array (padded) or varsize.
-	bool8    descending; // for key cols
-	// computed layout
-	u32 offset; // -1 for dyn. offset cols
-	u32 offset_offset; // offset in the buffer where the dyn. offset for this col is.
-	u8  elem_size; // in bytes
+	int   len; // for varsize cols it means max len.
+	bool8 fixsize; // fixed size array (padded) or varsize.
+	bool8 descending; // for key cols
+	u8    type; // schema_col_type
+	u8    elem_size_shift; // computed
+	bool8 static_offset; // computed: decides what the .offset field means
+	int   offset; // computed: a static offset or the offset where the dyn. offset is.
 } schema_col;
 
 typedef struct schema_table {
@@ -91,84 +88,14 @@ typedef struct schema_table {
 	schema_col* val_cols;
 	u16  n_key_cols;
 	u16  n_val_cols;
-	u8   offset_size; // 1,2,4
+	u8   dyn_offset_size; // 1,2,4
 } schema_table;
 
-int  schema_get(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* out, u64 out_len);
-int  schema_set(schema_table* tbl, int is_key, int col_i, void* buf, u64 rec_size, void* in , u64 in_len);
+int   schema_get      (schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_len);
+void* schema_set      (schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* in , int in_len, void *p, int add);
+int   schema_mem_size (schema_table* tbl, int is_key, int col_i, void* in, int in_len);
 
 // implementation ------------------------------------------------------------
-
-static int scan_end(schema_col* col, void* p, int len) { // scan for \0 up-to len
-	if (col->elem_size == 1) {
-		uint8_t* q = p;
-		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
-				return i;
-	} else if (col->elem_size == 2) {
-		uint16_t* q = p;
-		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
-				return i;
-	} else if (col->elem_size == 4) {
-		uint32_t* q = p;
-		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
-				return i;
-	} else if (col->elem_size == 8) {
-		uint64_t* q = p;
-		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
-				return i;
-	} else {
-		assert(0);
-	}
-	return len;
-}
-
-static int get_offset(schema_table* tbl, schema_col* col, void* buf) {
-	if (tbl->offset_size == 1) return *(u8* )(buf + col->offset_offset);
-	if (tbl->offset_size == 2) return *(u16*)(buf + col->offset_offset);
-	if (tbl->offset_size == 4) return *(u32*)(buf + col->offset_offset);
-	assert(0);
-}
-
-static void* get_ptr(schema_table* tbl, int is_key, schema_col* col, void* buf) {
-	if (col->offset != -1) // col at fixed offset
-		return buf + col->offset;
-	if (is_key) { // key col at dyn. offset
-		void* p = buf;
-		for (int col_i = 0; col_i < col->index-1; col_i++) {
-			schema_col* col1 = &tbl->key_cols[col_i];
-			if (col1->fixsize) {
-				p += col1->len * col1->elem_size;
-			} else { // varsize col
-				p += scan_end(col1, p, col1->len);
-			}
-		}
-		return p;
-	} else { // val col at dyn. offset
-		return buf + get_offset(tbl, col, buf);
-	}
-}
-
-int get_len(schema_table* tbl, int is_key, schema_col* col, void* buf, void* p, int rec_size) {
-	if (col->fixsize)
-		return col->len;
-	if (is_key) { // varsize key col
-		if (!p) p = get_ptr(tbl, is_key, col, buf);
-		return scan_end(col, p, col->len);
-	} else { // varsize val col
-		int offset = get_offset(tbl, col, buf);
-		if (col->index == tbl->n_val_cols-1) { // last col
-			return (rec_size - offset) / col->elem_size;
-		} else { // non-last col
-			schema_col* next_col = &tbl->val_cols[col->index + 1];
-			int next_offset = get_offset(tbl, next_col, buf);
-			return (next_offset - offset) / col->elem_size;
-		}
-	}
-}
 
 static void decode_u8(u8* s, u8* d) {
 	*d = *s;
@@ -265,13 +192,6 @@ static encdec_t encoders[] = {
 	(encdec_t)&encode_f64,
 };
 
-static inline schema_col* get_col(schema_table* tbl, int is_key, int col_i) {
-	int n_cols = is_key ? tbl->n_key_cols : tbl->n_val_cols;
-	schema_col* cols = is_key ? tbl->key_cols : tbl->val_cols;
-	assert(col_i >= 0 && col_i < n_cols);
-	return &cols[col_i];
-}
-
 static void invert_bits(void* d, void *s, int len) {
 	u8 *s8 = s;
 	u8 *d8 = d;
@@ -286,120 +206,299 @@ static void invert_bits(void* d, void *s, int len) {
 	}
 }
 
-static int is_null(void* buf, int col_i) {
+static int is_null(void* rec, int col_i) {
 	int byte_i = col_i >> 3;
 	int bit_i  = col_i & 7;
 	int mask   = 1 << bit_i;
-	u8* p = buf;
+	u8* p = rec;
 	return (p[byte_i] & mask) != 0;
 }
 
-static void set_null(void* buf, int col_i, int is_null) {
+static void set_null(void* rec, int col_i, int is_null) {
 	int byte_i = col_i >> 3;
 	int bit_i  = col_i & 7;
 	int mask   = 1 << bit_i;
-	u8* p = buf;
+	u8* p = rec;
 	if (is_null)
 		p[byte_i] = p[byte_i] | mask;
 	else
 		p[byte_i] = p[byte_i] & ~mask;
 }
 
+static int scan_end(schema_col* col, void* p, int len) { // scan for 0 up-to size
+	int ss = col->elem_size_shift;
+	if (ss == 0) {
+		uint8_t* q = p;
+		for (int i = 0; i < len; i++)
+			if (*q++ == 0)
+				return i;
+	} else if (ss == 1) {
+		uint16_t* q = p;
+		for (int i = 0; i < len; i++)
+			if (*q++ == 0)
+				return i;
+	} else if (ss == 2) {
+		uint32_t* q = p;
+		for (int i = 0; i < len; i++)
+			if (*q++ == 0)
+				return i;
+	} else if (ss == 3) {
+		uint64_t* q = p;
+		for (int i = 0; i < len; i++)
+			if (*q++ == 0)
+				return i;
+	} else {
+		assert(0);
+	}
+	return len;
+}
+
+static int get_dyn_offset(schema_table* tbl, schema_col* col, void* rec) {
+	if (tbl->dyn_offset_size == 1) return *(u8* )(rec + col->offset);
+	if (tbl->dyn_offset_size == 2) return *(u16*)(rec + col->offset);
+	if (tbl->dyn_offset_size == 4) return *(int*)(rec + col->offset);
+	assert(0);
+}
+
+static void set_dyn_offset(schema_table* tbl, schema_col* col, void* rec, int offset) {
+	if (tbl->dyn_offset_size == 1) *(u8* )(rec + col->offset) = offset;
+	if (tbl->dyn_offset_size == 2) *(u16*)(rec + col->offset) = offset;
+	if (tbl->dyn_offset_size == 4) *(int*)(rec + col->offset) = offset;
+	assert(0);
+}
+
+static inline int get_key_mem_size(schema_table* tbl, schema_col* col,
+	void *p
+) {
+	int max_len = col->len;
+	if (col->fixsize)
+		return max_len;
+	int len = scan_end(col, p, max_len);
+	if (len < max_len) // 0-terminated.
+		len++;
+	return len << col->elem_size_shift;
+}
+
+static inline void* get_next_ptr(schema_table* tbl, int is_key, schema_col* col,
+	schema_col* next_col,
+	void* rec,
+	void* p
+) {
+	if (next_col->static_offset) {
+		return rec + next_col->offset;
+	} else if (is_key) { // key col at dyn. offset
+		return p + get_key_mem_size(tbl, col, p);
+	} else { // val col at dyn. offset
+		return rec + get_dyn_offset(tbl, next_col, rec);
+	}
+}
+
+static void* get_ptr(schema_table* tbl, int is_key, int col_i, schema_col* col,
+	void* rec
+) {
+	if (col->static_offset) {
+		return rec + col->offset;
+	} else if (is_key) { // key col at dyn. offset
+		void* p = rec;
+		for (int col_i = 0; col_i < col_i-1; col_i++)
+			p += get_key_mem_size(tbl, &tbl->key_cols[col_i], p);
+		return p;
+	} else { // val col at dyn. offset
+		return rec + get_dyn_offset(tbl, col, rec);
+	}
+}
+
+int get_len(schema_table* tbl, int is_key, int col_i, schema_col* col, void* rec, void* p, int rec_size) {
+	if (col->fixsize)
+		return col->len;
+	if (is_key) { // varsize key col
+		if (!p)
+			p = get_ptr(tbl, is_key, col_i, col, rec);
+		return scan_end(col, p, col->len);
+	} else { // varsize val col
+		int offset = get_dyn_offset(tbl, col, rec);
+		if (col_i == tbl->n_val_cols-1) { // last col
+			return (rec_size - offset) >> col->elem_size_shift;
+		} else { // non-last col
+			schema_col* next_col = &tbl->val_cols[col_i+1];
+			int next_offset = get_dyn_offset(tbl, next_col, rec);
+			return (next_offset - offset) >> col->elem_size_shift;
+		}
+	}
+}
+
+static inline schema_col* get_col(schema_table* tbl, int is_key, int col_i) {
+	int n_cols = is_key ? tbl->n_key_cols : tbl->n_val_cols;
+	schema_col* cols = is_key ? tbl->key_cols : tbl->val_cols;
+	return col_i >= 0 && col_i < n_cols ? &cols[col_i] : 0;
+}
+
+int schema_mem_size(schema_table* tbl, int is_key, int col_i,
+	void* in, int in_len
+) {
+	schema_col* col = get_col(tbl, is_key, col_i);
+	assert(col);
+
+	int copy_len = (col->len < in_len ? col->len : in_len); // truncate input
+	int copy_size = copy_len << ss;
+
+	// non-last varsize key col: can't contain 0, so stop at first 0 if found.
+	if (is_key && !col->fixsize && col_i < tbl->n_key_cols-1) {
+		copy_len = scan_end(col, in, copy_len);
+		copy_size = copy_len << ss;
+	}
+
+	int mem_size; // size of this value in memory.
+	if (col->fixsize) {
+		mem_size = col->len << ss;
+	} else {
+		mem_size = copy_size;
+		// non-last varsize key col with len < max len: 0-terminate.
+		if (is_key && col_i < tbl->n_key_cols-1 && copy_len < col->len)
+			mem_size += (1 << ss);
+	}
+	return mem_size;
+}
+
 int schema_get(schema_table* tbl, int is_key, int col_i,
-	void* buf, u64 rec_size,
-	void* out, u64 out_len
+	void* rec, int rec_size,
+	void* out, int out_len
 ) {
 	int ret = 0;
 	schema_col* col = get_col(tbl, is_key, col_i);
+	assert(col);
 	if (!is_key) {
-		if (is_null(buf, col_i))
+		if (is_null(rec, col_i))
 			return 1; // signal null
 	}
-	void* p = get_ptr(tbl, is_key, col, buf);
-	int in_len = get_len(tbl, is_key, col, buf, p, rec_size);
+	void* p = get_ptr(tbl, is_key, col_i, col, rec);
+	int in_len = get_len(tbl, is_key, col_i, col, rec, p, rec_size);
 	int copy_len = out_len;
 	if (in_len < out_len) {
 		out_len = in_len;
 		ret = -1; // signal truncation
 	}
-	int elem_size = col->elem_size;
+	int ss = col->elem_size_shift;
 	if (!is_key) { // val col, copy
-		memcpy(out, p, copy_len * elem_size);
+		memcpy(out, p, copy_len << ss);
 		return ret;
 	}
 	// key col, decode
 	if (col->descending) { // invert bits
-		invert_bits(out, p, copy_len * elem_size);
+		invert_bits(out, p, copy_len << ss);
 		p = out; // will decode in-place then.
 	}
 	encdec_t decode = decoders[col->type];
 	for (int i = 0; i < copy_len; i++) {
 		decode(p, out);
-		p   += elem_size;
-		out += elem_size;
+		p   += (1 << ss);
+		out += (1 << ss);
 	}
 	return ret;
 }
 
-int schema_set(schema_table* tbl, int is_key, int col_i,
-	void* buf, u64 rec_size,
-	void* in, u64 in_len
+// update the dyn. offset of the next col if there is one.
+static inline void set_next_dyn_offset(schema_table* tbl, int col_i,
+	void* rec, void* p, int mem_size
 ) {
-	int ret = 0;
-	schema_col* col = get_col(tbl, is_key, col_i);
-	if (!is_key)
-		set_null(buf, col_i, !in);
-	else
-		assert(in);
-	void* p = get_ptr(tbl, is_key, col, buf);
-	int max_len = col->len;
-	int copy_len = in_len;
-	if (max_len < in_len) {
-		copy_len = max_len;
-		ret = -1; // signal truncation
-	}
-	int elem_size = col->elem_size;
-	if (col->fixsize) { // fixsize: pad
-		int pad_len = max_len - copy_len;
-		if (pad_len > 0)
-			memset(p + copy_len, 0, pad_len * elem_size);
-	}
-	if (!is_key) { // val col, copy
-		memcpy(p, in, copy_len * elem_size);
-		return ret;
-	}
-	// key col, encode
-	if (!col->fixsize && col_i < tbl->n_key_cols-1) {
-		// varsize cols can't have embedded zeroes except the last one.
-		// if \0 is detected, stop there.
-		int data_len = scan_end(col, in, copy_len);
-		if (data_len < copy_len) {
-			copy_len = data_len;
-			ret = -2; // signal truncation
+	if (col_i == tbl->n_val_cols-1)
+		return;
+	schema_col* next_col = &tbl->val_cols[col_i+1];
+	if (next_col->static_offset)
+		return;
+	set_dyn_offset(tbl, next_col, rec, p + mem_size - rec);
+}
+
+static inline void resize_varsize(
+	schema_table* tbl, int is_key, int col_i, schema_col* col,
+	void* rec, int cur_rec_size,
+	void* p,
+	int mem_size
+) {
+	schema_col* next_col = get_col(tbl, is_key, col_i+1);
+	if (!next_col)
+		return;
+	void* next_p = get_next_ptr(tbl, is_key, col, next_col, rec, p);
+	void* new_next_p = p + mem_size;
+	int next_mem_size = rec + cur_rec_size - next_p;
+	memmove(new_next_p, next_p, next_mem_size);
+	int shift_size = new_next_p - next_p; // positive means grow.
+	if (!is_key) {
+		// shift all dyn. offsets from next_col on.
+		for (int i = col_i+1; i < tbl->n_val_cols; i++) {
+			schema_col* col = &tbl->val_cols[i];
+			int offset = get_dyn_offset(tbl, col, rec);
+			set_dyn_offset(tbl, col, rec, offset + shift_size);
 		}
 	}
-	encdec_t encode = encoders[col->type];
-	void* d = p;
-	void* s = in;
-	for (int i = 0; i < copy_len; i++) {
-		encode(s, d);
-		s += elem_size;
-		d += elem_size;
-	}
-	if (!col->fixsize && col->index < tbl->n_key_cols-1) {
-		// non-last varsize key col: null-terminate
-		memset(d, 0, elem_size);
-		copy_len++; // must invert the \0 too on descending
-	}
-	if (col->descending)
-		invert_bits(p, p, copy_len * elem_size);
-	return ret;
 }
 
-int schema_resize(schema_table* tbl, int is_key, int col_i,
-	u64 rec_size, u64 len
+void* schema_set(schema_table* tbl, int is_key, int col_i,
+	void* rec, int cur_rec_size,
+	void* in, int in_len,
+	void* p, int add
 ) {
-	int ret = 0;
+	schema_col* col = get_col(tbl, is_key, col_i);
+	assert(col);
+	int ss = col->elem_size_shift;
 
-	return ret;
-};
+	if (!in)
+		assert(!in_len);
+
+	if (!is_key)
+		set_null(rec, col_i, !in);
+
+	if (!p)
+		p = get_ptr(tbl, is_key, col_i, col, rec);
+
+	int copy_len = (col->len < in_len ? col->len : in_len); // truncate input
+	int copy_size = copy_len << ss;
+
+	// non-last varsize key col: can't contain 0, so stop at first 0 if found.
+	if (is_key && !col->fixsize && col_i < tbl->n_key_cols-1) {
+		copy_len = scan_end(col, in, copy_len);
+		copy_size = copy_len << ss;
+	}
+
+	// figure out mem_size and adjust rec before copying the data.
+	int mem_size; // size of this value in memory.
+	if (col->fixsize) {
+		mem_size = col->len << ss;
+	} else {
+		mem_size = copy_size;
+		// non-last varsize key col with len < max len: 0-terminate.
+		if (is_key && col_i < tbl->n_key_cols-1 && copy_len < col->len)
+			mem_size += (1 << ss);
+		if (!add) {
+			// varsize key or val set: resize (shrink or lengthen).
+			resize_varsize(tbl, is_key, col_i, col, rec, cur_rec_size, p, mem_size);
+		} else if (!is_key) {
+			// varsize val add: set offset of next col for next add.
+			set_next_dyn_offset(tbl, col_i, rec, p, mem_size);
+		} else {
+			// varsize key add: nothing to do.
+		}
+	}
+	// zero-pad (whether fixsize or 0-terminated).
+	memset(p + copy_size, 0, mem_size - copy_size);
+
+	if (!is_key) {
+
+		// val col: just copy
+		memcpy(p, in, copy_size);
+
+	} else {
+
+		// key col: encode for lexicographic binary ordering
+		encdec_t encode = encoders[col->type];
+		for (int o = 0; o < copy_size; o += (1 << ss))
+			encode(in + o, p + o);
+
+		// descending key col: invert bits (including padding and terminator).
+		if (col->descending)
+			invert_bits(p, p, mem_size);
+
+	}
+
+	return p + mem_size;
+}
