@@ -91,9 +91,9 @@ typedef struct schema_table {
 	u8   dyn_offset_size; // 1,2,4
 } schema_table;
 
-int   schema_get      (schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_len);
-void* schema_set      (schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* in , int in_len, void *p, int add);
-int   schema_mem_size (schema_table* tbl, int is_key, int col_i, void* in, int in_len);
+int  schema_get(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_len);
+void schema_set(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* in , int in_len, void **pp, int add);
+int  schema_is_null(int col_i, void* rec);
 
 // implementation ------------------------------------------------------------
 
@@ -333,33 +333,6 @@ static inline schema_col* get_col(schema_table* tbl, int is_key, int col_i) {
 	return col_i >= 0 && col_i < n_cols ? &cols[col_i] : 0;
 }
 
-int schema_mem_size(schema_table* tbl, int is_key, int col_i,
-	void* in, int in_len
-) {
-	schema_col* col = get_col(tbl, is_key, col_i);
-	assert(col);
-
-	int copy_len = (col->len < in_len ? col->len : in_len); // truncate input
-	int copy_size = copy_len << ss;
-
-	// non-last varsize key col: can't contain 0, so stop at first 0 if found.
-	if (is_key && !col->fixsize && col_i < tbl->n_key_cols-1) {
-		copy_len = scan_end(col, in, copy_len);
-		copy_size = copy_len << ss;
-	}
-
-	int mem_size; // size of this value in memory.
-	if (col->fixsize) {
-		mem_size = col->len << ss;
-	} else {
-		mem_size = copy_size;
-		// non-last varsize key col with len < max len: 0-terminate.
-		if (is_key && col_i < tbl->n_key_cols-1 && copy_len < col->len)
-			mem_size += (1 << ss);
-	}
-	return mem_size;
-}
-
 int schema_get(schema_table* tbl, int is_key, int col_i,
 	void* rec, int rec_size,
 	void* out, int out_len
@@ -380,7 +353,7 @@ int schema_get(schema_table* tbl, int is_key, int col_i,
 	}
 	int ss = col->elem_size_shift;
 	if (!is_key) { // val col, copy
-		memcpy(out, p, copy_len << ss);
+		memmove(out, p, copy_len << ss);
 		return ret;
 	}
 	// key col, decode
@@ -395,6 +368,10 @@ int schema_get(schema_table* tbl, int is_key, int col_i,
 		out += (1 << ss);
 	}
 	return ret;
+}
+
+int schema_is_null(int col_i, void* rec) {
+	return is_null(rec, col_i);
 }
 
 // update the dyn. offset of the next col if there is one.
@@ -433,10 +410,10 @@ static inline void resize_varsize(
 	}
 }
 
-void* schema_set(schema_table* tbl, int is_key, int col_i,
+void schema_set(schema_table* tbl, int is_key, int col_i,
 	void* rec, int cur_rec_size,
 	void* in, int in_len,
-	void* p, int add
+	void** pp, int add
 ) {
 	schema_col* col = get_col(tbl, is_key, col_i);
 	assert(col);
@@ -448,8 +425,7 @@ void* schema_set(schema_table* tbl, int is_key, int col_i,
 	if (!is_key)
 		set_null(rec, col_i, !in);
 
-	if (!p)
-		p = get_ptr(tbl, is_key, col_i, col, rec);
+	void* p = pp && *pp ? *pp : get_ptr(tbl, is_key, col_i, col, rec);
 
 	int copy_len = (col->len < in_len ? col->len : in_len); // truncate input
 	int copy_size = copy_len << ss;
@@ -485,7 +461,7 @@ void* schema_set(schema_table* tbl, int is_key, int col_i,
 	if (!is_key) {
 
 		// val col: just copy
-		memcpy(p, in, copy_size);
+		memmove(p, in, copy_size);
 
 	} else {
 
@@ -500,5 +476,7 @@ void* schema_set(schema_table* tbl, int is_key, int col_i,
 
 	}
 
-	return p + mem_size;
+	if (pp)
+		*pp = p + mem_size;
+
 }
