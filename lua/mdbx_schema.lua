@@ -1,3 +1,4 @@
+--go@ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
 --[[
 
 	mdbx schema: structured data and multi-key indexing for mdbx.
@@ -350,7 +351,8 @@ function Db:load_table(table_name, table_schema)
 			else --scalar
 				function col.encode(buf, val)
 					local buf, sz = buf(col.elem_size)
-					cast(col.elemp_ct, buf)[0] = val
+					--pr('>>', tostring(col.elemp_ct), tostring(buf), tostring(cast(col.elemp_ct, buf)))
+					--cast(col.elemp_ct, buf)[0] = val
 					return buf, 1
 				end
 				function col.decode(p)
@@ -476,14 +478,17 @@ function val_cols(self, tbl)
 	return s, s.val_cols
 end
 
-function key_col(self, tbl, col)
+function key_col(self, tbl, col_name)
 	local s = self.schema.tables[tbl]
-	assert(s.key_cols[col.key_index], 'key col')
-	return s, s.key_cols, col.key_index
+	local col = assertf(s.fields[col_name], 'not a col: %s', col_name)
+	assertf(s.key_cols[col.key_index], 'not a key col: %s', col_name)
+	return s, s.key_cols, col
 end
-function val_cols(self, tbl, col)
+function val_col(self, tbl, col_name)
 	local s = self.schema.tables[tbl]
-	return s, s.val_cols
+	local col = assertf(s.fields[col_name], 'not a col: %s', col_name)
+	assertf(s.val_cols[col.val_index], 'not a val col: %s', col_name)
+	return s, s.val_cols, col
 end
 
 function Db:max_key_size(tbl)
@@ -493,6 +498,9 @@ end
 function Db:max_val_size(tbl)
 	return val_cols(self, tbl).max_rec_size
 end
+
+local key_buf = buffer()
+local val_buf = buffer()
 
 local encode_rec do
 local pp = new'u8*[1]'
@@ -504,7 +512,7 @@ function encode_rec(schema, is_key, cols, rec, rec_sz, ...)
 		local val = select(col.index, ...)
 		local buf, len = col.encode(val_buf, val)
 		C.schema_set(schema._st, is_key, col_i-1, rec, rec_sz, buf, len, pp, true)
-		pr(is_key, col_i, pp[0] - rec)
+		--pr(is_key, col_i, pp[0] - rec)
 	end
 	return pp[0] - rec
 end
@@ -551,20 +559,22 @@ function Db:val_tostring(tbl, col, buf, rec_sz, offset)
 	return rec_col_tostring(self, val_cols(self, tbl), col, buf, offset, rec_sz)
 end
 
-local function rec_col_decode(schema, is_key, cols, col, rec, rec_sz, out, out_len)
+local function rec_col_decode(schema, is_key, cols, col, rec, rec_sz, out, out_sz)
 	rec_sz = tonumber(rec_sz)
-	C.schema_get(schema._st, is_key, col.key_index-1, rec, rec_sz, out, out_len)
-	return col.decode(p)
+	local len = C.schema_get(schema._st, is_key, col.key_index-1, rec, rec_sz, out, out_sz)
+	return col.decode(p, len)
 end
 
-function Db:decode_key(tbl, col, buf, rec_sz, out, out_len)
-	local schema, cols = key_col(self, tbl, col)
-	return rec_col_decode(schema, true, cols, col, buf, rec_sz, out, out_len)
+function Db:decode_key(tbl, col, rec, rec_sz)
+	local schema, cols, col = key_col(self, tbl, col)
+	local out, out_sz = key_buf(self.schema.max_key_rec_size)
+	return rec_col_decode(schema, true, cols, col, rec, rec_sz, out, out_sz)
 end
 
-function Db:decode_val(tbl, col, buf, rec_sz, out, out_len)
-	local schema, cols = val_col(self, tbl, col)
-	return rec_col_decode(schema, false, cols, col, buf, rec_sz, out, out_len)
+function Db:decode_val(tbl, col, rec, rec_sz)
+	local schema, cols, col = val_col(self, tbl, col)
+	local out, out_sz = key_buf(self.schema.max_val_rec_size)
+	return rec_col_decode(schema, false, cols, col, rec, rec_sz, out, out_sz)
 end
 
 function Db:decode(tbl, col, buf, rec_sz, out, out_len)
@@ -572,15 +582,13 @@ function Db:decode(tbl, col, buf, rec_sz, out, out_len)
 	return rec_col_decode(schema, cols, col, buf, rec_sz, out, out_len)
 end
 
-do
-local key_buf = buffer()
-local val_buf = buffer()
-function mdbx_tx:put(tbl_name, ...)
+function mdbx_tx:put_record(tbl_name, ...)
 	local key_rec, key_max_sz = key_buf(self.db.schema.max_key_rec_size)
 	local val_rec, val_max_sz = val_buf(self.db.schema.max_val_rec_size)
+	--pr(key_rec, key_max_sz, val_rec, val_max_sz)
 	local key_sz = self.db:encode_key(tbl_name, key_rec, key_max_sz, ...)
 	local val_sz = self.db:encode_val(tbl_name, val_rec, val_max_sz, ...)
-	pr(key_rec, key_sz, val_rec, val_sz)
+	--pr(tostring(key_rec), key_sz, tostring(val_rec), val_sz)
 	self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
 end
 function mdbx_tx:put_records(tbl_name, records)
@@ -589,13 +597,13 @@ function mdbx_tx:put_records(tbl_name, records)
 	for _,vals in ipairs(records) do
 		local key_sz = self.db:encode_key(tbl_name, key_rec, key_max_sz, unpack(vals))
 		local val_sz = self.db:encode_val(tbl_name, val_rec, val_max_sz, unpack(vals))
-		pr(key_rec, key_sz, val_rec, val_sz)
+		pr(key_rec, key_sz, key_max_sz, val_rec, val_sz, val_max_sz)
 		self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
 	end
 end
+
 function mdbx_tx:get(tbl_name, ...)
-		self:get(tbl_name, key_rec, key_sz, val_rec, val_sz)
-end
+	self:get(tbl_name, key_rec, key_sz, val_rec, val_sz)
 end
 
 

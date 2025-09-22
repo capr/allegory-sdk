@@ -1,4 +1,5 @@
-//go@ plink -batch root@m1 sdk/c/mdbx_schema/build
+//go@ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/c/mdbx_schema/build
+//go@ plink -batch root@ sdk/c/mdbx_schema/build
 /*
 
 	Schema encoding and decoding for LMDB/LibMDBX.
@@ -91,7 +92,7 @@ typedef struct schema_table {
 	u8   dyn_offset_size; // 1,2,4
 } schema_table;
 
-int  schema_get(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_len);
+int  schema_get(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_size);
 void schema_set(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* in , int in_len, void **pp, int add);
 int  schema_is_null(int col_i, void* rec);
 
@@ -335,39 +336,30 @@ static inline schema_col* get_col(schema_table* tbl, int is_key, int col_i) {
 
 int schema_get(schema_table* tbl, int is_key, int col_i,
 	void* rec, int rec_size,
-	void* out, int out_len
+	void* out, int out_size
 ) {
-	int ret = 0;
 	schema_col* col = get_col(tbl, is_key, col_i);
 	assert(col);
-	if (!is_key) {
-		if (is_null(rec, col_i))
-			return 1; // signal null
-	}
-	void* p = get_ptr(tbl, is_key, col_i, col, rec);
-	int in_len = get_len(tbl, is_key, col_i, col, rec, p, rec_size);
-	int copy_len = out_len;
-	if (in_len < out_len) {
-		out_len = in_len;
-		ret = -1; // signal truncation
-	}
 	int ss = col->elem_size_shift;
-	if (!is_key) { // val col, copy
-		memmove(out, p, copy_len << ss);
-		return ret;
+	if (!is_key && is_null(rec, col_i))
+		return -1; // signal null
+	void* p = get_ptr(tbl, is_key, col_i, col, rec);
+	int in_size = get_len(tbl, is_key, col_i, col, rec, p, rec_size) << ss;
+	int copy_size = out_size < in_size ? out_size : in_size;
+	if (!is_key) {
+		// val col, copy
+		memmove(out, p, copy_size);
+	} else {
+		// key col, decode
+		if (col->descending) { // invert bits
+			invert_bits(out, p, copy_size);
+			p = out; // will decode in-place then.
+		}
+		encdec_t decode = decoders[col->type];
+		for (int o = 0; o < copy_size; o += (1 << ss))
+			decode(p + o, out + o);
 	}
-	// key col, decode
-	if (col->descending) { // invert bits
-		invert_bits(out, p, copy_len << ss);
-		p = out; // will decode in-place then.
-	}
-	encdec_t decode = decoders[col->type];
-	for (int i = 0; i < copy_len; i++) {
-		decode(p, out);
-		p   += (1 << ss);
-		out += (1 << ss);
-	}
-	return ret;
+	return copy_size >> ss;
 }
 
 int schema_is_null(int col_i, void* rec) {

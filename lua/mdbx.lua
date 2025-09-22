@@ -897,9 +897,9 @@ do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
 function Tx:put(tab, key_data, key_size, val_data, val_size, flags)
-	key.data = cast('char*', key_data)
+	key.data = cast(u8p, key_data)
 	key.size = key_size
-	val.data = cast('char*', val_data)
+	val.data = cast(u8p, val_data)
 	val.size = val_size
 	self:put_kv(tab, key, val, flags)
 end
@@ -963,7 +963,7 @@ if not ... then
 	s = _('%03x %d foo bar', 32, 3141592)
 
 	local tx = db:tx'w'
-	tx:put('users', new('int[1]', 123456789), sizeof'int', cast('char*', s), #s)
+	tx:put('users', new('int[1]', 123456789), 4, cast(u8p, s), #s)
 	tx:commit()
 
 	local tx = db:tx()
