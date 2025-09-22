@@ -1,5 +1,5 @@
+//go@ plink -batch root@m1 sdk/c/mdbx_schema/build
 //go@ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/c/mdbx_schema/build
-//go@ plink -batch root@ sdk/c/mdbx_schema/build
 /*
 
 	Schema encoding and decoding for LMDB/LibMDBX.
@@ -98,72 +98,72 @@ int  schema_is_null(int col_i, void* rec);
 
 // implementation ------------------------------------------------------------
 
-static void decode_u8(u8* s, u8* d) {
+static void decode_u8(u8* d, u8* s) {
 	*d = *s;
 }
-static void encode_u8(u8* s, u8* d) {
+static void encode_u8(u8* d, u8* s) {
 	*d = *s;
 }
-static void decode_u16(u16* s, u16* d) {
+static void decode_u16(u16* d, u16* s) {
 	*d = __builtin_bswap16(*s);
 }
-static void encode_u16(u16* s, u16* d) {
+static void encode_u16(u16* d, u16* s) {
 	*d = __builtin_bswap16(*s);
 }
-static void decode_u32(u32* s, u32* d) {
+static void decode_u32(u32* d, u32* s) {
 	*d = __builtin_bswap32(*s);
 }
-static void encode_u32(u32* s, u32* d) {
+static void encode_u32(u32* d, u32* s) {
 	*d = __builtin_bswap32(*s);
 }
-static void decode_u64(u64* s, u64* d) {
+static void decode_u64(u64* d, u64* s) {
 	*d = __builtin_bswap64(*s);
 }
-static void encode_u64(u64* s, u64* d) {
+static void encode_u64(u64* d, u64* s) {
 	*d = __builtin_bswap64(*s);
 }
-static void decode_i8(i8* s, i8 * d) {
+static void decode_i8(i8* d, i8 * s) {
 	*d = *s ^ 0x80;
 }
-static void encode_i8(i8* s, i8 * d) {
+static void encode_i8(i8* d, i8 * s) {
 	*d = *s ^ 0x80;
 }
-static void decode_i16(u16* s, i16* d) {
+static void decode_i16(u16* d, i16* s) {
 	*d = __builtin_bswap16(*s) ^ 0x8000;
 }
-static void encode_i16(i16* s, i16* d) {
-	*d = __builtin_bswap16(*s) ^ 0x8000;
+static void encode_i16(i16* d, i16* s) {
+	*d = __builtin_bswap16(*s ^ 0x8000);
 }
-static void decode_i32(i32* s, i32* d) {
+static void decode_i32(i32* d, i32* s) {
+	*d = __builtin_bswap32(*s) ^ 0x80000000;
+}
+static void encode_i32(i32* d, i32* s) {
 	*d = __builtin_bswap32(*s ^ 0x80000000);
 }
-static void encode_i32(i32* s, i32* d) {
-	*d = __builtin_bswap32(*s ^ 0x80000000);
-}
-static void decode_i64(i64* s, i64* d) {
+static void decode_i64(i64* d, i64* s) {
 	*d = __builtin_bswap64(*s) ^ 0x8000000000000000ULL;
 }
-static void encode_i64(i64* s, i64* d) {
+static void encode_i64(i64* d, i64* s) {
 	*d = __builtin_bswap64(*s ^ 0x8000000000000000ULL);
 }
-static void decode_f32(u32* s, u32* d) {
+static void decode_f32(u32* d, u32* s) {
 	u32 v = __builtin_bswap32(*s);
 	*d = v & 0x80000000 ? v ^ 0x80000000 : ~v;
 }
-static void encode_f32(u32* s, u32* d) {
+static void encode_f32(u32* d, u32* s) {
 	u32 v = *s; v = v & 0x80000000 ? ~v : v ^ 0x80000000;
 	*d = __builtin_bswap32(v);
 }
-static void decode_f64(u64* s, u64* d) {
+static void decode_f64(u64* d, u64* s) {
 	u64 v = __builtin_bswap64(*s);
 	*d = v & 0x8000000000000000ULL ? v ^ 0x8000000000000000ULL : ~v;
 }
-static void encode_f64(u64* s, u64* d) {
+static void encode_f64(u64* d, u64* s) {
 	u64 v = *s; v = v & 0x8000000000000000ULL ? ~v : v ^ 0x8000000000000000ULL;
 	*d = __builtin_bswap64(v);
 }
 
-typedef void (*encdec_t)(void* s, void* d);
+typedef void (*encdec_t)(void* d, void* s);
 
 /* NOTE: must match schema_col_type enum order! */
 static encdec_t decoders[] = {
@@ -194,17 +194,11 @@ static encdec_t encoders[] = {
 };
 
 static void invert_bits(void* d, void *s, int len) {
-	u8 *s8 = s;
-	u8 *d8 = d;
-	u8 *d64 = s;
 	int i = 0;
-	for (i = 0; i + 8 <= len; i += 8) {
-		u64 *s64 = (u64*)(s8 + i);
-		*d64 = ~(*s64);
-	}
-	for (; i < len; i++) {
-		d8[i] = ~(s8[i]);
-	}
+	for (; i + 8 <= len; i += 8)
+		((u64*)d)[i] = ~((u64*)s)[i];
+	for (; i < len; i++)
+		((u8*)d)[i] = ~((u8*)s)[i];
 }
 
 static int is_null(void* rec, int col_i) {
@@ -357,7 +351,7 @@ int schema_get(schema_table* tbl, int is_key, int col_i,
 		}
 		encdec_t decode = decoders[col->type];
 		for (int o = 0; o < copy_size; o += (1 << ss))
-			decode(p + o, out + o);
+			decode(out + o, p + o);
 	}
 	return copy_size >> ss;
 }
@@ -460,7 +454,7 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 		// key col: encode for lexicographic binary ordering
 		encdec_t encode = encoders[col->type];
 		for (int o = 0; o < copy_size; o += (1 << ss))
-			encode(in + o, p + o);
+			encode(p + o, in + o);
 
 		// descending key col: invert bits (including padding and terminator).
 		if (col->descending)

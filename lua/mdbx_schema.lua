@@ -1,4 +1,4 @@
---go@ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
+--go @ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
 --[[
 
 	mdbx schema: structured data and multi-key indexing for mdbx.
@@ -352,7 +352,7 @@ function Db:load_table(table_name, table_schema)
 				function col.encode(buf, val)
 					local buf, sz = buf(col.elem_size)
 					--pr('>>', tostring(col.elemp_ct), tostring(buf), tostring(cast(col.elemp_ct, buf)))
-					--cast(col.elemp_ct, buf)[0] = val
+					cast(col.elemp_ct, buf)[0] = val
 					return buf, 1
 				end
 				function col.decode(p)
@@ -511,8 +511,9 @@ function encode_rec(schema, is_key, cols, rec, rec_sz, ...)
 	for col_i, col in ipairs(cols) do
 		local val = select(col.index, ...)
 		local buf, len = col.encode(val_buf, val)
+		--pr('?', val, buf[0])
 		C.schema_set(schema._st, is_key, col_i-1, rec, rec_sz, buf, len, pp, true)
-		--pr(is_key, col_i, pp[0] - rec)
+		--pr(is_key, col_i, pp[0] - rec, rec_sz, buf, len)
 	end
 	return pp[0] - rec
 end
@@ -562,7 +563,7 @@ end
 local function rec_col_decode(schema, is_key, cols, col, rec, rec_sz, out, out_sz)
 	rec_sz = tonumber(rec_sz)
 	local len = C.schema_get(schema._st, is_key, col.key_index-1, rec, rec_sz, out, out_sz)
-	return col.decode(p, len)
+	return col.decode(out, len)
 end
 
 function Db:decode_key(tbl, col, rec, rec_sz)
@@ -597,7 +598,8 @@ function mdbx_tx:put_records(tbl_name, records)
 	for _,vals in ipairs(records) do
 		local key_sz = self.db:encode_key(tbl_name, key_rec, key_max_sz, unpack(vals))
 		local val_sz = self.db:encode_val(tbl_name, val_rec, val_max_sz, unpack(vals))
-		pr(key_rec, key_sz, key_max_sz, val_rec, val_sz, val_max_sz)
+		--pr(tostring(key_rec), key_sz, key_max_sz, tostring(val_rec), val_sz, val_max_sz)
+		--pr(key_rec[0], vals)
 		self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
 	end
 end
@@ -679,6 +681,7 @@ if not ... then
 		end
 		tx:put_records(tbl.name, t)
 		tx:commit()
+
 		if tbl.fields.id.order == 'desc' then
 			reverse(nums)
 		end
@@ -686,8 +689,8 @@ if not ... then
 		local i = 1
 		for k,v in tx:each(tbl.name) do
 			local id = db:decode_key(tbl.name, 'id', k.data, k.size)
-			--local k = str(k.data, k.size)
-			--local v = str(v.data, v.size)
+			local k = str(k.data, k.size)
+			local v = str(v.data, v.size)
 			pr(tbl.name, id)
 			assertf(id == nums[i], '%q ~= %q', id, nums[i])
 			i = i + 1
