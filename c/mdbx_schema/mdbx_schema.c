@@ -5,8 +5,9 @@
 	Schema encoding and decoding for LMDB/LibMDBX.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	Schema means partitioning lmdb keys and values into predefined columns,
-	which allows composite keys and efficient storage of structured values.
+	Schema means partitioning records (keys and values) into predefined columns,
+	which allows multi-key ordering as well as efficient storage and retrieval
+	of structured values.
 
 	Data types:
 		- ints: 8, 16, 32, 64 bit, signed/unsigned
@@ -64,14 +65,16 @@ Fixsize means scalar (len=1) or fixed-size array (zero-padded). The opposite
 is varsize for which len in the definition means max len. Varsize values are
 zero-terminated inside key records, so they are not 8-bit clean except the
 last column. In value records an offset table is used instead so all columns
-are 8-bit clean. The zero terminator is skipped for values with len = max len.
-The offset table contains offsets of dyn_offset_size bytes.
+are 8-bit clean. The zero terminator is skipped for values with len = max len
+so the value never takes more space than len. The offset table is an array of
+u8, u16 or i32. In value records, all varsize columns are after all fixsize
+columns to minimize the offset table since column order doesn't matter there.
 
 Key records are encoded differently than val records because keys are encoded
 for lexicographic binary ordering, which means: no nulls, no offset table for
-varsize fields, instead we use \0 as separator, so no 8-bit clean varsize
+varsize fields, instead we use 0 as separator, so no 8-bit clean varsize
 keys either, value bits are negated for descending order, ints and floats are
-encoded so that bit order matches numeric order.
+encoded so that byte order matches numeric order.
 
 */
 typedef struct schema_col {

@@ -199,6 +199,7 @@ function Db:load_table(table_name, table_schema)
 		col.order = order
 		if col.type == 'utf8' then
 			col.collation = collation or 'utf8'
+			assert(col.maxlen, 'utf8 columns must be varsize')
 		end
 		add(key_cols, col)
 		col.key_index = #key_cols
@@ -347,21 +348,6 @@ function Db:load_table(table_name, table_schema)
 
 			--create col getters and setters.
 			if col.len or col.maxlen then --array
-
-			else --scalar
-				function col.encode(buf, val)
-					local buf, sz = buf(col.elem_size)
-					--pr('>>', tostring(col.elemp_ct), tostring(buf), tostring(cast(col.elemp_ct, buf)))
-					cast(col.elemp_ct, buf)[0] = val
-					return buf, 1
-				end
-				function col.decode(p)
-					return cast(col.elemp_ct, p)[0]
-				end
-			end
-
-			--[[
-			if col.len or col.maxlen then --varsize and fixsize arrays
 				local maxlen = col.len or col.maxlen
 				if col.type == 'utf8' then --utf8 strings
 					local ai_ci = col.collation == 'utf8_ai_ci'
@@ -432,21 +418,17 @@ function Db:load_table(table_name, table_schema)
 						end
 					end
 				end
-			else
-				function get(buf, rec_sz)
-					if is_val and is_null(buf, col_i) then
-						return nil
-					end
-					return dec(getp(buf)[0], desc)
+			else --scalar
+				function col.encode(buf, val)
+					local buf, sz = buf(col.elem_size)
+					--pr('>>', tostring(col.elemp_ct), tostring(buf), tostring(cast(col.elemp_ct, buf)))
+					cast(col.elemp_ct, buf)[0] = val
+					return buf, 1
 				end
-				function set(buf, rec_sz, val)
-					if is_val and set_null(buf, col_i, val == nil) then
-						return
-					end
-					getp(buf)[0] = enc(val, desc)
+				function col.decode(p)
+					return cast(col.elemp_ct, p)[0]
 				end
 			end
-			]]
 
 		end --for col in cols
 
