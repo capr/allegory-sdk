@@ -1,5 +1,5 @@
-//go@ plink -batch root@m1 sdk/c/mdbx_schema/build
 //go@ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/c/mdbx_schema/build
+//go@ plink -batch root@m1 sdk/c/mdbx_schema/build
 /*
 
 	Schema encoding and decoding for LMDB/LibMDBX.
@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <mdbx.h>
 
 typedef int8_t   i8;
 typedef int16_t  i16;
@@ -96,8 +97,11 @@ typedef struct schema_table {
 } schema_table;
 
 int  schema_get(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_size);
-void schema_set(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* in , int in_len, void **pp, int add);
+void schema_set(schema_table* tbl, int is_key, int col_i, void* rec, int cur_rec_size, int rec_buf_size, void* in , int in_len, void **pp, int add);
 int  schema_is_null(int col_i, void* rec);
+
+int mdbx_cmp_desc         (const MDBX_val *a, const MDBX_val *b);
+int mdbx_cmp_asc_len_desc (const MDBX_val *a, const MDBX_val *b);
 
 // implementation ------------------------------------------------------------
 
@@ -265,6 +269,27 @@ static void set_dyn_offset(schema_table* tbl, schema_col* col, void* rec, int of
 	assert(0);
 }
 
+// cmp for descending order.
+__attribute__((__pure__, __nothrow__)) int mdbx_cmp_desc(const MDBX_val *a, const MDBX_val *b) {
+	if (a->iov_len == b->iov_len)
+		return a->iov_len ? -memcmp(a->iov_base, b->iov_base, a->iov_len) : 0;
+	const int diff_len = (a->iov_len < b->iov_len) ? 1 : -1;
+	const size_t shortest = (a->iov_len < b->iov_len) ? a->iov_len : b->iov_len;
+	const int diff_data = shortest ? -memcmp(a->iov_base, b->iov_base, shortest) : 0;
+	return __builtin_expect(diff_data, 1) ? diff_data : diff_len;
+}
+
+// cmp for ascending order but descending length tie, to use when data is
+// bit-inverted for descending order but longer keys must come before shorter keys.
+__attribute__((__pure__, __nothrow__)) int mdbx_cmp_asc_len_desc(const MDBX_val *a, const MDBX_val *b) {
+	if (a->iov_len == b->iov_len)
+		return a->iov_len ? memcmp(a->iov_base, b->iov_base, a->iov_len) : 0;
+	const int diff_len = (a->iov_len < b->iov_len) ? 1 : -1;
+	const size_t shortest = (a->iov_len < b->iov_len) ? a->iov_len : b->iov_len;
+	const int diff_data = shortest ? memcmp(a->iov_base, b->iov_base, shortest) : 0;
+	return __builtin_expect(diff_data, 1) ? diff_data : diff_len;
+}
+
 static inline int get_key_mem_size(schema_table* tbl, schema_col* col,
 	void *p
 ) {
@@ -377,7 +402,7 @@ static inline void set_next_dyn_offset(schema_table* tbl, int col_i,
 
 static inline void resize_varsize(
 	schema_table* tbl, int is_key, int col_i, schema_col* col,
-	void* rec, int cur_rec_size,
+	void* rec, int cur_rec_size, int rec_buf_size,
 	void* p,
 	int mem_size
 ) {
@@ -400,7 +425,7 @@ static inline void resize_varsize(
 }
 
 void schema_set(schema_table* tbl, int is_key, int col_i,
-	void* rec, int cur_rec_size,
+	void* rec, int cur_rec_size, int rec_buf_size,
 	void* in, int in_len,
 	void** pp, int add
 ) {
@@ -434,15 +459,19 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 		// non-last varsize key col with len < max len: 0-terminate.
 		if (is_key && col_i < tbl->n_key_cols-1 && copy_len < col->len)
 			mem_size += (1 << ss);
+
+		assert(p + mem_size <= rec + rec_buf_size);
+
 		if (!add) {
 			// varsize key or val set: resize (shrink or lengthen).
-			resize_varsize(tbl, is_key, col_i, col, rec, cur_rec_size, p, mem_size);
+			resize_varsize(tbl, is_key, col_i, col, rec, cur_rec_size, rec_buf_size, p, mem_size);
 		} else if (!is_key) {
 			// varsize val add: set offset of next col for next add.
 			set_next_dyn_offset(tbl, col_i, rec, p, mem_size);
 		} else {
 			// varsize key add: nothing to do.
 		}
+
 	}
 	// zero-pad (whether fixsize or 0-terminated).
 	memset(p + copy_size, 0, mem_size - copy_size);
@@ -460,8 +489,12 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 			encode(p + o, in + o);
 
 		// descending key col: invert bits (including padding and terminator).
-		if (col->descending)
+		if (col->descending) {
+			if (mem_size && col->type == schema_col_type_u8)
+				printf("descending: %d %d %d %.*s\n",
+					col->static_offset, col->offset, mem_size, mem_size, p);
 			invert_bits(p, p, mem_size);
+		}
 
 	}
 

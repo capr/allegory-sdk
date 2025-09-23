@@ -2,7 +2,7 @@
 cd "${0%build}" || exit 1
 
 build() {
-	${X}gcc -c -O2 -fno-strict-aliasing $C mdbx_schema.c -Wall -I.
+	${X}gcc -c -O2 -fno-strict-aliasing $C mdbx_schema.c -Wall -I. -I../mdbx/src
 	${X}gcc *.o -shared -o ../../bin/$P/$D $L
 	rm -f      ../../bin/$P/$A
 	${X}ar rcs ../../bin/$P/$A *.o
@@ -15,5 +15,5 @@ elif [ "${OSTYPE#darwin}" != "$OSTYPE" ]; then
 	P=osx C="-arch x86_64" L="-arch x86_64 -install_name @rpath/libmdbx_schema.dylib" \
 	D=libmdbx_schema.dylib A=libmdbx_schema.a build
 else
-	P=linux C="-fPIC" L="-s -static-libgcc" D=libmdbx_schema.so A=libmdbx_schema.a build
+	P=debian12 C="-fPIC" L="-s -static-libgcc" D=libmdbx_schema.so A=libmdbx_schema.a build
 fi
