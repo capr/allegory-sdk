@@ -5,6 +5,8 @@
 	Schema encoding and decoding for LMDB/LibMDBX.
 	Written by Cosmin Apreutesei. Public Domain.
 
+	Builds with gcc -O2 -fno-strict-aliasing -Wall
+
 	Schema means partitioning records (keys and values) into predefined columns,
 	which allows multi-key ordering as well as efficient storage and retrieval
 	of structured values.
@@ -99,9 +101,16 @@ typedef struct schema_table {
 	u8   dyn_offset_size; // 1,2,4
 } schema_table;
 
-int  schema_get(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_size);
-void schema_set(schema_table* tbl, int is_key, int col_i, void* rec, int cur_rec_size, int rec_buf_size, void* in , int in_len, void **pp, int add);
-int  schema_is_null(int col_i, void* rec);
+int schema_get(schema_table* tbl, int is_key, int col_i,
+	void* rec, int rec_size,
+	void* out, int out_size
+);
+void schema_set(schema_table* tbl, int is_key, int col_i,
+	void* rec, int cur_rec_size, int rec_buf_size,
+	void* in, int in_len,
+	u8** pp, int add
+);
+int schema_is_null(int col_i, void* rec);
 
 // implementation ------------------------------------------------------------
 
@@ -216,11 +225,8 @@ static encdec_t encoders[] = {
 	(encdec_t)&encode_f64,
 };
 
-static void invert_bits(void* d, void *s, int len) {
-	int i = 0;
-	for (; i + 8 <= len; i += 8)
-		((u64*)d)[i] = ~((u64*)s)[i];
-	for (; i < len; i++)
+static void invert_bits(void* d, void* s, int len) {
+	for (int i = 0; i < len; i++)
 		((u8*)d)[i] = ~((u8*)s)[i];
 }
 
@@ -248,46 +254,41 @@ static int scan_end(schema_col* col, void* p, int len, int encoded) {
 	int ss = col->elem_size_shift;
 	if (ss == 0) {
 		u8 t = encoded && col->descending ? 0xff : 0;
-		u8* q = p;
-		for (int i = 0; i < len; i++)
-			if (*q++ == t)
-				return i;
+		void *r = memchr(p, t, len);
+		return r ? r - p : len;
 	} else if (ss == 1) {
 		u16 t = encoded && col->descending ? 0xffff : 0;
 		u16* q = p;
 		for (int i = 0; i < len; i++)
-			if (*q++ == t)
+			if (q[i] == t)
 				return i;
 	} else if (ss == 2) {
 		u32 t = encoded && col->descending ? 0xffffffff : 0;
 		u32* q = p;
 		for (int i = 0; i < len; i++)
-			if (*q++ == t)
+			if (q[i] == t)
 				return i;
 	} else if (ss == 3) {
 		u64 t = encoded && col->descending ? 0xffffffffffffffffULL : 0;
 		u64* q = p;
 		for (int i = 0; i < len; i++)
-			if (*q++ == t)
+			if (q[i] == t)
 				return i;
-	} else {
-		assert(0);
 	}
 	return len;
 }
 
 static int get_dyn_offset(schema_table* tbl, schema_col* col, void* rec) {
-	if (tbl->dyn_offset_size == 1) return *(u8* )(rec + col->offset);
-	if (tbl->dyn_offset_size == 2) return *(u16*)(rec + col->offset);
-	if (tbl->dyn_offset_size == 4) return *(int*)(rec + col->offset);
-	assert(0);
+	     if (tbl->dyn_offset_size == 1) return *(u8* )(rec + col->offset);
+	else if (tbl->dyn_offset_size == 2) return *(u16*)(rec + col->offset);
+	else if (tbl->dyn_offset_size == 4) return *(int*)(rec + col->offset);
+	else return 0;
 }
 
 static void set_dyn_offset(schema_table* tbl, schema_col* col, void* rec, int offset) {
-	if (tbl->dyn_offset_size == 1) *(u8* )(rec + col->offset) = offset;
-	if (tbl->dyn_offset_size == 2) *(u16*)(rec + col->offset) = offset;
-	if (tbl->dyn_offset_size == 4) *(int*)(rec + col->offset) = offset;
-	assert(0);
+	     if (tbl->dyn_offset_size == 1) *(u8* )(rec + col->offset) = offset;
+	else if (tbl->dyn_offset_size == 2) *(u16*)(rec + col->offset) = offset;
+	else if (tbl->dyn_offset_size == 4) *(int*)(rec + col->offset) = offset;
 }
 
 static inline int get_key_mem_size(schema_table* tbl, schema_col* col,
@@ -321,8 +322,8 @@ static void* get_ptr(schema_table* tbl, int is_key, int col_i, schema_col* col,
 		return rec + col->offset;
 	} else if (is_key) { // key col at dyn. offset
 		void* p = rec;
-		for (int col_i = 0; col_i < col_i-1; col_i++)
-			p += get_key_mem_size(tbl, &tbl->key_cols[col_i], p);
+		for (int col_j = 0; col_j < col_i; col_j++)
+			p += get_key_mem_size(tbl, &tbl->key_cols[col_j], p);
 		return p;
 	} else { // val col at dyn. offset
 		return rec + get_dyn_offset(tbl, col, rec);
@@ -330,20 +331,21 @@ static void* get_ptr(schema_table* tbl, int is_key, int col_i, schema_col* col,
 }
 
 int get_len(schema_table* tbl, int is_key, int col_i, schema_col* col, void* rec, void* p, int rec_size) {
-	if (col->fixsize)
+	if (col->fixsize) {
 		return col->len;
-	if (is_key) { // varsize key col
+	} else if (is_key) { // varsize key col
 		if (!p)
 			p = get_ptr(tbl, is_key, col_i, col, rec);
 		return scan_end(col, p, col->len, 1);
 	} else { // varsize val col
-		int offset = get_dyn_offset(tbl, col, rec);
-		if (col_i == tbl->n_val_cols-1) { // last col
-			return (rec_size - offset) >> col->elem_size_shift;
-		} else { // non-last col
+		int offset = col->static_offset ? col->offset : get_dyn_offset(tbl, col, rec);
+		if (col_i < tbl->n_val_cols-1) { // non-last col
 			schema_col* next_col = &tbl->val_cols[col_i+1];
 			int next_offset = get_dyn_offset(tbl, next_col, rec);
+			printf(" next_offset %d\n", next_offset);
 			return (next_offset - offset) >> col->elem_size_shift;
+		} else { // last col
+			return (rec_size - offset) >> col->elem_size_shift;
 		}
 	}
 }
@@ -425,7 +427,7 @@ static inline void resize_varsize(
 void schema_set(schema_table* tbl, int is_key, int col_i,
 	void* rec, int cur_rec_size, int rec_buf_size,
 	void* in, int in_len,
-	void** pp, int add
+	u8** pp, int add
 ) {
 	schema_col* col = get_col(tbl, is_key, col_i);
 	assert(col);
@@ -448,7 +450,7 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 		copy_size = copy_len << ss;
 	}
 
-	// figure out mem_size and adjust rec before copying the data.
+	// figure out mem_size.
 	int mem_size; // size of this value in memory.
 	if (col->fixsize) {
 		mem_size = col->len << ss;
@@ -457,20 +459,18 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 		// varsize key col: 0-terminate.
 		if (is_key)
 			mem_size += (1 << ss);
-
-		assert(p + mem_size <= rec + rec_buf_size);
-
-		if (!add) {
-			// varsize key or val set: resize (shrink or lengthen).
-			resize_varsize(tbl, is_key, col_i, col, rec, cur_rec_size, rec_buf_size, p, mem_size);
-		} else if (!is_key) {
-			// varsize val add: set offset of next col for next add.
-			set_next_dyn_offset(tbl, col_i, rec, p, mem_size);
-		} else {
-			// varsize key add: nothing to do.
-		}
-
 	}
+	assert(p + mem_size <= rec + rec_buf_size);
+
+	// adjust rec before copying the data.
+	if (!col->fixsize && !add) {
+		// varsize key or val set: resize (shrink or lengthen).
+		resize_varsize(tbl, is_key, col_i, col, rec, cur_rec_size, rec_buf_size, p, mem_size);
+	} else if (!is_key) {
+		// val add: set offset of next col for next add.
+		set_next_dyn_offset(tbl, col_i, rec, p, mem_size);
+	}
+
 	// zero-pad (whether fixsize or 0-terminated).
 	memset(p + copy_size, 0, mem_size - copy_size);
 
