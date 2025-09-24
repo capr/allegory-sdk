@@ -16,7 +16,7 @@
 
 	Limitations:
 		- keys are not nullable
-		- multi-value keys are \0-terminated so they are not 8-bit clean!
+		- varsize keys are 0-terminated so they are not 8-bit clean!
 
 ]]
 
@@ -52,6 +52,8 @@ typedef enum schema_col_type {
 	schema_col_type_u16,
 	schema_col_type_u32,
 	schema_col_type_u64,
+	schema_col_type_u32_le,
+	schema_col_type_u64_le,
 	schema_col_type_f32,
 	schema_col_type_f64,
 } schema_col_type;
@@ -77,9 +79,6 @@ typedef struct schema_table {
 int  schema_get(schema_table* tbl, int is_key, int col_i, void* rec, int rec_size, void* out, int out_len);
 void schema_set(schema_table* tbl, int is_key, int col_i, void* rec, int cur_rec_size, int rec_buf_size, void* in , int in_len, u8** pp, int add);
 int  schema_is_null(int col_i, void* rec);
-
-int mdbx_cmp_desc         (const MDBX_val *a, const MDBX_val *b);
-int mdbx_cmp_asc_len_desc (const MDBX_val *a, const MDBX_val *b);
 ]]
 
 local col_ct = {
@@ -87,24 +86,17 @@ local col_ct = {
 }
 
 local schema_col_types = {
-	i8   = C.schema_col_type_i8,
-	i16  = C.schema_col_type_i16,
-	i32  = C.schema_col_type_i32,
-	i64  = C.schema_col_type_i64,
-	u8   = C.schema_col_type_u8,
-	u16  = C.schema_col_type_u16,
-	u32  = C.schema_col_type_u32,
-	u64  = C.schema_col_type_u64,
-	f32  = C.schema_col_type_f32,
-	f64  = C.schema_col_type_f64,
-	utf8 = C.schema_col_type_u8,
-}
-
---types than are stored in little-endian with MDBX_REVERSEKEY.
-local le_col_type = {
-	u64 = true,
-	u32 = true,
-	u16 = true,
+	i8     = C.schema_col_type_i8,
+	i16    = C.schema_col_type_i16,
+	i32    = C.schema_col_type_i32,
+	i64    = C.schema_col_type_i64,
+	u8     = C.schema_col_type_u8,
+	u16    = C.schema_col_type_u16,
+	u32    = C.schema_col_type_u32,
+	u64    = C.schema_col_type_u64,
+	f32    = C.schema_col_type_f32,
+	f64    = C.schema_col_type_f64,
+	utf8   = C.schema_col_type_u8,
 }
 
 local buf = buffer(); buf(256)
@@ -167,8 +159,8 @@ function Db:load_table(table_name, table_schema)
 		table_schema.fields[col.name] = col
 	end
 
-	local key_cols = {is_key = true}
-	local val_cols = {is_key = false}
+	local key_cols = {}
+	local val_cols = {}
 
 	--parse pk and set col.order, .type, .collation.
 	for s in words(table_schema.pk) do
@@ -237,16 +229,32 @@ function Db:load_table(table_name, table_schema)
 		return i1 < i2
 	end)
 
-	--MDBX_REVERSEKEY allows us to store uints in little endian,
-	--exploit that in the simple case of a single uint key.
-	local le_key = #key_cols == 1
-		and key_cols[1].order == 'asc'
-		and le_col_type[key_cols[1].type]
-		and true or nil
+	--store u32 and u64 simple keys in little-endian and use fast comparator.
+	local int_key
+	if #key_cols == 1 then
+		local col = key_cols[1]
+		if col.order == 'asc' and (col.type == 'u32' or col.type == 'u64') then
+			int_key = col.type
+		end
+	end
+
+	--local simple_int_key = int_key or (
+	--	#key_cols == 1
+	--	and key_cols[1].order == 'asc'
+	--	and (key_cols[1].type == 'u16' or key_cols[1].type == 'u8')
+
+	if int_key then
+		local col = key_cols[1]
+		local elemp_ct = col.elemp_ct
+		local elem_size = col.elem_size
+		function table_schema.encode_key_rec(buf, sz, val)
+			cast(elemp_ct, buf)[0] = val
+			return elem_size
+		end
+	end
 
 	table_schema.key_cols = key_cols
 	table_schema.val_cols = val_cols
-	table_schema.reverse_keys = le_key
 
 	--allocate the C schema
 	local st = new'schema_table'
@@ -280,7 +288,7 @@ function Db:load_table(table_name, table_schema)
 		--compute max row size, just the data (which is what it is for keys).
 		local max_rec_size = 0
 		for col_i,col in ipairs(cols) do
-			local maxlen = col.maxlen or col.len or 1
+			local maxlen = col.maxlen and col.maxlen + 1 or col.len or 1
 			max_rec_size = max_rec_size + maxlen * col.elem_size
 		end
 
@@ -323,8 +331,13 @@ function Db:load_table(table_name, table_schema)
 		local fixsize_offset = nulls_size
 		for col_i,col in ipairs(cols) do
 
+			local int_schema_col_type = is_key and int_key and (
+					int_key == 'u32' and C.schema_col_type_u32_le or
+					int_key == 'u64' and C.schema_col_type_u64_le
+				)
+
 			local sc = is_key and sc_key_cols or sc_val_cols
-			sc[col_i-1].type = schema_col_types[col.type]
+			sc[col_i-1].type = int_schema_col_type or schema_col_types[col.type]
 			sc[col_i-1].len = col.maxlen or col.len or 1
 			sc[col_i-1].fixsize = col.maxlen and 0 or 1
 			sc[col_i-1].descending = col.order == 'desc'
@@ -441,7 +454,7 @@ function Db:load_table(table_name, table_schema)
 	local tx = self:tx'w'
 	tx:open_table(table_name, bor(
 		C.MDBX_CREATE,
-		table_schema.reverse_keys and C.MDBX_REVERSEKEY or 0
+		int_key and C.MDBX_INTEGERKEY or 0
 	))
 	tx:commit()
 
@@ -505,9 +518,13 @@ function encode_rec(table_schema, is_key, cols, rec, rec_buf_sz, ...)
 end
 end
 
-function Db:encode_key_rec(tbl, buf, buf_sz, ...)
+function Db:encode_key_rec(tbl, rec, rec_buf_sz, ...)
 	local table_schema, cols = key_cols(self, tbl)
-	return encode_rec(table_schema, true, cols, buf, buf_sz, ...)
+	if table_schema.encode_key_rec then
+		return table_schema.encode_key_rec(rec, rec_buf_sz, ...)
+	else
+		return encode_rec(table_schema, true, cols, rec, rec_buf_sz, ...)
+	end
 end
 
 function Db:encode_val_rec(tbl, buf, buf_sz, ...)
@@ -516,20 +533,20 @@ function Db:encode_val_rec(tbl, buf, buf_sz, ...)
 end
 
 function mdbx_tx:put_record(tbl_name, ...)
-	local key_rec, key_max_sz = key_buf(self.db.schema.max_key_rec_size)
-	local val_rec, val_max_sz = val_buf(self.db.schema.max_val_rec_size)
+	local key_rec, key_buf_sz = key_buf(self.db.schema.max_key_rec_size)
+	local val_rec, val_buf_sz = val_buf(self.db.schema.max_val_rec_size)
 	--pr(key_rec, key_max_sz, val_rec, val_max_sz)
-	local key_sz = self.db:encode_key_rec(tbl_name, key_rec, key_max_sz, ...)
-	local val_sz = self.db:encode_val_rec(tbl_name, val_rec, val_max_sz, ...)
+	local key_sz = self.db:encode_key_rec(tbl_name, key_rec, key_buf_sz, ...)
+	local val_sz = self.db:encode_val_rec(tbl_name, val_rec, val_buf_sz, ...)
 	--pr(tostring(key_rec), key_sz, tostring(val_rec), val_sz)
 	self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
 end
 function mdbx_tx:put_records(tbl_name, records)
-	local key_rec, key_max_sz = key_buf(self.db.schema.max_key_rec_size)
-	local val_rec, val_max_sz = val_buf(self.db.schema.max_val_rec_size)
+	local key_rec, key_buf_sz = key_buf(self.db.schema.max_key_rec_size)
+	local val_rec, val_buf_sz = val_buf(self.db.schema.max_val_rec_size)
 	for _,vals in ipairs(records) do
-		local key_sz = self.db:encode_key_rec(tbl_name, key_rec, key_max_sz, unpack(vals))
-		local val_sz = self.db:encode_val_rec(tbl_name, val_rec, val_max_sz, unpack(vals))
+		local key_sz = self.db:encode_key_rec(tbl_name, key_rec, key_buf_sz, unpack(vals))
+		local val_sz = self.db:encode_val_rec(tbl_name, val_rec, val_buf_sz, unpack(vals))
 		--pr(tostring(key_rec), key_sz, key_max_sz, tostring(val_rec), val_sz, val_max_sz)
 		--pr(key_rec[0], vals)
 		self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)

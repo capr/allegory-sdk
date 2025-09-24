@@ -1,5 +1,5 @@
-//go@ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/c/mdbx_schema/build
 //go@ plink -batch root@m1 sdk/c/mdbx_schema/build
+//go@ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/c/mdbx_schema/build
 /*
 
 	Schema encoding and decoding for LMDB/LibMDBX.
@@ -19,7 +19,7 @@
 		- composite keys with per-field ascending/descending order.
 
 	Limitations:
-		- multi-value keys are 0-terminated so they are not 8-bit clean!
+		- varsize keys are 0-terminated so they are not 8-bit clean!
 
 */
 
@@ -52,6 +52,8 @@ typedef enum schema_col_type {
 	schema_col_type_u16,
 	schema_col_type_u32,
 	schema_col_type_u64,
+	schema_col_type_u32_le,
+	schema_col_type_u64_le,
 	schema_col_type_f32,
 	schema_col_type_f64,
 } schema_col_type;
@@ -65,11 +67,12 @@ In-memory layout:
 Fixsize means scalar (len=1) or fixed-size array (zero-padded). The opposite
 is varsize for which len in the definition means max len. Varsize values are
 zero-terminated inside key records, so they are not 8-bit clean except the
-last column. In value records an offset table is used instead so all columns
-are 8-bit clean. The zero terminator is skipped for values with len = max len
-so the value never takes more space than len. The offset table is an array of
-u8, u16 or i32. In value records, all varsize columns are after all fixsize
-columns to minimize the offset table since column order doesn't matter there.
+last column if it's ascending. In value records an offset table is used instead
+so all columns are 8-bit clean. The zero terminator is skipped for values with
+len = max len so the value never takes more space than len. The offset table
+is an array of u8, u16 or i32. In value records, all varsize columns are after
+all fixsize columns to minimize the offset table since column order doesn't
+matter there.
 
 Key records are encoded differently than val records because keys are encoded
 for lexicographic binary ordering, which means: no nulls, no offset table for
@@ -100,9 +103,6 @@ int  schema_get(schema_table* tbl, int is_key, int col_i, void* rec, int rec_siz
 void schema_set(schema_table* tbl, int is_key, int col_i, void* rec, int cur_rec_size, int rec_buf_size, void* in , int in_len, void **pp, int add);
 int  schema_is_null(int col_i, void* rec);
 
-int mdbx_cmp_desc         (const MDBX_val *a, const MDBX_val *b);
-int mdbx_cmp_asc_len_desc (const MDBX_val *a, const MDBX_val *b);
-
 // implementation ------------------------------------------------------------
 
 static void decode_u8(u8* d, u8* s) {
@@ -128,6 +128,18 @@ static void decode_u64(u64* d, u64* s) {
 }
 static void encode_u64(u64* d, u64* s) {
 	*d = __builtin_bswap64(*s);
+}
+static void decode_u32_le(u32* d, u32* s) {
+	*d = *s;
+}
+static void encode_u32_le(u32* d, u32* s) {
+	*d = *s;
+}
+static void decode_u64_le(u64* d, u64* s) {
+	*d = *s;
+}
+static void encode_u64_le(u64* d, u64* s) {
+	*d = *s;
 }
 static void decode_i8(i8* d, i8 * s) {
 	*d = *s ^ 0x80;
@@ -182,6 +194,8 @@ static encdec_t decoders[] = {
 	(encdec_t)&decode_u16,
 	(encdec_t)&decode_u32,
 	(encdec_t)&decode_u64,
+	(encdec_t)&decode_u32_le,
+	(encdec_t)&decode_u64_le,
 	(encdec_t)&decode_f32,
 	(encdec_t)&decode_f64,
 };
@@ -196,6 +210,8 @@ static encdec_t encoders[] = {
 	(encdec_t)&encode_u16,
 	(encdec_t)&encode_u32,
 	(encdec_t)&encode_u64,
+	(encdec_t)&encode_u32_le,
+	(encdec_t)&encode_u64_le,
 	(encdec_t)&encode_f32,
 	(encdec_t)&encode_f64,
 };
@@ -227,27 +243,32 @@ static void set_null(void* rec, int col_i, int is_null) {
 		p[byte_i] = p[byte_i] & ~mask;
 }
 
-static int scan_end(schema_col* col, void* p, int len) { // scan for 0 up-to size
+// scan for terminator up-to size
+static int scan_end(schema_col* col, void* p, int len, int encoded) {
 	int ss = col->elem_size_shift;
 	if (ss == 0) {
-		uint8_t* q = p;
+		u8 t = encoded && col->descending ? 0xff : 0;
+		u8* q = p;
 		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
+			if (*q++ == t)
 				return i;
 	} else if (ss == 1) {
-		uint16_t* q = p;
+		u16 t = encoded && col->descending ? 0xffff : 0;
+		u16* q = p;
 		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
+			if (*q++ == t)
 				return i;
 	} else if (ss == 2) {
-		uint32_t* q = p;
+		u32 t = encoded && col->descending ? 0xffffffff : 0;
+		u32* q = p;
 		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
+			if (*q++ == t)
 				return i;
 	} else if (ss == 3) {
-		uint64_t* q = p;
+		u64 t = encoded && col->descending ? 0xffffffffffffffffULL : 0;
+		u64* q = p;
 		for (int i = 0; i < len; i++)
-			if (*q++ == 0)
+			if (*q++ == t)
 				return i;
 	} else {
 		assert(0);
@@ -269,36 +290,13 @@ static void set_dyn_offset(schema_table* tbl, schema_col* col, void* rec, int of
 	assert(0);
 }
 
-// cmp for descending order.
-__attribute__((__pure__, __nothrow__)) int mdbx_cmp_desc(const MDBX_val *a, const MDBX_val *b) {
-	if (a->iov_len == b->iov_len)
-		return a->iov_len ? -memcmp(a->iov_base, b->iov_base, a->iov_len) : 0;
-	const int diff_len = (a->iov_len < b->iov_len) ? 1 : -1;
-	const size_t shortest = (a->iov_len < b->iov_len) ? a->iov_len : b->iov_len;
-	const int diff_data = shortest ? -memcmp(a->iov_base, b->iov_base, shortest) : 0;
-	return __builtin_expect(diff_data, 1) ? diff_data : diff_len;
-}
-
-// cmp for ascending order but descending length tie, to use when data is
-// bit-inverted for descending order but longer keys must come before shorter keys.
-__attribute__((__pure__, __nothrow__)) int mdbx_cmp_asc_len_desc(const MDBX_val *a, const MDBX_val *b) {
-	if (a->iov_len == b->iov_len)
-		return a->iov_len ? memcmp(a->iov_base, b->iov_base, a->iov_len) : 0;
-	const int diff_len = (a->iov_len < b->iov_len) ? 1 : -1;
-	const size_t shortest = (a->iov_len < b->iov_len) ? a->iov_len : b->iov_len;
-	const int diff_data = shortest ? memcmp(a->iov_base, b->iov_base, shortest) : 0;
-	return __builtin_expect(diff_data, 1) ? diff_data : diff_len;
-}
-
 static inline int get_key_mem_size(schema_table* tbl, schema_col* col,
 	void *p
 ) {
 	int max_len = col->len;
 	if (col->fixsize)
 		return max_len;
-	int len = scan_end(col, p, max_len);
-	if (len < max_len) // 0-terminated.
-		len++;
+	int len = scan_end(col, p, max_len, 1) + 1; // 0 or -1 terminated
 	return len << col->elem_size_shift;
 }
 
@@ -337,7 +335,7 @@ int get_len(schema_table* tbl, int is_key, int col_i, schema_col* col, void* rec
 	if (is_key) { // varsize key col
 		if (!p)
 			p = get_ptr(tbl, is_key, col_i, col, rec);
-		return scan_end(col, p, col->len);
+		return scan_end(col, p, col->len, 1);
 	} else { // varsize val col
 		int offset = get_dyn_offset(tbl, col, rec);
 		if (col_i == tbl->n_val_cols-1) { // last col
@@ -446,7 +444,7 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 
 	// non-last varsize key col: can't contain 0, so stop at first 0 if found.
 	if (is_key && !col->fixsize && col_i < tbl->n_key_cols-1) {
-		copy_len = scan_end(col, in, copy_len);
+		copy_len = scan_end(col, in, copy_len, 0);
 		copy_size = copy_len << ss;
 	}
 
@@ -456,8 +454,8 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 		mem_size = col->len << ss;
 	} else {
 		mem_size = copy_size;
-		// non-last varsize key col with len < max len: 0-terminate.
-		if (is_key && col_i < tbl->n_key_cols-1 && copy_len < col->len)
+		// varsize key col: 0-terminate.
+		if (is_key)
 			mem_size += (1 << ss);
 
 		assert(p + mem_size <= rec + rec_buf_size);
@@ -488,13 +486,9 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 		for (int o = 0; o < copy_size; o += (1 << ss))
 			encode(p + o, in + o);
 
-		// descending key col: invert bits (including padding and terminator).
-		if (col->descending) {
-			if (mem_size && col->type == schema_col_type_u8)
-				printf("descending: %d %d %d %.*s\n",
-					col->static_offset, col->offset, mem_size, mem_size, p);
+		// descending key col: invert bits (including padding or terminator).
+		if (col->descending)
 			invert_bits(p, p, mem_size);
-		}
 
 	}
 
