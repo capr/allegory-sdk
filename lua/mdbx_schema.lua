@@ -335,7 +335,7 @@ function Db:load_table(table_name, table_schema)
 
 		cols.max_rec_size = max_rec_size
 
-		local fixsize_offset = nulls_size
+		local cur_offset = nulls_size + dot_len * dyn_offset_size
 		for col_i,col in ipairs(cols) do
 
 			local int_schema_col_type = is_key and int_key and (
@@ -350,24 +350,20 @@ function Db:load_table(table_name, table_schema)
 			sc[col_i-1].descending = col.order == 'desc'
 			sc[col_i-1].elem_size_shift = log2(col.elem_size)
 
-			--compute and set fixed offset.
+			--compute and set fixed offsets and dyn. offset offsets.
 			local at_fixed_offset = col_i <= fixsize_n+1
 			sc[col_i-1].static_offset = at_fixed_offset
 			if at_fixed_offset then
-				sc[col_i-1].offset = fixsize_offset
+				sc[col_i-1].offset = cur_offset
 			end
-
-			--move current fixed offset past this fixsize col.
-			if col_i <= fixsize_n then
-				fixsize_offset = fixsize_offset + col.elem_size * (col.len or 1)
+			if col_i <= fixsize_n then --advance current offset while size is known.
+				cur_offset = cur_offset + col.elem_size * (col.len or 1)
 			end
-
 			--compute and set the offset where the dyn. offset is for this col.
 			if is_val and not at_fixed_offset then
 				local dot_index = fixsize_n+2 - col_i --col's index in d.o.t.
 				assert(dot_index >= 0 and dot_index < dot_len)
-				sc[col_i-1].offset = fixsize_offset + dot_index * dyn_offset_size
-				pr('!!!!!!!!', col.name, fixsize_offset, dot_index, dyn_offset_size)
+				sc[col_i-1].offset = nulls_size + dot_index * dyn_offset_size
 			end
 
 			--create col getters and setters.
@@ -568,9 +564,6 @@ end
 local function rec_col_decode(schema, is_key, cols, col_i, col, rec, rec_sz, out, out_sz)
 	rec_sz = tonumber(rec_sz)
 	local len = C.schema_get(schema._st, is_key, col_i, rec, rec_sz, out, out_sz)
-	pr(col.name, rec_sz, len, col_i,
-		cols._sc[col_i  ].static_offset, cols._sc[col_i  ].offset,
-		cols._sc[col_i+1].static_offset, cols._sc[col_i+1].offset)
 	if len == -1 then return nil end
 	return col.decode(out, len)
 end
@@ -765,7 +758,7 @@ if not ... then
 			local s1 = db:decode_key(tbl.name, 's1', k.data, k.size)
 			local s2 = db:decode_key(tbl.name, 's2', k.data, k.size)
 			local s3 = db:decode_val(tbl.name, 's3', v.data, v.size)
-			--local s4 = db:decode_val(tbl.name, 's4', v.data, tonumber(v.size))
+			local s4 = db:decode_val(tbl.name, 's4', v.data, tonumber(v.size))
 			add(t1, {s1, s2, s3, s4})
 		end
 		tx:commit()
@@ -773,6 +766,8 @@ if not ... then
 			pr(unpack(t1[i], 1, 4))
 			assert(t[i][1] == t1[i][1])
 			assert(t[i][2] == t1[i][2])
+			assert(t[i][3] == t1[i][3])
+			assert(t[i][4] == t1[i][4])
 		end
 		pr()
 	end

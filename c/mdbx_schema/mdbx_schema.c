@@ -64,7 +64,7 @@ typedef enum schema_col_type {
 
 In-memory layout:
  - key records: fixsize_cols, first_varsize_col, varoffset_cols (varsize or not).
- - val records: null_bits, fixsize_cols, offsets, first_varsize_col, varsize_cols.
+ - val records: null_bits, dyn_offsets, fixsize_cols, first_varsize_col, varsize_cols.
 
 Fixsize means scalar (len=1) or fixed-size array (zero-padded). The opposite
 is varsize for which len in the definition means max len. Varsize values are
@@ -342,7 +342,6 @@ int get_len(schema_table* tbl, int is_key, int col_i, schema_col* col, void* rec
 		if (col_i < tbl->n_val_cols-1) { // non-last col
 			schema_col* next_col = &tbl->val_cols[col_i+1];
 			int next_offset = get_dyn_offset(tbl, next_col, rec);
-			printf(" next_offset %d\n", next_offset);
 			return (next_offset - offset) >> col->elem_size_shift;
 		} else { // last col
 			return (rec_size - offset) >> col->elem_size_shift;
@@ -463,12 +462,14 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 	assert(p + mem_size <= rec + rec_buf_size);
 
 	// adjust rec before copying the data.
-	if (!col->fixsize && !add) {
-		// varsize key or val set: resize (shrink or lengthen).
-		resize_varsize(tbl, is_key, col_i, col, rec, cur_rec_size, rec_buf_size, p, mem_size);
-	} else if (!is_key) {
-		// val add: set offset of next col for next add.
-		set_next_dyn_offset(tbl, col_i, rec, p, mem_size);
+	if (!col->fixsize) {
+		if (!add) {
+			// varsize key or val set: resize (shrink or lengthen).
+			resize_varsize(tbl, is_key, col_i, col, rec, cur_rec_size, rec_buf_size, p, mem_size);
+		} else if (!is_key) {
+			// varsize val add: set offset of next col for next add.
+			set_next_dyn_offset(tbl, col_i, rec, p, mem_size);
+		}
 	}
 
 	// zero-pad (whether fixsize or 0-terminated).
