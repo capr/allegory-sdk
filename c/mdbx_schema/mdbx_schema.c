@@ -103,14 +103,15 @@ typedef struct schema_table {
 
 int schema_get(schema_table* tbl, int is_key, int col_i,
 	void* rec, int rec_size,
-	void* out, int out_size
+	void* out, int out_size,
+	u8** pp
 );
 void schema_set(schema_table* tbl, int is_key, int col_i,
 	void* rec, int cur_rec_size, int rec_buf_size,
 	void* in, int in_len,
 	u8** pp, int add
 );
-int schema_is_null(int col_i, void* rec);
+int schema_is_null(int col_i, void* rec, int rec_size);
 
 // implementation ------------------------------------------------------------
 
@@ -230,19 +231,21 @@ static void invert_bits(void* d, void* s, int len) {
 		((u8*)d)[i] = ~((u8*)s)[i];
 }
 
-static int is_null(void* rec, int col_i) {
+static int is_null(int col_i, void* rec, int rec_size) {
 	int byte_i = col_i >> 3;
 	int bit_i  = col_i & 7;
 	int mask   = 1 << bit_i;
 	u8* p = rec;
+	assert(byte_i < rec_size);
 	return (p[byte_i] & mask) != 0;
 }
 
-static void set_null(void* rec, int col_i, int is_null) {
+static void set_null(int col_i, void* rec, int rec_size, int is_null) {
 	int byte_i = col_i >> 3;
 	int bit_i  = col_i & 7;
 	int mask   = 1 << bit_i;
 	u8* p = rec;
+	assert(byte_i < rec_size);
 	if (is_null)
 		p[byte_i] = p[byte_i] | mask;
 	else
@@ -357,14 +360,18 @@ static inline schema_col* get_col(schema_table* tbl, int is_key, int col_i) {
 
 int schema_get(schema_table* tbl, int is_key, int col_i,
 	void* rec, int rec_size,
-	void* out, int out_size
+	void* out, int out_size,
+	u8* pp
 ) {
 	schema_col* col = get_col(tbl, is_key, col_i);
 	assert(col);
 	int ss = col->elem_size_shift;
-	if (!is_key && is_null(rec, col_i))
+	if (!is_key && is_null(col_i, rec, rec_size)) {
+		if (pp)
+			*pp = p +
 		return -1; // signal null
-	void* p = get_ptr(tbl, is_key, col_i, col, rec);
+	}
+	void* p = pp && *pp ? *pp : get_ptr(tbl, is_key, col_i, col, rec);
 	int in_size = get_len(tbl, is_key, col_i, col, rec, p, rec_size) << ss;
 	int copy_size = out_size < in_size ? out_size : in_size;
 	if (!is_key) {
@@ -380,11 +387,13 @@ int schema_get(schema_table* tbl, int is_key, int col_i,
 		for (int o = 0; o < copy_size; o += (1 << ss))
 			decode(out + o, p + o);
 	}
+	if (pp)
+		*pp = p + mem_size;
 	return copy_size >> ss;
 }
 
-int schema_is_null(int col_i, void* rec) {
-	return is_null(rec, col_i);
+int schema_is_null(int col_i, void* rec, int rec_size) {
+	return is_null(col_i, rec, rec_size);
 }
 
 // update the dyn. offset of the next col if there is one.
@@ -436,7 +445,7 @@ void schema_set(schema_table* tbl, int is_key, int col_i,
 		assert(!in_len);
 
 	if (!is_key)
-		set_null(rec, col_i, !in);
+		set_null(col_i, rec, rec_buf_size, !in);
 
 	void* p = pp && *pp ? *pp : get_ptr(tbl, is_key, col_i, col, rec);
 
