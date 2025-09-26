@@ -76,17 +76,36 @@ typedef struct schema_table {
 	u8   dyn_offset_size; // 1,2,4
 } schema_table;
 
-int schema_get(schema_table* tbl, int is_key, int col_i,
+int schema_val_is_null(schema_table* tbl, int col_i,
+	void* rec, int rec_size
+);
+
+int schema_get_key(schema_table* tbl, int col_i,
 	void* rec, int rec_size,
-	void* out, int out_size,
-	u8 **p
+	u8* out, int out_size,
+	u8** pout,
+	u8** pp
 );
-void schema_set(schema_table* tbl, int is_key, int col_i,
-	void* rec, int cur_rec_size, int rec_buf_size,
-	void* in, int in_len,
-	u8** pp, int add
+
+int schema_get_val(schema_table* tbl, int col_i,
+	void* rec, int rec_size,
+	u8** pout
 );
-int schema_is_null(int col_i, void* rec, int rec_size);
+
+void schema_key_add(schema_table* tbl, int col_i,
+	void* rec, int rec_buf_size, int val_len,
+	u8** pp
+);
+
+void schema_val_add_start(schema_table* tbl,
+	void* rec, int rec_buf_size,
+	u8** pp
+);
+
+void schema_val_add(schema_table* tbl, int col_i,
+	void* rec, int rec_buf_size, int val_len,
+	u8** pp
+);
 ]]
 
 local col_ct = {
@@ -138,7 +157,7 @@ function Db:load_schema(schema)
 
 	self.schema.max_key_rec_size = 0
 	self.schema.max_val_rec_size = 0
-	for table_name, table_schema in pairs(self.schema.tables or {}) do
+	for table_name, table_schema in sortedpairs(self.schema.tables or {}) do
 		self:load_table(table_name, table_schema)
 		self.schema.max_key_rec_size = max(
 			self.schema.max_key_rec_size,
@@ -157,6 +176,8 @@ function Db:load_table(table_name, table_schema)
 	--compute field layout and encoding parameters based on schema.
 	--NOTE: changing this algorithm or making it non-deterministic in any way
 	--will trash your existing databses, so better version it or something!
+
+	table_schema.table_name = table_name
 
 	--index fields by name and check for duplicate names.
 	for col_i, col in ipairs(table_schema.fields) do
@@ -204,6 +225,7 @@ function Db:load_table(table_name, table_schema)
 		add(key_cols, col)
 		col.key_index = #key_cols
 	end
+	assert(#key_cols > 0, 'table missing pk: %s', table_name)
 
 	--build val cols array with all cols that are not in pk.
 	for col_i, col in ipairs(table_schema.fields) do
@@ -243,18 +265,18 @@ function Db:load_table(table_name, table_schema)
 		end
 	end
 
-	--local simple_int_key = int_key or (
-	--	#key_cols == 1
-	--	and key_cols[1].order == 'asc'
-	--	and (key_cols[1].type == 'u16' or key_cols[1].type == 'u8')
-
 	if int_key then
 		local col = key_cols[1]
 		local elemp_ct = col.elemp_ct
 		local elem_size = col.elem_size
-		function table_schema.encode_key_rec(buf, sz, val)
-			cast(elemp_ct, buf)[0] = val
+		function table_schema.encode_key_record(rec, rec_buf_sz, val)
+			assert(rec_buf_sz >= elem_size)
+			cast(elemp_ct, rec)[0] = val
 			return elem_size
+		end
+		function table_schema.decode_key_record(rec, rec_sz, t)
+			assert(rec_sz == elem_size)
+			t[1] = cast(elemp_ct, rec)[0]
 		end
 	end
 
@@ -369,6 +391,7 @@ function Db:load_table(table_name, table_schema)
 			local elem_size = col.elem_size
 			if col.len or col.maxlen then --array
 				local maxlen = col.len or col.maxlen
+				function col.val_len(val) return #val end
 				if col.type == 'utf8' then --utf8 strings
 					local ai_ci = col.collation == 'utf8_ai_ci'
 					if ai_ci then
@@ -401,21 +424,17 @@ function Db:load_table(table_name, table_schema)
 							return out, len
 						end
 					else --raw utf8
-						function col.encode(buf, val)
+						function col.encode(buf, val, len)
 							assertf(typeof(val) == 'string', 'invalid val type: %s', typeof(val))
-							local len = min(maxlen, len or #val) --truncate
-							local buf = buf(len)
-							return cast(u8p, val), len
+							copy(buf, val, len)
 						end
 						function col.decode(p, len)
 							return str(p, len)
 						end
 					end
 				else --array
-					function col.encode(buf, val)
+					function col.encode(buf, val, len)
 						assertf(typeof(val) == 'table', 'invalid val type: %s', typeof(val))
-						local len = min(maxlen, #val) --truncate
-						local buf, sz = buf(len * elem_size)
 						local buf = cast(elemp_ct, buf)
 						for i = 1, len do
 							buf[i-1] = val[i]
@@ -431,10 +450,9 @@ function Db:load_table(table_name, table_schema)
 					end
 				end
 			else --scalar
+				function col.val_len() return 1 end
 				function col.encode(buf, val)
-					local buf, sz = buf(elem_size)
 					cast(elemp_ct, buf)[0] = val
-					return buf, 1
 				end
 				function col.decode(p)
 					return cast(elemp_ct, p)[0]
@@ -456,137 +474,212 @@ function Db:load_table(table_name, table_schema)
 
 end
 
-function key_cols(self, tbl_name)
-	local s = self.schema.tables[tbl_name]
-	return s, s.key_cols
-end
-function val_cols(self, tbl_name)
-	local s = self.schema.tables[tbl_name]
-	return s, s.val_cols
+function table_schema(self, tbl_name)
+	if istab(tbl_name) then return tbl_name end --schema pass-through
+	return assertf(self.schema.tables[tbl_name], 'unknown table: %s', tbl_name)
 end
 function key_col(self, tbl_name, col_name)
-	local s = self.schema.tables[tbl_name]
+	local s = table_schema(self, tbl_name)
 	local col = assertf(s.fields[col_name], 'not a col: %s', col_name)
-	assertf(s.key_cols[col.key_index] == col, 'not a key col: %s', col_name)
-	return s, s.key_cols, col
+	local col_i = col.key_index
+	assertf(s.key_cols[col_i] == col, 'not a key col: %s', col_name)
+	return s, s.key_cols, col, col_i
 end
 function val_col(self, tbl_name, col_name)
-	local s = self.schema.tables[tbl_name]
+	local s = table_schema(self, tbl_name)
 	local col = assertf(s.fields[col_name], 'not a col: %s', col_name)
-	assertf(s.val_cols[col.val_index] == col, 'not a val col: %s', col_name)
-	return s, s.val_cols, col
+	local col_i = col.key_index
+	assertf(s.val_cols[col_i] == col, 'not a val col: %s', col_name)
+	return s, s.val_cols, col, col_i
 end
 
 function Db:max_key_size(tbl)
-	return key_cols(self, tbl).max_rec_size
+	return table_schema(self, tbl).key_cols.max_rec_size
 end
 
 function Db:max_val_size(tbl)
-	return val_cols(self, tbl).max_rec_size
+	return table_schema(self, tbl).val_cols.max_rec_size
 end
 
 local key_rec_buffer = buffer()
 local val_rec_buffer = buffer()
 
-local encode_rec do
+--encoding -------------------------------------------------------------------
+
+do
 local pp = new'u8*[1]'
-local val_buf = buffer()
-function encode_rec(table_schema, is_key, cols, rec, rec_buf_sz, ...)
+function Db:encode_key_record(tbl, rec, rec_buf_sz, ...)
+	local schema = table_schema(self, tbl)
+	local cols = schema.key_cols
 	if #cols == 0 then return 0 end
-	pp[0] = nil
+	if schema.encode_key_record then
+		return schema.encode_key_record(rec, rec_buf_sz, ...)
+	else
+		pp[0] = rec
+		for col_i, col in ipairs(cols) do
+			local val = select(col.index, ...)
+			assert(val ~= nil)
+			len = col.val_len(val)
+			len = min(len, col.maxlen or col.len or 1) --truncate
+			col.encode(pp[0], val, len)
+			C.schema_key_add(schema._st, col_i-1, rec, rec_buf_sz, len, pp)
+		end
+		return pp[0] - rec
+	end
+end
+end
+
+do
+local pp = new'u8*[1]'
+function Db:encode_val_record(tbl, rec, rec_buf_sz, ...)
+	local schema = table_schema(self, tbl)
+	local cols = schema.val_cols
+	if #cols == 0 then return 0 end
+	C.schema_val_add_start(schema._st, rec, rec_buf_sz, pp)
 	for col_i, col in ipairs(cols) do
 		local val = select(col.index, ...)
-		local buf, len = nil, 0
-		if val ~= nil then
-			buf, len = col.encode(val_buf, val)
+		local len
+		if val == nil then
+			len = -1
+		else
+			len = col.val_len(val)
+			len = min(len, col.maxlen or col.len or 1) --truncate
+			col.encode(pp[0], val, len)
 		end
-		C.schema_set(table_schema._st, is_key, col_i-1, rec, 0, rec_buf_sz,
-			buf, len, pp, true)
+		C.schema_val_add(schema._st, col_i-1, rec, rec_buf_sz, len, pp)
 	end
 	return pp[0] - rec
 end
 end
 
-function Db:encode_key_rec(tbl, rec, rec_buf_sz, ...)
-	local table_schema, cols = key_cols(self, tbl)
-	if table_schema.encode_key_rec then
-		return table_schema.encode_key_rec(rec, rec_buf_sz, ...)
-	else
-		return encode_rec(table_schema, true, cols, rec, rec_buf_sz, ...)
-	end
-end
-
-function Db:encode_val_rec(tbl, buf, buf_sz, ...)
-	local table_schema, cols = val_cols(self, tbl)
-	return encode_rec(table_schema, false, cols, buf, buf_sz, ...)
-end
-
 function mdbx_tx:put_record(tbl_name, ...)
 	local key_rec, key_buf_sz = key_rec_buffer(self.db.schema.max_key_rec_size)
 	local val_rec, val_buf_sz = val_rec_buffer(self.db.schema.max_val_rec_size)
-	local key_sz = self.db:encode_key_rec(tbl_name, key_rec, key_buf_sz, ...)
-	local val_sz = self.db:encode_val_rec(tbl_name, val_rec, val_buf_sz, ...)
-	self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
+	local key_sz = self.db:encode_key_record(tbl_name, key_rec, key_buf_sz, ...)
+	local val_sz = self.db:encode_val_record(tbl_name, val_rec, val_buf_sz, ...)
+	self:put_raw(tbl_name, key_rec, key_sz, val_rec, val_sz)
 end
+
 function mdbx_tx:put_records(tbl_name, records)
 	local key_rec, key_buf_sz = key_rec_buffer(self.db.schema.max_key_rec_size)
 	local val_rec, val_buf_sz = val_rec_buffer(self.db.schema.max_val_rec_size)
 	for _,vals in ipairs(records) do
-		local key_sz = self.db:encode_key_rec(tbl_name, key_rec, key_buf_sz, unpack(vals))
-		local val_sz = self.db:encode_val_rec(tbl_name, val_rec, val_buf_sz, unpack(vals))
-		self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
+		local key_sz = self.db:encode_key_record(tbl_name, key_rec, key_buf_sz, unpack(vals))
+		local val_sz = self.db:encode_val_record(tbl_name, val_rec, val_buf_sz, unpack(vals))
+		self:put_raw(tbl_name, key_rec, key_sz, val_rec, val_sz)
 	end
 end
 
+--decoding -------------------------------------------------------------------
+
 function Db:decode_is_null(tbl, col_name, rec, rec_sz)
-	local _, _, col = val_col(self, tbl, col_name)
-	return C.schema_is_null(col.val_index-1, rec, rec_sz) ~= 0
+	local schema, _, col = val_col(self, tbl, col_name)
+	return C.schema_val_is_null(schema._st, col.val_index-1, rec, rec_sz) ~= 0
 end
 
-local function rec_col_decode(schema, is_key, cols, col_i, col, rec, rec_sz, out, out_sz)
-	local len = C.schema_get(schema._st, is_key, col_i-1, rec, rec_sz, out, out_sz, nil)
-	if len == -1 then return nil end
-	return col.decode(out, len)
-end
-
-function Db:decode_key_col(tbl, col, rec, rec_sz)
-	local schema, cols, col = key_col(self, tbl, col)
-	local out, out_sz = key_rec_buffer(cols.max_rec_size) --assume <= rec_size output
-	return rec_col_decode(schema, true, cols, col.key_index, col,
-		rec, rec_sz, out, out_sz)
-end
-
-function Db:decode_val_col(tbl, col_name, rec, rec_sz)
-	local schema, cols, col = val_col(self, tbl, col_name)
-	local out, out_sz = val_rec_buffer(cols.max_rec_size) --assume <= rec_size output
-	return rec_col_decode(schema, false, cols, col.val_index, col,
-		rec, rec_sz, out, out_sz)
-end
-
-function mdbx_tx:get_val(tbl_name, ...)
+function mdbx_tx:get_raw_by_pk(tbl_name, ...)
 	local key_rec, key_buf_sz = key_rec_buffer(self.db.schema.max_key_rec_size)
-	local key_sz = self.db:encode_key_rec(tbl_name, key_rec, key_buf_sz, ...)
-	return self:get(tbl_name, key_rec, key_sz)
+	local key_sz = self.db:encode_key_record(tbl_name, key_rec, key_buf_sz, ...)
+	return self:get_raw(tbl_name, key_rec, key_sz)
 end
 
 do
+local pout = new'u8*[1]'
 local pp = new'u8*[1]'
-function mdbx_tx:get_record(tbl_name, ...)
-	local mdbx_val = self:get_val(tbl_name, ...)
-	local schema, cols = val_cols(self.db, tbl_name)
-	local out, out_sz = val_rec_buffer(cols.max_rec_size) --assume <= rec_size output
-	local t = {}
-	for col_i, col in ipairs(cols) do
-		local val = rec_col_decode(schema, false, cols, col_i, col,
-			mdbx_val.data, mdbx_val.size, out, out_sz)
-		t[col.index] = val
+function Db:decode_key_record(tbl_name, rec, rec_sz, t)
+	local schema = table_schema(self, tbl_name)
+	local cols = schema.key_cols
+	t = t or {}
+	if schema.decode_key_record then
+		schema.decode_key_record(rec, rec_sz, t)
+	else
+		local out, out_sz = key_rec_buffer(cols.max_rec_size)
+		pp[0] = rec
+		for col_i, col in ipairs(cols) do
+			local len = C.schema_get_key(schema._st, col_i-1,
+				rec, rec_sz,
+				out, out_sz,
+				pout, pp)
+			if len ~= -1 then
+				t[col.index] = col.decode(pout[0], len)
+			end
+		end
 	end
 	return t
 end
 end
 
-function mdbx_tx:update_col(tbl_name, col_name, val, ...)
-	self:put(tbl_name, key_rec, key_sz, val_rec, val_sz)
+do
+local pout = new'u8*[1]'
+function Db:decode_val_record(tbl_name, rec, rec_sz, t)
+	local schema = table_schema(self, tbl_name)
+	local cols = schema.val_cols
+	t = t or {}
+	for col_i, col in ipairs(cols) do
+		local len = C.schema_get_val(schema._st, col_i-1, rec, rec_sz, pout)
+		if len ~= -1 then
+			t[col.index] = col.decode(pout[0], len)
+		end
+	end
+	return t
+end
+end
+
+do
+local pout = new'u8*[1]'
+function Db:decode_key_col(tbl_name, rec, rec_sz)
+	local schema, cols, col, col_i = key_col(self, tbl_name, col_name)
+	local out, out_sz = key_rec_buffer(cols.max_rec_size)
+	local len = C.schema_get_key(schema._st, col_i-1,
+		rec, rec_sz,
+		out, out_sz,
+		pout)
+	if len ~= -1 then
+		return col.decode(pout[0], len)
+	else
+		return nil
+	end
+end
+end
+
+function mdbx_tx:get_record(tbl_name, ...)
+	local rec, rec_sz = self:get_raw_by_pk(tbl_name, ...)
+	return self.db:decode_val_record(tbl_name, rec, rec_sz, {...})
+end
+
+function mdbx_tx:cursor(tbl_name)
+	local schema = table_schema(self.db, tbl_name)
+	local cur = self:raw_cursor(tbl_name)
+	cur._t = {}
+	cur.schema = schema
+	return cur
+end
+
+function mdbx_cur:next_record(_, t)
+	t = t or {}
+	local k,v = self:next_raw_kv()
+	if not k then return end
+	self.tx.db:decode_key_record(self.schema, k.data, k.size, t)
+	self.tx.db:decode_val_record(self.schema, v.data, v.size, t)
+	return t
+end
+
+function mdbx_cur:next()
+	local n = #self.schema.fields
+	for i=n,1,-1 do self._t[i] = nil end
+	local t = self:next_record(nil, self._t)
+	if not t then return end
+	return unpack(t, 1, n)
+end
+
+function mdbx_tx:each_record(tbl_name)
+	return mdbx_cur.next_record, self:cursor(tbl_name)
+end
+
+function mdbx_tx:each(tbl_name)
+	local cur = self:cursor(tbl_name)
+	cur._t = {}
+	return mdbx_cur.next, cur
 end
 
 --test -----------------------------------------------------------------------
@@ -676,12 +769,10 @@ if not ... then
 		end
 		tx = db:tx'r'
 		local i = 1
-		for k,v in tx:each(tbl.name) do
-			local kv = db:decode_key_col(tbl.name, 'k' , k.data, k.size)
-			local v1 = db:decode_val_col(tbl.name, 'v1', v.data, v.size)
-			local v2 = db:decode_val_col(tbl.name, 'v2', v.data, v.size)
-			pr(tbl.name, kv, v1, v2)
-			assertf(kv == nums[i], '%q ~= %q', kv, nums[i])
+		for k, v1, v2 in tx:each(tbl.name) do
+			-- --assert(kv == db:decode_key_col(tbl.name, 'k', k.data, k.size))
+			-- pr(tbl.name, k, v1, v2)
+			assertf(k  == nums[i], '%q ~= %q', k , nums[i])
 			assertf(v1 == nums[i], '%q ~= %q', v1, nums[i])
 			assertf(v2 == nums[i], '%q ~= %q', v2, nums[i])
 			i = i + 1
@@ -711,10 +802,8 @@ if not ... then
 		local tx = db:tx()
 		pr('***', tbl.pk, '***')
 		local t1 = {}
-		for k,v in tx:each(tbl.name) do
-			local s = db:decode_key_col(tbl.name, 's', k.data, k.size)
-			local v = db:decode_val_col(tbl.name, 'v', v.data, v.size)
-			add(t1, {s, v})
+		for t in tx:each_record(tbl.name) do
+			add(t1, t)
 		end
 		tx:commit()
 		for i=1,#t do
@@ -742,6 +831,7 @@ if not ... then
 			{'b'  , 'a'  , nil  , 'a'  , },
 			{''   , 'a'  , ''   , 'a'  , },
 			{'a'  , ''   , 'a'  , ''   , },
+			{'xx' , 'y'  , 'z'  , 'zz' , },
 		}
 		local tx = db:tx'w'
 		tx:put_records(tbl.name, t)
@@ -758,16 +848,16 @@ if not ... then
 		local tx = db:tx()
 		pr('***', tbl.pk, '***')
 		local t1 = {}
-		for k,v in tx:each(tbl.name) do
-			local s1 = db:decode_key_col(tbl.name, 's1', k.data, k.size)
-			local s2 = db:decode_key_col(tbl.name, 's2', k.data, k.size)
-			local s3 = db:decode_val_col(tbl.name, 's3', v.data, v.size)
-			local s4 = db:decode_val_col(tbl.name, 's4', v.data, tonumber(v.size))
-			assert(db:decode_is_null(tbl.name, 's3', v.data, v.size) == (s3 == nil))
-			assert(db:decode_is_null(tbl.name, 's4', v.data, v.size) == (s4 == nil))
-			add(t1, {s1, s2, s3, s4})
+		for t in tx:each_record(tbl.name) do
+			--assert(db:decode_is_null(tbl.name, 's3', v.data, v.size) == (s3 == nil))
+			--assert(db:decode_is_null(tbl.name, 's4', v.data, v.size) == (s4 == nil))
+			add(t1, t)
 		end
-		pr(tx:get_record(tbl.name, 'aa', 'a'))
+		local s1, s2, s3, s4 = unpack(tx:get_record(tbl.name, 'xx', 'y'), 1, 4)
+		assert(s1 == 'xx')
+		assert(s2 == 'y')
+		assert(s3 == 'z')
+		assert(s4 == 'zz')
 		tx:commit()
 		for i=1,#t do
 			pr(unpack(t1[i], 1, 4))

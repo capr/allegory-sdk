@@ -2,7 +2,7 @@
 cd "${0%build}" || exit 1
 
 build() {
-	${X}gcc -c -O2 -fno-strict-aliasing $C mdbx_schema.c -Wall -I. -I../mdbx/src
+	${X}gcc -c -O2 -fno-strict-aliasing -Wall -Winline -I. -I../mdbx/src $C mdbx_schema.c
 	${X}gcc *.o -shared -o ../../bin/$P/$D $L
 	rm -f      ../../bin/$P/$A
 	${X}ar rcs ../../bin/$P/$A *.o

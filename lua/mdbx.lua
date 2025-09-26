@@ -878,7 +878,7 @@ function Tx:open_table(table_name, flags)
 	self.db.dbis[table_name] = dbi
 end
 
-function Tx:get_kv(tab, key, val)
+function Tx:get_raw_kv(tab, key, val)
 	local tab = isnum(tab) and tab or self.db:dbi(tab)
 	check(C.mdbx_get(self.txn[0], tab, key, val))
 	return val
@@ -887,14 +887,15 @@ end
 do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
-function Tx:get(tab, key_data, key_sz)
+function Tx:get_raw(tab, key_data, key_sz)
 	key.data = key_data
 	key.size = key_sz
-	return self:get_kv(tab, key, val)
+	local val = self:get_raw_kv(tab, key, val)
+	return val.data, val.size
 end
 end
 
-function Tx:put_kv(tab, key, val, flags)
+function Tx:put_raw_kv(tab, key, val, flags)
 	local tab = isnum(tab) and tab or self.db:dbi(tab)
 	check(C.mdbx_put(self.txn[0], tab, key, val, flags or 0))
 end
@@ -902,17 +903,17 @@ end
 do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
-function Tx:put(tab, key_data, key_size, val_data, val_size, flags)
+function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
 	key.data = cast(u8p, key_data)
 	key.size = key_size
 	val.data = cast(u8p, val_data)
 	val.size = val_size
-	self:put_kv(tab, key, val, flags)
+	self:put_raw_kv(tab, key, val, flags)
 end
 end
 
-local Cur = {}
-function Tx:cursor(tab)
+local Cur = {}; mdbx_cur = Cur;
+function Tx:raw_cursor(tab)
 	local tab = isnum(tab) and tab or self.db:dbi(tab)
 	local cur = pop(self.db._free_cur)
 	if cur then
@@ -940,7 +941,7 @@ end
 do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
-function Cur:next()
+function Cur:next_raw_kv()
 	if self:closed() then return end
 	local rc = C.mdbx_cursor_get(self.cursor[0], key, val, C.MDBX_NEXT)
 	if rc == 0 then return key, val end
@@ -952,9 +953,9 @@ function Cur:next()
 end
 end
 
-function Tx:each(tab)
-	local cur = self:cursor(tab)
-	return Cur.next, cur
+function Tx:each_raw_kv(tab)
+	local cur = self:raw_cursor(tab)
+	return Cur.next_raw_kv, cur
 end
 
 -- test ----------------------------------------------------------------------
@@ -970,11 +971,11 @@ if not ... then
 	s = _('%03x %d foo bar', 32, 3141592)
 
 	local tx = db:tx'w'
-	tx:put('users', new('int[1]', 123456789), 4, cast(u8p, s), #s)
+	tx:put_raw('users', new('int[1]', 123456789), 4, cast(u8p, s), #s)
 	tx:commit()
 
 	local tx = db:tx()
-	for k,v in tx:each'users' do
+	for k,v in tx:each_raw_kv'users' do
 		printf('key: %s %s, data: %s %s\n',
 			k.size, cast('int*', k.data)[0],
 			v.size, str(v.data, v.size))
