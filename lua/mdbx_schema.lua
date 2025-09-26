@@ -456,22 +456,22 @@ function Db:load_table(table_name, table_schema)
 
 end
 
-function key_cols(self, tbl)
-	local s = self.schema.tables[tbl]
+function key_cols(self, tbl_name)
+	local s = self.schema.tables[tbl_name]
 	return s, s.key_cols
 end
-function val_cols(self, tbl)
-	local s = self.schema.tables[tbl]
+function val_cols(self, tbl_name)
+	local s = self.schema.tables[tbl_name]
 	return s, s.val_cols
 end
-function key_col(self, tbl, col_name)
-	local s = self.schema.tables[tbl]
+function key_col(self, tbl_name, col_name)
+	local s = self.schema.tables[tbl_name]
 	local col = assertf(s.fields[col_name], 'not a col: %s', col_name)
 	assertf(s.key_cols[col.key_index] == col, 'not a key col: %s', col_name)
 	return s, s.key_cols, col
 end
-function val_col(self, tbl, col_name)
-	local s = self.schema.tables[tbl]
+function val_col(self, tbl_name, col_name)
+	local s = self.schema.tables[tbl_name]
 	local col = assertf(s.fields[col_name], 'not a col: %s', col_name)
 	assertf(s.val_cols[col.val_index] == col, 'not a val col: %s', col_name)
 	return s, s.val_cols, col
@@ -544,8 +544,7 @@ function Db:decode_is_null(tbl, col_name, rec, rec_sz)
 end
 
 local function rec_col_decode(schema, is_key, cols, col_i, col, rec, rec_sz, out, out_sz)
-	rec_sz = tonumber(rec_sz)
-	local len = C.schema_get(schema._st, is_key, col_i, rec, rec_sz, out, out_sz, nil)
+	local len = C.schema_get(schema._st, is_key, col_i-1, rec, rec_sz, out, out_sz, nil)
 	if len == -1 then return nil end
 	return col.decode(out, len)
 end
@@ -553,14 +552,14 @@ end
 function Db:decode_key_col(tbl, col, rec, rec_sz)
 	local schema, cols, col = key_col(self, tbl, col)
 	local out, out_sz = key_rec_buffer(cols.max_rec_size) --assume <= rec_size output
-	return rec_col_decode(schema, true, cols, col.key_index-1, col,
+	return rec_col_decode(schema, true, cols, col.key_index, col,
 		rec, rec_sz, out, out_sz)
 end
 
 function Db:decode_val_col(tbl, col_name, rec, rec_sz)
 	local schema, cols, col = val_col(self, tbl, col_name)
 	local out, out_sz = val_rec_buffer(cols.max_rec_size) --assume <= rec_size output
-	return rec_col_decode(schema, false, cols, col.val_index-1, col,
+	return rec_col_decode(schema, false, cols, col.val_index, col,
 		rec, rec_sz, out, out_sz)
 end
 
@@ -573,13 +572,16 @@ end
 do
 local pp = new'u8*[1]'
 function mdbx_tx:get_record(tbl_name, ...)
-	local val = self:get_val(tbl_name, ...)
-	for i,col in ipairs(cols) do
-		--rec_sz = tonumber(rec_sz)
-		--local len = C.schema_get(schema._st, is_key, col_i, rec, rec_sz, out, out_sz, pp)
-		--if len == -1 then return nil end
-		--return col.decode(out, len)
+	local mdbx_val = self:get_val(tbl_name, ...)
+	local schema, cols = val_cols(self.db, tbl_name)
+	local out, out_sz = val_rec_buffer(cols.max_rec_size) --assume <= rec_size output
+	local t = {}
+	for col_i, col in ipairs(cols) do
+		local val = rec_col_decode(schema, false, cols, col_i, col,
+			mdbx_val.data, mdbx_val.size, out, out_sz)
+		t[col.index] = val
 	end
+	return t
 end
 end
 
@@ -765,6 +767,7 @@ if not ... then
 			assert(db:decode_is_null(tbl.name, 's4', v.data, v.size) == (s4 == nil))
 			add(t1, {s1, s2, s3, s4})
 		end
+		pr(tx:get_record(tbl.name, 'aa', 'a'))
 		tx:commit()
 		for i=1,#t do
 			pr(unpack(t1[i], 1, 4))

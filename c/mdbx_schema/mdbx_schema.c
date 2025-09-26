@@ -226,12 +226,12 @@ static encdec_t encoders[] = {
 	(encdec_t)&encode_f64,
 };
 
-static void invert_bits(void* d, void* s, int len) {
+static inline void invert_bits(void* d, void* s, int len) {
 	for (int i = 0; i < len; i++)
 		((u8*)d)[i] = ~((u8*)s)[i];
 }
 
-static int is_null(int col_i, void* rec, int rec_size) {
+static inline int is_null(int col_i, void* rec, int rec_size) {
 	int byte_i = col_i >> 3;
 	int bit_i  = col_i & 7;
 	int mask   = 1 << bit_i;
@@ -240,7 +240,7 @@ static int is_null(int col_i, void* rec, int rec_size) {
 	return (p[byte_i] & mask) != 0;
 }
 
-static void set_null(int col_i, void* rec, int rec_size, int is_null) {
+static inline void set_null(int col_i, void* rec, int rec_size, int is_null) {
 	int byte_i = col_i >> 3;
 	int bit_i  = col_i & 7;
 	int mask   = 1 << bit_i;
@@ -297,11 +297,12 @@ static void set_dyn_offset(schema_table* tbl, schema_col* col, void* rec, int of
 static inline int get_key_mem_size(schema_table* tbl, schema_col* col,
 	void *p
 ) {
-	int max_len = col->len;
-	if (col->fixsize)
-		return max_len;
-	int len = scan_end(col, p, max_len, 1) + 1; // 0 or -1 terminated
-	return len << col->elem_size_shift;
+	int ss = col->elem_size_shift;
+	if (col->fixsize) {
+		return col->len << ss;
+	} else {
+		return (scan_end(col, p, col->len, 1) + 1) << ss; // 0  terminated
+	}
 }
 
 static inline void* get_next_ptr(schema_table* tbl, int is_key, schema_col* col,
@@ -318,7 +319,7 @@ static inline void* get_next_ptr(schema_table* tbl, int is_key, schema_col* col,
 	}
 }
 
-static void* get_ptr(schema_table* tbl, int is_key, int col_i, schema_col* col,
+static inline void* get_ptr(schema_table* tbl, int is_key, int col_i, schema_col* col,
 	void* rec
 ) {
 	if (col->static_offset) {
@@ -361,23 +362,17 @@ static inline schema_col* get_col(schema_table* tbl, int is_key, int col_i) {
 int schema_get(schema_table* tbl, int is_key, int col_i,
 	void* rec, int rec_size,
 	void* out, int out_size,
-	u8* pp
+	u8** pp
 ) {
 	schema_col* col = get_col(tbl, is_key, col_i);
 	assert(col);
 	int ss = col->elem_size_shift;
-	if (!is_key && is_null(col_i, rec, rec_size)) {
-		if (pp)
-			*pp = p +
-		return -1; // signal null
-	}
+	if (!is_key && is_null(col_i, rec, rec_size))
+		return -1; // signal null (pp stays unchanged)
 	void* p = pp && *pp ? *pp : get_ptr(tbl, is_key, col_i, col, rec);
 	int in_size = get_len(tbl, is_key, col_i, col, rec, p, rec_size) << ss;
 	int copy_size = out_size < in_size ? out_size : in_size;
-	if (!is_key) {
-		// val col, copy
-		memmove(out, p, copy_size);
-	} else {
+	if (is_key) {
 		// key col, decode
 		if (col->descending) { // invert bits
 			invert_bits(out, p, copy_size);
@@ -386,9 +381,14 @@ int schema_get(schema_table* tbl, int is_key, int col_i,
 		encdec_t decode = decoders[col->type];
 		for (int o = 0; o < copy_size; o += (1 << ss))
 			decode(out + o, p + o);
+		if (pp)
+			*pp = p + in_size + (1 << ss);
+	} else {
+		// val col, copy
+		memmove(out, p, copy_size);
+		if (pp)
+			*pp = p + in_size;
 	}
-	if (pp)
-		*pp = p + mem_size;
 	return copy_size >> ss;
 }
 

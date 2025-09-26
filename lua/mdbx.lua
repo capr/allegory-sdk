@@ -880,7 +880,7 @@ end
 
 function Tx:get_kv(tab, key, val)
 	local tab = isnum(tab) and tab or self.db:dbi(tab)
-	check(C.mdbx_get(self.txn[0], tab, key, val, 0))
+	check(C.mdbx_get(self.txn[0], tab, key, val))
 	return val
 end
 
