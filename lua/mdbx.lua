@@ -274,6 +274,7 @@ typedef enum MDBX_error {
 const char *mdbx_strerror(int errnum);
 const char *mdbx_strerror_r(int errnum, char *buf, size_t buflen);
 const char *mdbx_liberr2str(int errnum);
+
 int mdbx_env_create(MDBX_env **penv);
 
 typedef enum MDBX_option {
@@ -322,7 +323,7 @@ int mdbx_txn_copy2pathname(MDBX_txn *txn, const char *dest, MDBX_copy_flags_t fl
 int mdbx_env_copy2fd(MDBX_env *env, mdbx_filehandle_t fd, MDBX_copy_flags_t flags);
 int mdbx_txn_copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t flags);
 
-struct MDBX_stat {
+typedef struct MDBX_stat {
 	uint32_t psize;
 	uint32_t depth;
 	uint64_t branch_pages;
@@ -330,12 +331,10 @@ struct MDBX_stat {
 	uint64_t overflow_pages;
 	uint64_t entries;
 	uint64_t mod_txnid;
-};
-
-typedef struct MDBX_stat MDBX_stat;
+} MDBX_stat;
 int mdbx_env_stat_ex(const MDBX_env *env, const MDBX_txn *txn, MDBX_stat *stat, size_t bytes);
 
-struct MDBX_envinfo {
+typedef struct MDBX_envinfo {
 	struct {
 		uint64_t lower;
 		uint64_t upper;
@@ -387,9 +386,8 @@ struct MDBX_envinfo {
 	struct {
 		uint64_t x, y;
 	} mi_dxbid;
-};
+} MDBX_envinfo;
 
-typedef struct MDBX_envinfo MDBX_envinfo;
 int mdbx_env_info_ex(const MDBX_env *env, const MDBX_txn *txn, MDBX_envinfo *info, size_t bytes);
 int mdbx_env_sync_ex(MDBX_env *env, _Bool force, _Bool nonblock);
 int mdbx_env_close_ex(MDBX_env *env, _Bool dont_sync);
@@ -411,6 +409,7 @@ int mdbx_env_get_path(const MDBX_env *env, const char **dest);
 int mdbx_env_get_fd(const MDBX_env *env, mdbx_filehandle_t *fd);
 int mdbx_env_set_geometry(MDBX_env *env, intptr_t size_lower, intptr_t size_now, intptr_t size_upper, intptr_t growth_step, intptr_t shrink_threshold, intptr_t pagesize);
 int mdbx_is_readahead_reasonable(size_t volume, intptr_t redundancy);
+
 intptr_t mdbx_limits_dbsize_min(intptr_t pagesize);
 intptr_t mdbx_limits_dbsize_max(intptr_t pagesize);
 intptr_t mdbx_limits_keysize_max(intptr_t pagesize, MDBX_db_flags_t flags);
@@ -434,7 +433,7 @@ int mdbx_txn_begin_ex(MDBX_env *env, MDBX_txn *parent, MDBX_txn_flags_t flags, M
 int mdbx_txn_set_userctx(MDBX_txn *txn, void *ctx);
 void *mdbx_txn_get_userctx(const MDBX_txn *txn);
 
-struct MDBX_txn_info {
+typedef struct MDBX_txn_info {
 	uint64_t txn_id;
 	uint64_t txn_reader_lag;
 	uint64_t txn_space_used;
@@ -443,15 +442,13 @@ struct MDBX_txn_info {
 	uint64_t txn_space_retired;
 	uint64_t txn_space_leftover;
 	uint64_t txn_space_dirty;
-};
-
-typedef struct MDBX_txn_info MDBX_txn_info;
+} MDBX_txn_info;
 int mdbx_txn_info(const MDBX_txn *txn, MDBX_txn_info *info, _Bool scan_rlt);
 MDBX_env *mdbx_txn_env(const MDBX_txn *txn);
 MDBX_txn_flags_t mdbx_txn_flags(const MDBX_txn *txn);
 uint64_t mdbx_txn_id(const MDBX_txn *txn);
 
-struct MDBX_commit_latency {
+typedef struct MDBX_commit_latency {
 	uint32_t preparation;
 	uint32_t gc_wallclock;
 	uint32_t audit;
@@ -484,9 +481,8 @@ struct MDBX_commit_latency {
 			uint32_t calls;
 		} pnl_merge_work, pnl_merge_self;
 	} gc_prof;
-};
+} MDBX_commit_latency;
 
-typedef struct MDBX_commit_latency MDBX_commit_latency;
 int mdbx_txn_commit_ex(MDBX_txn *txn, MDBX_commit_latency *latency);
 int mdbx_txn_abort(MDBX_txn *txn);
 int mdbx_txn_break(MDBX_txn *txn);
@@ -495,29 +491,16 @@ int mdbx_txn_park(MDBX_txn *txn, _Bool autounpark);
 int mdbx_txn_unpark(MDBX_txn *txn, _Bool restart_if_ousted);
 int mdbx_txn_renew(MDBX_txn *txn);
 
-struct MDBX_canary {
+typedef struct MDBX_canary {
 	uint64_t x, y, z, v;
-};
-typedef struct MDBX_canary MDBX_canary;
+} MDBX_canary;
 int mdbx_canary_put(MDBX_txn *txn, const MDBX_canary *canary);
 int mdbx_canary_get(const MDBX_txn *txn, MDBX_canary *canary);
+
 typedef int(MDBX_cmp_func)(const MDBX_val *a, const MDBX_val *b) ;
 int mdbx_dbi_open (MDBX_txn *txn, const char *name, MDBX_db_flags_t flags, MDBX_dbi *dbi);
-int mdbx_dbi_open2(MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags, MDBX_dbi *dbi);
 int mdbx_dbi_rename (MDBX_txn *txn, MDBX_dbi dbi, const char *name);
-int mdbx_dbi_rename2(MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *name);
-typedef int(MDBX_table_enum_func)(void *ctx, const MDBX_txn *txn, const MDBX_val *name, MDBX_db_flags_t flags, const struct MDBX_stat *stat, MDBX_dbi dbi) ;
-int mdbx_enumerate_tables(const MDBX_txn *txn, MDBX_table_enum_func *func, void *ctx);
-uint64_t mdbx_key_from_jsonInteger(const int64_t json_integer);
-uint64_t mdbx_key_from_double(const double ieee754_64bit);
-uint64_t mdbx_key_from_ptrdouble(const double *const ieee754_64bit);
-uint32_t mdbx_key_from_float(const float ieee754_32bit);
-uint32_t mdbx_key_from_ptrfloat(const float *const ieee754_32bit);
-int64_t mdbx_jsonInteger_from_key(const MDBX_val);
-double mdbx_double_from_key(const MDBX_val);
-float mdbx_float_from_key(const MDBX_val);
-int32_t mdbx_int32_from_key(const MDBX_val);
-int64_t mdbx_int64_from_key(const MDBX_val);
+
 int mdbx_dbi_stat(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_stat *stat, size_t bytes);
 int mdbx_dbi_dupsort_depthmask(const MDBX_txn *txn, MDBX_dbi dbi, uint32_t *mask);
 
@@ -541,7 +524,9 @@ typedef int (*MDBX_preserve_func)(void *context, MDBX_val *target, const void *s
 int mdbx_replace_ex(MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *new_data,
 	MDBX_val *old_data, MDBX_put_flags_t flags, MDBX_preserve_func preserver,
 	void *preserver_context);
+
 int mdbx_del(MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, const MDBX_val *data);
+
 MDBX_cursor *mdbx_cursor_create(void *context);
 int mdbx_cursor_set_userctx(MDBX_cursor *cursor, void *ctx);
 void *mdbx_cursor_get_userctx(const MDBX_cursor *cursor);
@@ -554,7 +539,6 @@ int mdbx_cursor_close2(MDBX_cursor *cursor);
 int mdbx_txn_release_all_cursors_ex(const MDBX_txn *txn, _Bool unbind, size_t *count);
 int mdbx_cursor_renew(MDBX_txn *txn, MDBX_cursor *cursor);
 MDBX_txn *mdbx_cursor_txn(const MDBX_cursor *cursor);
-
 MDBX_dbi mdbx_cursor_dbi(const MDBX_cursor *cursor);
 int mdbx_cursor_copy(const MDBX_cursor *src, MDBX_cursor *dest);
 int mdbx_cursor_compare(const MDBX_cursor *left, const MDBX_cursor *right, _Bool ignore_multival);
@@ -577,33 +561,46 @@ int mdbx_cursor_on_first(const MDBX_cursor *cursor);
 int mdbx_cursor_on_first_dup(const MDBX_cursor *cursor);
 int mdbx_cursor_on_last(const MDBX_cursor *cursor);
 int mdbx_cursor_on_last_dup(const MDBX_cursor *cursor);
+
 int mdbx_estimate_distance(const MDBX_cursor *first, const MDBX_cursor *last, ptrdiff_t *distance_items);
 int mdbx_estimate_move(const MDBX_cursor *cursor, MDBX_val *key, MDBX_val *data, MDBX_cursor_op move_op, ptrdiff_t *distance_items);
 int mdbx_estimate_range(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *begin_key,
 												const MDBX_val *begin_data, const MDBX_val *end_key, const MDBX_val *end_data,
 												ptrdiff_t *distance_items);
+
 int mdbx_is_dirty(const MDBX_txn *txn, const void *ptr);
+
 int mdbx_dbi_sequence(MDBX_txn *txn, MDBX_dbi dbi, uint64_t *result, uint64_t increment);
+
 int mdbx_cmp(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a, const MDBX_val *b);
 MDBX_cmp_func *mdbx_get_keycmp(MDBX_db_flags_t flags);
 int mdbx_dcmp(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *a, const MDBX_val *b);
 MDBX_cmp_func *mdbx_get_datacmp(MDBX_db_flags_t flags);
+
 typedef int(MDBX_reader_list_func)(void *ctx, int num, int slot, mdbx_pid_t pid, mdbx_tid_t thread, uint64_t txnid,
-											  uint64_t lag, size_t bytes_used, size_t bytes_retained) ;
+	uint64_t lag, size_t bytes_used, size_t bytes_retained) ;
 int mdbx_reader_list(const MDBX_env *env, MDBX_reader_list_func *func, void *ctx);
 int mdbx_reader_check(MDBX_env *env, int *dead);
+
 int mdbx_thread_register(const MDBX_env *env);
 int mdbx_thread_unregister(const MDBX_env *env);
+
 typedef int(MDBX_hsr_func)(const MDBX_env *env, const MDBX_txn *txn, mdbx_pid_t pid, mdbx_tid_t tid, uint64_t laggard,
-									unsigned gap, size_t space, int retry) ;
+	unsigned gap, size_t space, int retry) ;
 int mdbx_env_set_hsr(MDBX_env *env, MDBX_hsr_func *hsr_callback);
 MDBX_hsr_func *mdbx_env_get_hsr(const MDBX_env *env);
+
 int mdbx_txn_lock(MDBX_env *env, _Bool dont_wait);
 int mdbx_txn_unlock(MDBX_env *env);
+
 int mdbx_env_open_for_recovery(MDBX_env *env, const char *pathname, unsigned target_meta, _Bool writeable);
 int mdbx_env_turn_for_recovery(MDBX_env *env, unsigned target_meta);
-int mdbx_preopen_snapinfo(const char *pathname, MDBX_envinfo *info, size_t bytes);
 
+int mdbx_preopen_snapinfo(const char *pathname, MDBX_envinfo *info, size_t bytes);
+]]
+
+-- mdbx_env_chk()
+cdef[[
 typedef enum MDBX_chk_flags {
 	MDBX_CHK_DEFAULTS = 0,
 	MDBX_CHK_READWRITE = 1,
@@ -740,6 +737,7 @@ typedef struct MDBX_chk_callbacks {
 	void (*print_format)(MDBX_chk_line_t *, const char *fmt, va_list args);
 	void (*print_size)(MDBX_chk_line_t *, const char *prefix, const uint64_t value, const char *suffix);
 } MDBX_chk_callbacks_t;
+
 int mdbx_env_chk(MDBX_env *env, const MDBX_chk_callbacks_t *cb, MDBX_chk_context_t *ctx,
 	const MDBX_chk_flags_t flags, MDBX_chk_severity_t verbosity,
 	unsigned timeout_seconds_16dot16);
@@ -749,6 +747,9 @@ int mdbx_env_chk_encount_problem(MDBX_chk_context_t *ctx);
 
 require'fs'
 require'sock'
+
+mdbx_version = C.mdbx_version
+mdbx_build = C.mdbx_build
 
 local function check(rc)
 	if rc == 0 then return end
@@ -872,7 +873,7 @@ function Tx:abort()
 end
 
 --pass table_name = false to open the "main" dbi.
-function Tx:open_table_raw(table_name, flags)
+function Tx:open_table(table_name, flags)
 	local dbi = self.db.dbis[table_name or false]
 	if dbi then return dbi end
 	local dbi = new'MDBX_dbi[1]'
@@ -882,9 +883,14 @@ function Tx:open_table_raw(table_name, flags)
 	return dbi
 end
 
+function Tx:rename_table(tab, new_table_name)
+	local dbi = isnum(tab) and tab or self.db:dbi(tab)
+	check(C.mdbx_dbi_rename(self.txn[0], dbi, new_table_name))
+end
+
 function Tx:get_raw_kv(tab, key, val)
-	local tab = isnum(tab) and tab or self.db:dbi(tab)
-	local rc = C.mdbx_get(self.txn[0], tab, key, val)
+	local dbi = isnum(tab) and tab or self.db:dbi(tab)
+	local rc = C.mdbx_get(self.txn[0], dbi, key, val)
 	if rc == 0 then return val end
 	if rc == C.MDBX_NOTFOUND then return nil end
 	check(rc)
@@ -903,8 +909,8 @@ end
 end
 
 function Tx:put_raw_kv(tab, key, val, flags)
-	local tab = isnum(tab) and tab or self.db:dbi(tab)
-	check(C.mdbx_put(self.txn[0], tab, key, val, flags or 0))
+	local dbi = isnum(tab) and tab or self.db:dbi(tab)
+	check(C.mdbx_put(self.txn[0], dbi, key, val, flags or 0))
 end
 
 do
@@ -921,14 +927,14 @@ end
 
 local Cur = {}; mdbx_cur = Cur;
 function Tx:raw_cursor(tab)
-	local tab = isnum(tab) and tab or self.db:dbi(tab)
+	local dbi = isnum(tab) and tab or self.db:dbi(tab)
 	local cur = pop(self.db._free_cur)
 	if cur then
 		cur.tx = self
 	else
 		cur = object(Cur, {tx = self, cursor = new'MDBX_cursor*[1]'})
 	end
-	check(C.mdbx_cursor_open(self.txn[0], tab, cur.cursor))
+	check(C.mdbx_cursor_open(self.txn[0], dbi, cur.cursor))
 	attr(self, 'cursors')[cur] = true
 	return cur
 end
@@ -969,8 +975,8 @@ do
 local stat = new'MDBX_stat'
 local stat_sz = sizeof(stat)
 function Tx:stat(tab)
-	local tab = isnum(tab) and tab or self.db:dbi(tab)
-	check(C.mdbx_dbi_stat(self.txn[0], tab, stat, stat_sz))
+	local dbi = isnum(tab) and tab or self.db:dbi(tab)
+	check(C.mdbx_dbi_stat(self.txn[0], dbi, stat, stat_sz))
 	return stat
 end
 end
@@ -982,12 +988,12 @@ function next_table(self)
 	return table_name
 end
 function Tx:each_table()
-	local dbi = self:open_table_raw()
+	local dbi = self:open_table()
 	local cur = self:raw_cursor(dbi)
 	return next_table, cur
 end
 function Tx:table_count()
-	local dbi = self:open_table_raw()
+	local dbi = self:open_table()
 	return num(self:stat(dbi).entries)
 end
 
@@ -998,7 +1004,7 @@ if not ... then
 	local db = mdbx_open('testdb')
 
 	local tx = db:tx'w'
-	tx:open_table_raw('users', C.MDBX_CREATE)
+	tx:open_table('users', C.MDBX_CREATE)
 	tx:commit()
 
 	s = _('%03x %d foo bar', 32, 3141592)

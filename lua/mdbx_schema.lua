@@ -18,6 +18,25 @@
 		- keys are not nullable
 		- varsize keys are 0-terminated so they are not 8-bit clean!
 
+TODO:
+	- tx:get()
+	- cols list on: db:decode_record(), tx:get_record(), tx:each_record()
+	- no-gc rec update: copy-rec, resize, set, put
+	- update and upsert rec with single lookup
+	- delete rec
+	- autoincrement
+	- reverse cursor
+	- mdbx_env_chk()
+	- range lookup cursor
+	- DDL:
+		- rename table, incl. layout
+		- delete table, incl. layout
+	- table migration:
+		- copy all records to tmp table, delete old table, rename tmp table.
+			- copy existing fields by name, use aka mapping to find old field.
+				- copy using raw pointers into decoded values and encoded values.
+	-
+
 ]]
 
 require'mdbx'
@@ -142,8 +161,10 @@ local function encode_ai_ci(s, len)
 	return out, sz
 end
 
+local open_table_raw = Tx.open_table
+
 function Tx:open_layout_table()
-	return self:open_table_raw('$layout', C.MDBX_CREATE)
+	return open_table_raw(self, '$layout', C.MDBX_CREATE)
 end
 
 function Tx:save_table_layout(table_name, layout)
@@ -164,7 +185,7 @@ local function table_schema(self, table_name)
 	return assertf(self.schema.tables[table_name], 'no schema for table: %s', table_name)
 end
 
-function Tx:do_open_table(table_name, schema)
+local function open_table_with_schema(self, table_name, schema, flags)
 
 	--compute field layout and encoding parameters based on schema.
 	--NOTE: changing this algorithm or making it non-deterministic in any way
@@ -473,7 +494,9 @@ function Tx:do_open_table(table_name, schema)
 
 	--pr(schema)
 
-	local dbi = self:open_table_raw(table_name, bor(
+	assertf(not flags, 'flags passed when opening table with schema: %s', table_name)
+
+	local dbi = open_table_raw(self, table_name, bor(
 		C.MDBX_CREATE,
 		int_key and C.MDBX_INTEGERKEY or 0
 	))
@@ -524,12 +547,20 @@ function Tx:do_open_table(table_name, schema)
 	return dbi
 end
 
-local function open_table(self, table_name)
+local function open_table(self, table_name, flags)
 	local schema = table_schema(self.db, table_name)
-	local dbi = self.db.dbis[table_name] or self:do_open_table(table_name, schema)
-	assert(schema.opened, 'table already opened in raw mode: %s', table_name)
-	return dbi, schema
+	local dbi = self.db.dbis[table_name]
+	if dbi then
+		assertf(not schema or schema.opened,
+			'table with schema already opened in raw mode: %s', table_name)
+		return dbi, schema
+	elseif schema then
+		return open_table_with_schema(self, table_name, schema, flags), schema
+	else
+		return open_table_raw(self, table_name, flags), schema
+	end
 end
+Db.open_table = open_table
 
 local function key_col(schema, col_name)
 	local col = assertf(schema.fields[col_name], 'not a col: %s', col_name)
@@ -545,7 +576,6 @@ local function val_col(schema, col_name)
 	return schema.val_cols, col, col_i
 end
 
-Db.open_table = open_table
 Db.table_schema = table_schema
 Db.key_col = key_col
 Db.val_col = val_col
@@ -613,7 +643,7 @@ function Tx:put(table_name, ...)
 	local val_rec, val_buf_sz = val_rec_buffer(schema.val_cols.max_rec_size)
 	local key_sz = self.db:encode_key_record(schema, key_rec, key_buf_sz, ...)
 	local val_sz = self.db:encode_val_record(schema, val_rec, val_buf_sz, ...)
-	self:put_raw(tbl_name, key_rec, key_sz, val_rec, val_sz)
+	self:put_raw(tab, key_rec, key_sz, val_rec, val_sz)
 end
 
 function Tx:put_records(table_name, records)
@@ -705,8 +735,9 @@ function Tx:get_record(table_name, ...)
 end
 
 function Tx:get(table_name, ...)
-	local _, schema = open_table(self, table_name)
-	local t = self:get_record(table_name, ...)
+	local tab, schema = open_table(self, table_name)
+	local rec, rec_sz = self:get_raw_by_pk(table_name, ...)
+	local t = self.db:decode_val_record(schema, rec, rec_sz, {...})
 	if not t then return end
 	return unpack(t, 1, #schema.fields)
 end
@@ -749,6 +780,13 @@ end
 --test -----------------------------------------------------------------------
 
 if not ... then
+
+	pr('libmdbx.so vesion: ',
+		mdbx_version.major..'.'..
+		mdbx_version.minor..'.'..
+		mdbx_version.patch,
+		str(mdbx_version.git.commit, 6))
+	pr()
 
 	rm'mdbx_schema_test/mdbx.dat'
 	rm'mdbx_schema_test/mdbx.lck'
@@ -964,8 +1002,21 @@ if not ... then
 			pr(rpad(table_name, 24), '')
 		end
 	end
+	tx:abort()
+	pr()
 
 	db:close()
+
+--	major, C.mdbx_version.minor, C.mdbx_version.patch, C.mdbx_version.tweak)
+--	const char *semver_prerelease;
+--	struct {
+--		const char *datetime;
+--		const char *tree;
+--		const char *commit;
+--		const char *describe;
+--	} git;
+--	const char *sourcery;
+--} mdbx_version;
 
 	--[[
 	local db = mdbx_open('mdbx_schema_test')
