@@ -66,17 +66,17 @@ typedef enum schema_col_type {
 /*
 
 In-memory layout:
- - key records: fixsize_cols, first_varsize_col, varoffset_cols (varsize or not).
- - val records: null_bits, dyn_offsets, fixsize_cols, first_varsize_col, varsize_cols.
+ - key records: fixed_size_cols, first_varsize_col, varoffset_cols (varsize or not).
+ - val records: null_bits, dyn_offsets, fixed_size_cols, first_varsize_col, varsize_cols.
 
-Fixsize means scalar (len=1) or fixed-size array (zero-padded). The opposite
+fixed_size means scalar (len=1) or fixed-size array (zero-padded). The opposite
 is varsize for which len in the definition means max len. Varsize values are
 zero-terminated inside key records, so they are not 8-bit clean except the
 last column if it's ascending. In value records an offset table is used instead
 so all columns are 8-bit clean. The zero terminator is skipped for values with
 len = max len so the value never takes more space than len. The offset table
 is an array of u8, u16 or i32. In value records, all varsize columns are after
-all fixsize columns to minimize the offset table since column order doesn't
+all fixed_size columns to minimize the offset table since column order doesn't
 matter there.
 
 Key records are encoded differently than val records because keys are encoded
@@ -88,11 +88,11 @@ encoded so that byte order matches numeric order.
 */
 typedef struct schema_col {
 	int   len; // for varsize cols it means max len.
-	bool8 fixsize; // fixed size array (padded) or varsize.
+	bool8 fixed_size; // fixed size array (padded) or varsize.
 	bool8 descending; // for key cols
 	u8    type; // schema_col_type
 	u8    elem_size_shift; // computed
-	bool8 static_offset; // computed: decides what the .offset field means
+	bool8 fixed_offset; // computed: decides what the .offset field means
 	int   offset; // computed: a static offset or the offset where the dyn. offset is.
 } schema_col;
 
@@ -341,7 +341,7 @@ INLINE int get_key_mem_size(schema_table* tbl, schema_col* col,
 	void *p
 ) {
 	int ss = col->elem_size_shift;
-	if (col->fixsize) {
+	if (col->fixed_size) {
 		return col->len << ss;
 	} else {
 		return (scan_end(col, p, col->len, 1) + 1) << ss; // 0-terminated
@@ -353,7 +353,7 @@ INLINE void* get_next_ptr(schema_table* tbl, int is_key, schema_col* col,
 	void* rec, int rec_size,
 	void* p
 ) {
-	if (next_col->static_offset) {
+	if (next_col->fixed_offset) {
 		return rec + next_col->offset;
 	} else if (is_key) { // key col at dyn. offset
 		return p + get_key_mem_size(tbl, col, p);
@@ -365,7 +365,7 @@ INLINE void* get_next_ptr(schema_table* tbl, int is_key, schema_col* col,
 INLINE void* get_key_ptr(schema_table* tbl, int col_i, schema_col* col,
 	void* rec
 ) {
-	if (col->static_offset) {
+	if (col->fixed_offset) {
 		return rec + col->offset;
 	} else { // key col at dyn. offset
 		void* p = rec;
@@ -378,7 +378,7 @@ INLINE void* get_key_ptr(schema_table* tbl, int col_i, schema_col* col,
 INLINE void* get_val_ptr(schema_table* tbl, int col_i, schema_col* col,
 	void* rec, int rec_size
 ) {
-	if (col->static_offset) {
+	if (col->fixed_offset) {
 		return rec + col->offset;
 	} else { // val col at dyn. offset
 		return rec + get_dyn_offset(tbl, col, rec, rec_size);
@@ -388,7 +388,7 @@ INLINE void* get_val_ptr(schema_table* tbl, int col_i, schema_col* col,
 INLINE int get_key_len(schema_table* tbl, int col_i, schema_col* col,
 	void* rec, void* p, int rec_size
 ) {
-	if (col->fixsize) {
+	if (col->fixed_size) {
 		return col->len;
 	} else { // varsize key col
 		return scan_end(col, p, col->len, 1);
@@ -398,10 +398,10 @@ INLINE int get_key_len(schema_table* tbl, int col_i, schema_col* col,
 INLINE int get_val_len(schema_table* tbl, int col_i, schema_col* col,
 	void* rec, void* p, int rec_size
 ) {
-	if (col->fixsize) {
+	if (col->fixed_size) {
 		return col->len;
 	} else { // varsize val col
-		int offset = col->static_offset
+		int offset = col->fixed_offset
 			? col->offset
 			: get_dyn_offset(tbl, col, rec, rec_size);
 		if (col_i < tbl->n_val_cols-1) { // non-last col
@@ -432,7 +432,7 @@ int schema_get_key(schema_table* tbl, int col_i,
 	void* p = pp && *pp ? *pp : get_key_ptr(tbl, col_i, col, rec);
 	int in_len = get_key_len(tbl, col_i, col, rec, p, rec_size);
 	int in_size = in_len << ss;
-	int mem_size = (col->fixsize ? col->len : in_len + 1) << ss;
+	int mem_size = (col->fixed_size ? col->len : in_len + 1) << ss;
 	assert(out_size >= in_size);
 	void* in = p;
 	*pout = in;
@@ -474,7 +474,7 @@ INLINE void set_next_dyn_offset(schema_table* tbl, int col_i,
 	if (col_i == tbl->n_val_cols-1)
 		return;
 	schema_col* next_col = &tbl->val_cols[col_i+1];
-	if (next_col->static_offset)
+	if (next_col->fixed_offset)
 		return;
 	set_dyn_offset(tbl, next_col, p + mem_size - rec, rec, rec_size);
 }
@@ -524,7 +524,7 @@ void schema_set_val(schema_table* tbl, int col_i,
 
 	// figure out mem_size (size of this value in memory) and check it.
 	int mem_size;
-	if (col->fixsize) {
+	if (col->fixed_size) {
 		mem_size = col->len << ss;
 	} else {
 		mem_size = copy_size;
@@ -532,8 +532,8 @@ void schema_set_val(schema_table* tbl, int col_i,
 	assert(p + mem_size <= rec + rec_buf_size);
 
 	// adjust rec before copying the data.
-	if (col->fixsize) {
-		// fixsize: zero-pad
+	if (col->fixed_size) {
+		// fixed_size: zero-pad
 		memset(p + copy_size, 0, mem_size - copy_size);
 	} else {
 		if (!add) {
@@ -563,15 +563,15 @@ void schema_key_add(schema_table* tbl, int col_i,
 
 	// check val_len for embedded zeroes.
 	assert(val_len >= 0 && val_len <= col->len);
-	if (!col->fixsize)
+	if (!col->fixed_size)
 		val_len = scan_end(col, p, val_len, 0); // truncate
 	int val_size = val_len << ss;
 
 	// figure out mem_size (size of this value in memory) and check it.
-	int mem_size = col->fixsize ? col->len << ss : val_size + (1 << ss);
+	int mem_size = col->fixed_size ? col->len << ss : val_size + (1 << ss);
 	assert(p + mem_size <= rec + rec_buf_size);
 
-	// zero-pad (fixsize), or write terminator (varsize).
+	// zero-pad (fixed_size), or write terminator (varsize).
 	memset(p + val_size, 0, mem_size - val_size);
 
 	// encode for lexicographic binary ordering.
@@ -592,7 +592,7 @@ void schema_val_add_start(schema_table* tbl,
 	u8** pp
 ) {
 	schema_col* col = get_val_col(tbl, 0);
-	assert(col->static_offset);
+	assert(col->fixed_offset);
 	*pp = rec + col->offset;
 }
 
@@ -614,12 +614,12 @@ void schema_val_add(schema_table* tbl, int col_i,
 	int val_size = val_len << ss;
 
 	// figure out mem_size (size of this value in memory) and check it.
-	int mem_size = col->fixsize ? col->len << ss : val_size;
+	int mem_size = col->fixed_size ? col->len << ss : val_size;
 	assert(p + mem_size <= rec + rec_buf_size);
 
 	// adjust rec before writing the data.
-	if (col->fixsize) {
-		// fixsize: zero-pad
+	if (col->fixed_size) {
+		// fixed_size: zero-pad
 		memset(p + val_size, 0, mem_size - val_size);
 	} else {
 		// varsize: set offset of next col for next add.
