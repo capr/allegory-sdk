@@ -59,7 +59,7 @@ pp_write(write, v, opt...)
 	   error(err_type..': '..tostring(v)) end` (default is to add a comment).
 	* `sort_keys` - sort keys to get deterministic output (default is `true`).
 	* `filter` - filter and/or translate values.
-	  `filter(v[, k]) -> passes, v`
+	  `filter(v[[, k], t]) -> passes, v`
 
 	Defaults result in diff'able human-readable output that is good for both
 	serialization and for inspecting.

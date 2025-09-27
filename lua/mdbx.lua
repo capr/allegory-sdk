@@ -323,13 +323,13 @@ int mdbx_env_copy2fd(MDBX_env *env, mdbx_filehandle_t fd, MDBX_copy_flags_t flag
 int mdbx_txn_copy2fd(MDBX_txn *txn, mdbx_filehandle_t fd, MDBX_copy_flags_t flags);
 
 struct MDBX_stat {
-	uint32_t ms_psize;
-	uint32_t ms_depth;
-	uint64_t ms_branch_pages;
-	uint64_t ms_leaf_pages;
-	uint64_t ms_overflow_pages;
-	uint64_t ms_entries;
-	uint64_t ms_mod_txnid;
+	uint32_t psize;
+	uint32_t depth;
+	uint64_t branch_pages;
+	uint64_t leaf_pages;
+	uint64_t overflow_pages;
+	uint64_t entries;
+	uint64_t mod_txnid;
 };
 
 typedef struct MDBX_stat MDBX_stat;
@@ -343,29 +343,29 @@ struct MDBX_envinfo {
 		uint64_t shrink;
 		uint64_t grow;
 	} mi_geo;
-	uint64_t mi_mapsize;
-	uint64_t mi_last_pgno;
-	uint64_t mi_recent_txnid;
-	uint64_t mi_latter_reader_txnid;
-	uint64_t mi_self_latter_reader_txnid;
+	uint64_t mapsize;
+	uint64_t last_pgno;
+	uint64_t recent_txnid;
+	uint64_t latter_reader_txnid;
+	uint64_t self_latter_reader_txnid;
 
-	uint64_t mi_meta_txnid[3], mi_meta_sign[3];
-	uint32_t mi_maxreaders;
-	uint32_t mi_numreaders;
-	uint32_t mi_dxb_pagesize;
-	uint32_t mi_sys_pagesize;
+	uint64_t meta_txnid[3], meta_sign[3];
+	uint32_t maxreaders;
+	uint32_t numreaders;
+	uint32_t dxb_pagesize;
+	uint32_t sys_pagesize;
 	struct {
 		struct {
 			uint64_t x, y;
 		} current, meta[3];
 	} mi_bootid;
 
-	uint64_t mi_unsync_volume;
-	uint64_t mi_autosync_threshold;
-	uint32_t mi_since_sync_seconds16dot16;
-	uint32_t mi_autosync_period_seconds16dot16;
-	uint32_t mi_since_reader_check_seconds16dot16;
-	uint32_t mi_mode;
+	uint64_t unsync_volume;
+	uint64_t autosync_threshold;
+	uint32_t since_sync_seconds16dot16;
+	uint32_t autosync_period_seconds16dot16;
+	uint32_t since_reader_check_seconds16dot16;
+	uint32_t mode;
 
 	struct {
 		uint64_t newly;
@@ -758,7 +758,7 @@ end
 local Db = {}; mdbx_db = Db
 
 function Db:close()
-	for table_name,dbi in pairs(self.dbis) do
+	for table_name, dbi in pairs(self.dbis) do
 		C.mdbx_dbi_close(self.env, dbi)
 	end
 	C.mdbx_env_close_ex(self.env, 0)
@@ -871,26 +871,33 @@ function Tx:abort()
 	end
 end
 
-function Tx:open_table(table_name, flags)
+--pass table_name = false to open the "main" dbi.
+function Tx:open_table_raw(table_name, flags)
+	local dbi = self.db.dbis[table_name or false]
+	if dbi then return dbi end
 	local dbi = new'MDBX_dbi[1]'
 	check(C.mdbx_dbi_open(self.txn[0], table_name, flags or 0, dbi))
 	local dbi = dbi[0]
-	self.db.dbis[table_name] = dbi
+	self.db.dbis[table_name or false] = dbi
+	return dbi
 end
 
 function Tx:get_raw_kv(tab, key, val)
 	local tab = isnum(tab) and tab or self.db:dbi(tab)
-	check(C.mdbx_get(self.txn[0], tab, key, val))
-	return val
+	local rc = C.mdbx_get(self.txn[0], tab, key, val)
+	if rc == 0 then return val end
+	if rc == C.MDBX_NOTFOUND then return nil end
+	check(rc)
 end
 
 do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
 function Tx:get_raw(tab, key_data, key_sz)
-	key.data = key_data
+	key.data = cast('u8*', key_data)
 	key.size = key_sz
 	local val = self:get_raw_kv(tab, key, val)
+	if not val then return nil, 0 end
 	return val.data, val.size
 end
 end
@@ -958,6 +965,32 @@ function Tx:each_raw_kv(tab)
 	return Cur.next_raw_kv, cur
 end
 
+do
+local stat = new'MDBX_stat'
+local stat_sz = sizeof(stat)
+function Tx:stat(tab)
+	local tab = isnum(tab) and tab or self.db:dbi(tab)
+	check(C.mdbx_dbi_stat(self.txn[0], tab, stat, stat_sz))
+	return stat
+end
+end
+
+function next_table(self)
+	local k = self:next_raw_kv()
+	if not k then return end
+	local table_name = str(k.data, k.size)
+	return table_name
+end
+function Tx:each_table()
+	local dbi = self:open_table_raw()
+	local cur = self:raw_cursor(dbi)
+	return next_table, cur
+end
+function Tx:table_count()
+	local dbi = self:open_table_raw()
+	return num(self:stat(dbi).entries)
+end
+
 -- test ----------------------------------------------------------------------
 
 if not ... then
@@ -965,7 +998,7 @@ if not ... then
 	local db = mdbx_open('testdb')
 
 	local tx = db:tx'w'
-	tx:open_table('users', C.MDBX_CREATE)
+	tx:open_table_raw('users', C.MDBX_CREATE)
 	tx:commit()
 
 	s = _('%03x %d foo bar', 32, 3141592)
