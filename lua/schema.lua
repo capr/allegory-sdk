@@ -84,7 +84,7 @@ which is more acceptable.
 
 API
 	schema(opt) -> sc`              create a new schema object
-	schema_diff(sc1, sc2) -> diff`  find out what changed between `sc1` and `sc2`
+	schema.diff(sc1, sc2) -> diff`  find out what changed between `sc1` and `sc2`
 	diff:pp()`                      pretty print a schema diff
 
 ]=]
@@ -100,7 +100,7 @@ require'glue'
 
 local function isschema(t) return istab(t) and t.is_schema end
 
-local schema = {is_schema = true, package = {}, isschema = isschema}
+schema = {is_schema = true, package = {}, isschema = isschema}
 
 --NOTE: the double-underscore is for disambiguation, not for aesthetics.
 schema.fk_name_format = 'fk_%s__%s'
@@ -915,5 +915,3 @@ function schema:resolve_types(fields, opt) --{field1, ...}
 	end
 	return fields
 end
-
-return schema

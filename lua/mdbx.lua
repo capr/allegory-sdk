@@ -883,6 +883,11 @@ function Tx:open_table(table_name, flags)
 	return dbi
 end
 
+--TODO:
+function Tx:close_table()
+	C.mdbx_dbi_close(self.env, dbi)
+end
+
 function Tx:rename_table(tab, new_table_name)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
 	check(C.mdbx_dbi_rename(self.txn[0], dbi, new_table_name))
@@ -925,7 +930,7 @@ function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
 end
 end
 
-local Cur = {}; mdbx_cur = Cur;
+local Cur = {}; mdbx_cur = Cur
 function Tx:raw_cursor(tab)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
 	local cur = pop(self.db._free_cur)
@@ -981,11 +986,14 @@ function Tx:stat(tab)
 end
 end
 
+function Tx:entries(tab)
+	return num(self:stat(tab).entries)
+end
+
 function next_table(self)
 	local k = self:next_raw_kv()
 	if not k then return end
-	local table_name = str(k.data, k.size)
-	return table_name
+	return str(k.data, k.size)
 end
 function Tx:each_table()
 	local dbi = self:open_table()

@@ -43,7 +43,7 @@ local function sc2()
 
 end
 
-local schema = require'schema'
+require'schema'
 local spp = require'sqlpp'.new'mysql'
 
 local sc = schema()
