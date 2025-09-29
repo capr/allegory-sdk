@@ -1004,6 +1004,10 @@ function Tx:table_count()
 	local dbi = self:open_table()
 	return num(self:stat(dbi).entries)
 end
+function Tx:table_exists(table_name)
+	local dbi = self:open_table()
+	return self:get_raw(dbi, table_name, #table_name) ~= nil
+end
 
 -- test ----------------------------------------------------------------------
 

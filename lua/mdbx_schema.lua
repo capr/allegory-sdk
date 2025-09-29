@@ -343,6 +343,9 @@ end
 --create encoders and decoders for a layouted schema.
 local function compile_table_schema(schema)
 
+	local key_fields = schema.key_fields
+	local val_fields = schema.val_fields
+
 	--generate direct key record decoders and encoders for u32/u64 keys
 	--stored in little endian.
 	if schema.int_key then
@@ -368,7 +371,7 @@ local function compile_table_schema(schema)
 	st.val_cols = sc_val_cols
 	st.n_key_cols = #key_fields
 	st.n_val_cols = #val_fields
-	st.dyn_offset_size = f.dyn_offset_size
+	st.dyn_offset_size = schema.dyn_offset_size
 	--anchor these so they don't get collected
 	key_fields._sc = sc_key_cols
 	val_fields._sc = sc_val_cols
@@ -534,8 +537,10 @@ function Tx:save_table_schema(table_name, schema)
 end
 
 function Tx:load_table_schema(table_name)
+	if not self:table_exists'$schema' then return end
 	local k = table_name
-	local v, v_len = self:get_raw('$schema', k, #k)
+	local dbi, schema = open_table_raw(self, '$schema')
+	local v, v_len = self:get_raw(dbi, k, #k)
 	if not v then return end
 	local schema = eval(str(v, v_len))
 	--reconstruct schema from stored table schema.
@@ -561,7 +566,11 @@ local function table_schema(self, table_name)
 end
 
 function Tx:open_table(table_name, flags)
-	local schema = table_schema(self.db, table_name)
+	if not table_name then --opening the unnamed root table
+		assert(not flags, 'passing flags when opening the root table')
+		return open_table_raw(self, table_name)
+	end
+	local schema = self.db.schema.tables[table_name]
 	local db_max_key_size = self.db:db_max_key_size()
 	if schema and not schema.parsed then
 		parse_table_schema(schema, table_name, db_max_key_size)
