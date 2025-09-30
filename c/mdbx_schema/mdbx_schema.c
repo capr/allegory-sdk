@@ -104,8 +104,18 @@ typedef struct schema_table {
 	u8   dyn_offset_size; // 1,2,4
 } schema_table;
 
+int schema_get_key(schema_table* tbl, int col_i,
+	void* rec, int rec_size,
+	u8* out, int out_size,
+	u8** pout,
+	u8** pp
+);
 int schema_val_is_null(schema_table* tbl, int col_i,
 	void* rec, int rec_size
+);
+int schema_get_val(schema_table* tbl, int col_i,
+	void* rec, int rec_size,
+	u8** pout
 );
 void schema_key_add(schema_table* tbl, int col_i,
 	void* rec, int rec_buf_size, int val_len,
@@ -348,20 +358,6 @@ INLINE int get_key_mem_size(schema_table* tbl, schema_col* col,
 	}
 }
 
-INLINE void* get_next_ptr(schema_table* tbl, int is_key, schema_col* col,
-	schema_col* next_col,
-	void* rec, int rec_size,
-	void* p
-) {
-	if (next_col->fixed_offset) {
-		return rec + next_col->offset;
-	} else if (is_key) { // key col at dyn. offset
-		return p + get_key_mem_size(tbl, col, p);
-	} else { // val col at dyn. offset
-		return rec + get_dyn_offset(tbl, next_col, rec, rec_size);
-	}
-}
-
 INLINE void* get_key_ptr(schema_table* tbl, int col_i, schema_col* col,
 	void* rec
 ) {
@@ -480,6 +476,20 @@ INLINE void set_next_dyn_offset(schema_table* tbl, int col_i,
 }
 
 /*
+INLINE void* get_next_ptr(schema_table* tbl, int is_key, schema_col* col,
+	schema_col* next_col,
+	void* rec, int rec_size,
+	void* p
+) {
+	if (next_col->fixed_offset) {
+		return rec + next_col->offset;
+	} else if (is_key) { // key col at dyn. offset
+		return p + get_key_mem_size(tbl, col, p);
+	} else { // val col at dyn. offset
+		return rec + get_dyn_offset(tbl, next_col, rec, rec_size);
+	}
+}
+
 INLINE void resize_varsize(
 	schema_table* tbl, int is_key, int col_i, schema_col* col,
 	void* rec, int cur_rec_size, int rec_buf_size,

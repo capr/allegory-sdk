@@ -759,9 +759,6 @@ end
 local Db = {}; mdbx_db = Db
 
 function Db:close()
-	for table_name, dbi in pairs(self.dbis) do
-		C.mdbx_dbi_close(self.env, dbi)
-	end
 	C.mdbx_env_close_ex(self.env, 0)
 	self.schema = nil
 	self.dbis = nil
@@ -770,11 +767,12 @@ end
 
 --opt.readonly
 --opt.file_mode
+do
+local envp = new'MDBX_env*[1]'
 function mdbx_open(dir, opt)
 	opt = opt or {}
-
-	local env = new'MDBX_env*[1]'
-	check(C.mdbx_env_create(env)); env = env[0]
+	check(C.mdbx_env_create(envp))
+	local env = envp[0]
 	local size = 1024e4
 	check(C.mdbx_env_set_geometry(env, size, size, size, -1, -1, -1))
 	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_readers, opt.max_readers or 1024))
@@ -796,6 +794,7 @@ function mdbx_open(dir, opt)
 
 	return db
 end
+end
 
 function Db:dbi(table_name)
 	return assertf(self.dbis[table_name], 'table not found: %s', table_name)
@@ -807,21 +806,24 @@ end
 
 local Tx = {}; mdbx_tx = Tx
 
+do
+local txnp = new'MDBX_txn*[1]'
 function Db:tx(flags, parent_tx)
 	flags = flags or (parent_tx and not parent_tx:is_readonly() and 'w') or 'r'
 	if flags == 'r' then flags = C.MDBX_RDONLY end
 	if flags == 'w' then flags = 0 end
 	local tx = pop(self._free_tx) or object(Tx, {
 		db = self,
-		txn = new'MDBX_txn*[1]',
 	})
-	check(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn[0], flags, tx.txn, nil))
+	check(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn, flags, txnp, nil))
 	if parent_tx then
 		self.parent_tx = parent_tx
 		add(attr(parent_tx, 'child_txs'), self)
 	end
+	tx.txn = txnp[0]
 	tx.flags = flags
 	return tx
+end
 end
 
 function Tx:is_readonly()
@@ -833,7 +835,7 @@ function Tx:tx()
 end
 
 function Tx:closed()
-	return self.txn[0] == nil
+	return self.txn == nil
 end
 
 function Tx:close_cursors()
@@ -846,11 +848,11 @@ end
 function Tx:commit()
 	assert(not self:closed(), 'transaction closed')
 	self:close_cursors()
-	check(C.mdbx_txn_commit_ex(self.txn[0], nil))
-	self.txn[0] = nil
+	check(C.mdbx_txn_commit_ex(self.txn, nil))
+	self.txn = nil
 	push(self.db._free_tx, self)
 	if self.parent_tx then --child takes place of parent.
-		self.parent_tx.txn[0] = nil
+		self.parent_tx.txn = nil
 		push(self.db._free_tx, self.parent_tx)
 		self.parent_tx = nil
 	end
@@ -859,12 +861,18 @@ end
 function Tx:abort()
 	assert(not self:closed(), 'transaction closed')
 	self:close_cursors()
-	C.mdbx_txn_abort(self.txn[0])
-	self.txn[0] = nil
+	--dbis to created tables must be removed from db.dbis map on abort.
+	if self.created_tables then
+		for _,table_name in ipairs(self.created_tables) do
+			self.db.dbis[table_name] = nil
+		end
+	end
+	C.mdbx_txn_abort(self.txn)
+	self.txn = nil
 	push(self.db._free_tx, self)
 	if self.child_txs then --child txs are aborted automatically.
 		for _,tx in ipairs(self.child_txs) do
-			tx.txn[0] = nil
+			tx.txn = nil
 			push(self.db._free_tx, tx)
 			tx.parent_tx = nil
 		end
@@ -873,29 +881,39 @@ function Tx:abort()
 end
 
 --pass table_name = false to open the "main" dbi.
-function Tx:open_table(table_name, flags)
+function Tx:try_open_table(table_name, flags)
+	assert(table_name or not flags, 'passing flags when opening the root table')
 	local dbi = self.db.dbis[table_name or false]
 	if dbi then return dbi end
 	local dbi = new'MDBX_dbi[1]'
-	check(C.mdbx_dbi_open(self.txn[0], table_name, flags or 0, dbi))
+	flags = repl(flags or 0, 'w', C.MDBX_CREATE)
+	local create = band(flags, C.MDBX_CREATE) ~= 0
+	local created = create and not self:table_exists(table_name)
+	local rc = C.mdbx_dbi_open(self.txn, table_name, flags, dbi)
+	if not create and rc == C.MDBX_NOTFOUND then
+		return nil, 'not_found'
+	end
+	check(rc)
 	local dbi = dbi[0]
 	self.db.dbis[table_name or false] = dbi
-	return dbi
+	if created then
+		add(attr(self, 'created_tables'), table_name)
+	end
+	return dbi, nil, created --second arg is schema, see mdbx_schema.lua
 end
 
---TODO:
-function Tx:close_table()
-	C.mdbx_dbi_close(self.env, dbi)
+function Tx:open_table(table_name, flags)
+	return assert(self:try_open_table(table_name, flags))
 end
 
 function Tx:rename_table(tab, new_table_name)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
-	check(C.mdbx_dbi_rename(self.txn[0], dbi, new_table_name))
+	check(C.mdbx_dbi_rename(self.txn, dbi, new_table_name))
 end
 
 function Tx:get_raw_kv(tab, key, val)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
-	local rc = C.mdbx_get(self.txn[0], dbi, key, val)
+	local rc = C.mdbx_get(self.txn, dbi, key, val)
 	if rc == 0 then return val end
 	if rc == C.MDBX_NOTFOUND then return nil end
 	check(rc)
@@ -915,7 +933,7 @@ end
 
 function Tx:put_raw_kv(tab, key, val, flags)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
-	check(C.mdbx_put(self.txn[0], dbi, key, val, flags or 0))
+	check(C.mdbx_put(self.txn, dbi, key, val, flags or 0))
 end
 
 do
@@ -939,7 +957,7 @@ function Tx:raw_cursor(tab)
 	else
 		cur = object(Cur, {tx = self, cursor = new'MDBX_cursor*[1]'})
 	end
-	check(C.mdbx_cursor_open(self.txn[0], dbi, cur.cursor))
+	check(C.mdbx_cursor_open(self.txn, dbi, cur.cursor))
 	attr(self, 'cursors')[cur] = true
 	return cur
 end
@@ -981,7 +999,7 @@ local stat = new'MDBX_stat'
 local stat_sz = sizeof(stat)
 function Tx:stat(tab)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
-	check(C.mdbx_dbi_stat(self.txn[0], dbi, stat, stat_sz))
+	check(C.mdbx_dbi_stat(self.txn, dbi, stat, stat_sz))
 	return stat
 end
 end
@@ -1016,7 +1034,7 @@ if not ... then
 	local db = mdbx_open('testdb')
 
 	local tx = db:tx'w'
-	tx:open_table('users', C.MDBX_CREATE)
+	tx:open_table('users', 'w')
 	tx:commit()
 
 	s = _('%03x %d foo bar', 32, 3141592)

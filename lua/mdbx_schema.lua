@@ -168,6 +168,7 @@ local function parse_table_schema(schema, table_name, db_max_key_size)
 
 	--index fields by name, typecheck, check for inconsistencies.
 	for i,f in ipairs(schema.fields) do
+		assertf(isstr(f.name) and #f.name > 0, 'invalid field name: %s', f.name)
 		assertf(not schema.fields[f.name],
 			'duplicate field name: %s', f.name)
 		schema.fields[f.name] = f
@@ -397,7 +398,7 @@ local function compile_table_schema(schema)
 			sc.descending = f.descending and 1 or 0
 			sc.elem_size_shift = log2(f.elem_size)
 			sc.fixed_offset = f.fixed_offset and 1 or 0
-			sc.offset = f.offset
+			sc.offset = f.offset or 0
 
 			--create field getters and setters.
 			local elemp_ct = f.elemp_ct
@@ -481,26 +482,14 @@ end
 local open_table_raw = Tx.open_table
 
 function Tx:save_table_schema(table_name, schema)
-
 	--NOTE: only saving enough information to read the data back in absence of
 	--a paper schema, and to validate a paper schema against the used layout.
-
-	--let's make sure we don't put garbage in db.
-	assert(schema.int_key == true or schema.int_key == nil)
-	local n = schema.dyn_offset_size
-	assert(n == 1 or n == 2 or n == 3 or n == 4)
-	assert(#schema.key_fields < 2^16)
-	assert(#schema.val_fields < 2^16)
-	for i,f in ipairs(schema.fields) do
-		--TODO: validate attrs
-	end
-
 	local t = {
 		type = 1, --layout type (the only one we have, implemented here)
 		dyn_offset_size = schema.dyn_offset_size,
 		int_key = schema.int_key,
-		key_fields = {},
-		val_fields = {},
+		key_fields = {max_rec_size = max_key_size},
+		val_fields = {max_rec_size = max_val_size},
 	}
 	for i,f in ipairs(schema.key_fields) do
 		t.key_fields[i] = {
@@ -513,7 +502,8 @@ function Tx:save_table_schema(table_name, schema)
 			elem_size = f.elem_size, --for validating custom types in the future.
 			descending = f.descending,
 			collation = f.collation,
-			offset = f.offset,
+			fixed_offset = f.fixed_offset, --what offset means.
+			offset = f.offset, --null for varsize keys
 		}
 	end
 	for i,f in ipairs(schema.val_fields) do
@@ -526,12 +516,12 @@ function Tx:save_table_schema(table_name, schema)
 			--computed attributes
 			elem_size = f.elem_size, --for validating custom types in the future.
 			fixed_offset = f.fixed_offset, --what offset means.
-			offset = f.offset,
+			offset = f.offset, --always present.
 		}
 	end
 	local v = pp(t, false)
 	local k = table_name
-	local dbi = self:open_table('$schema', C.MDBX_CREATE)
+	local dbi = open_table_raw(self, '$schema', 'w')
 	self:put_raw(dbi, k, #k, v, #v)
 	self:close_table()
 end
@@ -567,44 +557,63 @@ end
 
 function Tx:open_table(table_name, flags)
 	if not table_name then --opening the unnamed root table
-		assert(not flags, 'passing flags when opening the root table')
-		return open_table_raw(self, table_name)
+		return open_table_raw(self)
 	end
-	local schema = self.db.schema.tables[table_name]
-	local db_max_key_size = self.db:db_max_key_size()
-	if schema and not schema.parsed then
-		parse_table_schema(schema, table_name, db_max_key_size)
-		compile_table_schema(schema)
-		schema.parsed = true
+	local paper_schema = self.db.schema.tables[table_name]
+	if paper_schema and not paper_schema.compiled then
+		local db_max_key_size = self.db:db_max_key_size()
+		parse_table_schema(paper_schema, table_name, db_max_key_size)
+		compile_table_schema(paper_schema)
+		paper_schema.compiled = true
 	end
 	local dbi = self.db.dbis[table_name]
 	if dbi then
-		assertf(not schema or schema.opened,
+		assertf(not paper_schema or paper_schema.opened,
 			'table with schema already opened in raw mode: %s', table_name)
-		return dbi, schema
-	else
-		local real_schema = self:load_table_schema(table_name)
-		if not schema then
-			if not real_schema then
-				return open_table_raw(self, table_name, flags), schema
-			else --old table for which paper schema was lost
-				compile_table_schema(real_schema)
-				self.db.tables[table_name] = real_schema
-			end
-		else
-			assertf(not flags,
-				'flags passed when opening table with schema: %s', table_name)
-			if real_schema and self:entries() > 0 then
-				--table already has records in it, schemas must match or we bail.
-
-			end
-			local dbi = open_table_raw(self, table_name, bor(
-				C.MDBX_CREATE,
-				schema.int_key and C.MDBX_INTEGERKEY or 0
-			))
-			schema.opened = true
-			return dbi, schema
+		return dbi, paper_schema
+	end
+	local stored_schema = self:load_table_schema(table_name)
+	if not paper_schema then
+		if not stored_schema then --no paper schema, no stored schema
+			return open_table_raw(self, table_name, flags)
+		else --old table for which paper schema was lost, use stored schema
+			compile_table_schema(stored_schema)
+			stored_schema.compiled = true
+			self.db.schema.tables[table_name] = stored_schema
+			paper_schema = stored_schema
 		end
+	else
+		if stored_schema and self:entries() > 0 then
+			--table already has records in it, schemas must match or we bail.
+			local errs = {}
+			for _,F in ipairs{'key_fields', 'val_fields'} do
+				local pf = cat(imap( paper_schema[F], 'name'), ',')
+				local sf = cat(imap(stored_schema[F], 'name'), ',')
+				if #sf ~= #pf then
+					add(errs, _(' %s expected: %s, got: %s, for table: %s',
+						F, pf, sf, table_name))
+				end
+				for i,pf in ipairs(paper_schema[k]) do
+					local sf = stored_schema[i]
+					for _,k in ipairs{
+						'name', 'index', 'type', 'maxlen', 'len',
+						'elem_size', 'descending', 'collation',
+						'fixed_offset', 'offset',
+					} do
+						if sf[k] ~= pf[k] then
+							add(_(' %s.%s expected: %s, got: %s, for table: %s',
+								F, k, pf[k], sf[k], table_name))
+						end
+					end
+				end
+			end
+		end
+		if flags == 'w' then flags = C.MDBX_CREATE end
+		local dbi = open_table_raw(self, table_name, bor(flags,
+			paper_schema.int_key and C.MDBX_INTEGERKEY or 0
+		))
+		paper_schema.opened = true
+		return dbi, paper_schema
 	end
 end
 
@@ -680,7 +689,7 @@ end
 end
 
 function Tx:put(table_name, ...)
-	local dbi, schema = self:open_table(table_name)
+	local dbi, schema = self:open_table(table_name, 'w')
 	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local val_rec, val_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	local key_sz = self.db:encode_key_record(schema, key_rec, key_buf_sz, ...)
@@ -689,7 +698,7 @@ function Tx:put(table_name, ...)
 end
 
 function Tx:put_records(table_name, records)
-	local dbi, schema = self:open_table(table_name)
+	local dbi, schema = self:open_table(table_name, 'w')
 	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local val_rec, val_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	for _,vals in ipairs(records) do
