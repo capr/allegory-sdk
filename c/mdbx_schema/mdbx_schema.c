@@ -170,35 +170,35 @@ static void encode_u64(u64* d, u64* s, int len) {
 	while (len--)
 		*d++ = __builtin_bswap64(*s++);
 }
-static void decode_i8(i8* d, i8 * s, int len) {
+static void decode_i8(u8* d, u8* s, int len) {
 	while (len--)
 		*d++ = *s++ ^ 0x80;
 }
-static void encode_i8(i8* d, i8 * s, int len) {
+static void encode_i8(u8* d, u8* s, int len) {
 	while (len--)
 		*d++ = *s++ ^ 0x80;
 }
-static void decode_i16(u16* d, i16* s, int len) {
+static void decode_i16(u16* d, u16* s, int len) {
 	while (len--)
 		*d++ = __builtin_bswap16(*s++) ^ 0x8000;
 }
-static void encode_i16(i16* d, i16* s, int len) {
+static void encode_i16(u16* d, u16* s, int len) {
 	while (len--)
 		*d++ = __builtin_bswap16(*s++ ^ 0x8000);
 }
-static void decode_i32(i32* d, i32* s, int len) {
+static void decode_i32(u32* d, u32* s, int len) {
 	while (len--)
 		*d++ = __builtin_bswap32(*s++) ^ 0x80000000;
 }
-static void encode_i32(i32* d, i32* s, int len) {
+static void encode_i32(u32* d, u32* s, int len) {
 	while (len--)
 		*d++ = __builtin_bswap32(*s++ ^ 0x80000000);
 }
-static void decode_i64(i64* d, i64* s, int len) {
+static void decode_i64(u64* d, u64* s, int len) {
 	while (len--)
 		*d++ = __builtin_bswap64(*s++) ^ 0x8000000000000000ULL;
 }
-static void encode_i64(i64* d, i64* s, int len) {
+static void encode_i64(u64* d, u64* s, int len) {
 	while (len--)
 		*d++ = __builtin_bswap64(*s++ ^ 0x8000000000000000ULL);
 }
