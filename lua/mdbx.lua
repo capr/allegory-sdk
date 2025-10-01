@@ -760,7 +760,6 @@ local Db = {}; mdbx_db = Db
 
 function Db:close()
 	C.mdbx_env_close_ex(self.env, 0)
-	self.schema = nil
 	self.dbis = nil
 	self.env = nil
 end

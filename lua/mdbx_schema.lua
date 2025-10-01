@@ -491,39 +491,28 @@ function Tx:save_table_schema(table_name, schema)
 		key_fields = {max_rec_size = max_key_size},
 		val_fields = {max_rec_size = max_val_size},
 	}
-	for i,f in ipairs(schema.key_fields) do
-		t.key_fields[i] = {
-			name = f.name,
-			index = f.index, --in original schema fields array
-			type = f.type,
-			maxlen = f.maxlen, --varsize
-			len = f.len, --fixsize
-			--computed attributes
-			elem_size = f.elem_size, --for validating custom types in the future.
-			descending = f.descending,
-			collation = f.collation,
-			fixed_offset = f.fixed_offset, --what offset means.
-			offset = f.offset, --null for varsize keys
-		}
-	end
-	for i,f in ipairs(schema.val_fields) do
-		t.val_fields[i] = {
-			name = f.name,
-			index = f.index, --in original schema fields array
-			type = f.type,
-			maxlen = f.maxlen, --varsize
-			len = f.len, --fixsize
-			--computed attributes
-			elem_size = f.elem_size, --for validating custom types in the future.
-			fixed_offset = f.fixed_offset, --what offset means.
-			offset = f.offset, --always present.
-		}
+	for i=1,2 do
+		local F = i == 1 and 'key_fields' or 'val_fields'
+		for i,f in ipairs(schema[F]) do
+			t[F][i] = {
+				name = f.name,
+				index = f.index, --in original schema fields array
+				type = f.type,
+				maxlen = f.maxlen, --varsize
+				len = f.len, --fixsize
+				--computed attributes
+				elem_size = f.elem_size, --for validating custom types in the future.
+				descending = f.descending,
+				collation = f.collation,
+				fixed_offset = f.fixed_offset, --what offset means.
+				offset = f.offset, --null for varsize keys
+			}
+		end
 	end
 	local v = pp(t, false)
 	local k = table_name
 	local dbi = open_table_raw(self, '$schema', 'w')
 	self:put_raw(dbi, k, #k, v, #v)
-	self:close_table()
 end
 
 function Tx:load_table_schema(table_name)
@@ -559,7 +548,7 @@ function Tx:open_table(table_name, flags)
 	if not table_name then --opening the unnamed root table
 		return open_table_raw(self)
 	end
-	local paper_schema = self.db.schema.tables[table_name]
+	local paper_schema = attr(attr(self.db, 'schema'), 'tables')[table_name]
 	if paper_schema and not paper_schema.compiled then
 		local db_max_key_size = self.db:db_max_key_size()
 		parse_table_schema(paper_schema, table_name, db_max_key_size)
@@ -583,32 +572,35 @@ function Tx:open_table(table_name, flags)
 			paper_schema = stored_schema
 		end
 	else
-		if stored_schema and self:entries() > 0 then
-			--table already has records in it, schemas must match or we bail.
-			local errs = {}
-			for _,F in ipairs{'key_fields', 'val_fields'} do
-				local pf = cat(imap( paper_schema[F], 'name'), ',')
-				local sf = cat(imap(stored_schema[F], 'name'), ',')
-				if #sf ~= #pf then
-					add(errs, _(' %s expected: %s, got: %s, for table: %s',
-						F, pf, sf, table_name))
-				end
-				for i,pf in ipairs(paper_schema[k]) do
-					local sf = stored_schema[i]
+		if stored_schema then --table has stored schema, schemas must match.
+			local errs
+			for i=1,2 do
+				local F = i == 1 and 'key_fields' or 'val_fields'
+				for i,pf in ipairs(paper_schema[F]) do
+					local sf = stored_schema[F][i]
 					for _,k in ipairs{
 						'name', 'index', 'type', 'maxlen', 'len',
 						'elem_size', 'descending', 'collation',
 						'fixed_offset', 'offset',
 					} do
-						if sf[k] ~= pf[k] then
-							add(_(' %s.%s expected: %s, got: %s, for table: %s',
-								F, k, pf[k], sf[k], table_name))
+						local pv = pf[k]
+						local sv = sf and sf[k]
+						if pv ~= sv then
+							errs = errs or {}
+							add(errs, fmt(' %s.%s expected: %s, got: %s, for table: %s',
+								F, k, pv, sv, table_name))
 						end
 					end
 				end
 			end
+			if errs then
+				error(cat(errs, '\n'))
+			end
 		end
-		if flags == 'w' then flags = C.MDBX_CREATE end
+		flags = repl(flags or 0, 'w', C.MDBX_CREATE)
+		if not stored_schema and band(flags, C.MDBX_CREATE) ~= 1 then
+			self:save_table_schema(table_name, paper_schema)
+		end
 		local dbi = open_table_raw(self, table_name, bor(flags,
 			paper_schema.int_key and C.MDBX_INTEGERKEY or 0
 		))
@@ -794,7 +786,6 @@ end
 function Tx:cursor(table_name)
 	local dbi, schema = self:open_table(table_name)
 	local cur = self:raw_cursor(dbi)
-	cur._t = {}
 	cur.schema = schema
 	return cur
 end
@@ -810,8 +801,16 @@ end
 
 function Cur:next()
 	local n = #self.schema.fields
-	for i=n,1,-1 do self._t[i] = nil end
-	local t = self:next_record(nil, self._t)
+	local t = self._t
+	if not t then
+		t = {}
+		self._t = t
+	else
+		for i=n,1,-1 do
+			t[i] = nil
+		end
+	end
+	local t = self:next_record(nil, t)
 	if not t then return end
 	return unpack(t, 1, n)
 end
@@ -1054,6 +1053,16 @@ if not ... then
 	tx:abort()
 	pr()
 
+	db:close()
+
+	--reopen db to check that stored schema matches paper schema.
+	local db = mdbx_open('mdbx_schema_test')
+	db.schema = schema
+	local tx = db:tx()
+	for tab in tx:each_table() do
+		tx:open_table(tab)
+	end
+	tx:abort()
 	db:close()
 
 --	major, C.mdbx_version.minor, C.mdbx_version.patch, C.mdbx_version.tweak)
