@@ -84,7 +84,7 @@ which is more acceptable.
 
 API
 	schema(opt) -> sc`              create a new schema object
-	schema.diff(sc1, sc2) -> diff`  find out what changed between `sc1` and `sc2`
+	schema_diff(sc1, sc2) -> diff`  find out what changed between `sc1` and `sc2`
 	diff:pp()`                      pretty print a schema diff
 
 ]=]
@@ -100,7 +100,7 @@ require'glue'
 
 local function isschema(t) return istab(t) and t.is_schema end
 
-schema = {is_schema = true, package = {}, isschema = isschema}
+local schema = {is_schema = true, package = {}, isschema = isschema}
 
 --NOTE: the double-underscore is for disambiguation, not for aesthetics.
 schema.fk_name_format = 'fk_%s__%s'
@@ -669,6 +669,10 @@ function schema.diff(sc0, sc1) --sync sc0 to sc1.
 	self.tables = diff_maps(self, sc1.tables, sc0.tables, diff_tables, nil, sc0, true)
 	self.procs  = diff_maps(self, sc1.procs , sc0.procs , diff_procs , nil, sc0, sc0.supports_procs)
 	return setmetatable(self, self)
+end
+
+function schema_diff(sc0, sc1)
+	return sc0:diff(sc1)
 end
 
 --diff pretty-printing -------------------------------------------------------
