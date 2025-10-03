@@ -880,25 +880,27 @@ function Tx:abort()
 end
 
 --pass table_name = false to open the "main" dbi.
+do
+local dbip = new'MDBX_dbi[1]'
 function Tx:try_open_table(table_name, flags)
-	assert(table_name or not flags, 'passing flags when opening the root table')
 	local dbi = self.db.dbis[table_name or false]
 	if dbi then return dbi end
-	local dbi = new'MDBX_dbi[1]'
-	flags = repl(flags or 0, 'w', C.MDBX_CREATE)
+	flags = flags or self:is_readonly() and 0 or 'w'
+	flags = repl(flags, 'w', C.MDBX_CREATE)
 	local create = band(flags, C.MDBX_CREATE) ~= 0
 	local created = create and not self:table_exists(table_name)
-	local rc = C.mdbx_dbi_open(self.txn, table_name, flags, dbi)
+	local rc = C.mdbx_dbi_open(self.txn, table_name, flags, dbip)
 	if not create and rc == C.MDBX_NOTFOUND then
 		return nil, 'not_found'
 	end
 	check(rc)
-	local dbi = dbi[0]
+	local dbi = dbip[0]
 	self.db.dbis[table_name or false] = dbi
 	if created then
 		add(attr(self, 'created_tables'), table_name)
 	end
 	return dbi, nil, created --second arg is schema, see mdbx_schema.lua
+end
 end
 
 function Tx:open_table(table_name, flags)
@@ -1022,6 +1024,7 @@ function Tx:table_count()
 	return num(self:stat(dbi).entries)
 end
 function Tx:table_exists(table_name)
+	if not table_name then return true end --main table always exists.
 	local dbi = self:open_table()
 	return self:get_raw(dbi, table_name, #table_name) ~= nil
 end
