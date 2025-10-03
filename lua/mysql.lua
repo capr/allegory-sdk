@@ -1137,7 +1137,7 @@ function mysql_connect(opt)
 	local scramble_part2 = get_bytes(buf, 21 - 8 - 1)
 	scramble = scramble .. scramble_part2
 	local CLIENT_PLUGIN_AUTH = 0x80000
-	local client_flags = 0x3f7cf + CLIENT_PLUGIN_AUTH
+	local client_flags = bor(0x3f7cf, host:starts'unix:' and 0x80000 or 0)
 	local ssl_verify = opt.ssl_verify
 	local use_ssl = opt.ssl or ssl_verify
 	local buf = send_buffer(64)
