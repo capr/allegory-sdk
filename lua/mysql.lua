@@ -1094,7 +1094,7 @@ function mysql_connect(opt)
 	log('', 'mysql', 'connect', '%s:%s user=%s db=%s',
 		host, port, opt.user or '', opt.db or '')
 
-	local f = tcp()
+	local f = tcp(nil, host:starts'unix:' and 'unix' or nil)
 	f.tracebacks = opt.tracebacks
 	local self = setmetatable({f = f, host = host, port = port}, conn_mt)
 
@@ -1136,7 +1136,8 @@ function mysql_connect(opt)
 	get_bytes(buf, 1 + 10)
 	local scramble_part2 = get_bytes(buf, 21 - 8 - 1)
 	scramble = scramble .. scramble_part2
-	local client_flags = 0x3f7cf
+	local CLIENT_PLUGIN_AUTH = 0x80000
+	local client_flags = 0x3f7cf + CLIENT_PLUGIN_AUTH
 	local ssl_verify = opt.ssl_verify
 	local use_ssl = opt.ssl or ssl_verify
 	local buf = send_buffer(64)
