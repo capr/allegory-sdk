@@ -34,21 +34,21 @@ SOCKETS
 	s:[try_]close()                                 send FIN and/or RST and free socket
 	s:closed() -> t|f                               check if the socket is closed
 	s:onclose(fn)                                   exec fn after the socket is closed
-	s:[try_]bind([host], [port], [aflags])          bind socket to an address
+	s:[try_]bind([host], [port], [af])              bind socket to an address
 	s:[try_]bind(sa)                                bind socket to an address
 	s:[try_]bind('unix:FILE')                       bind socket to a unix domain socket
 	s:[try_]setopt(opt, val)                        set socket option (`'so_*'` or `'tcp_*'`)
 	s:[try_]getopt(opt) -> val                      get socket option
-	tcp|udp:[try_]connect(host, port, [aflags], ...)    connect to an address
+	tcp|udp:[try_]connect(host, port, [af], ...)    connect to an address
 	tcp:[try_]send(s|buf, [len]) -> true            send bytes to connected address
 	udp:[try_]send(s|buf, [len]) -> len             send bytes to connected address
 	tcp|udp:[try_]recv(buf, maxlen) -> len          receive bytes
-	tcp:[try_]listen([backlog, ]host, port, [onaccept], [aflags])   put socket in listening mode
+	tcp:[try_]listen([backlog, ]host, port, [onaccept], [af])   put socket in listening mode
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
 	tcp:[try_]recvn(buf, n) -> buf, n               receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
 	tcp:[try_]recvall_read() -> read                make a buffered read function
-	udp:[try_]sendto(host, port, s|buf, [len], [aflags]) -> len    send a datagram to an address
+	udp:[try_]sendto(host, port, s|buf, [len], [af]) -> len    send a datagram to an address
 	udp:[try_]recvnext(buf, maxlen, [flags]) -> len, sa        receive the next datagram
 	tcp:[try_]shutdown(['r'|'w'|'rw'])         send FIN
 	s:debug([protocol])                        enable debugging
@@ -124,7 +124,7 @@ getaddrinfo(...) -> ai
 	The args can be either:
 
 	* an existing `ai` object which is passed through, or
-	* `host, port, [socket_type], [family], [protocol], [aflags]`, or
+	* `host, port, [socket_type], [family], [protocol], [af]`, or
 	* `'unix:PATH', [socket_type]
 
 	where:
@@ -137,7 +137,7 @@ getaddrinfo(...) -> ai
 	* `protocol` can be `'ip'`, `'ipv6'`, `'tcp'`, `'udp'`, `'raw'`, `'icmp'`,
 	`'igmp'` or `'icmpv6'` or `0` (the default is either `'tcp'`, `'udp'`
 	or `'raw'`, based on socket type).
-	* `aflags` are a `bor()` list of `passive`, `cannonname`,
+	* `af` are a `bor()` list of `passive`, `cannonname`,
 	`numerichost`, `numericserv`, `all`, `v4mapped`, `addrconfig`
 	which map to `getaddrinfo()` flags.
 
@@ -1302,11 +1302,11 @@ do
 		return true
 	end
 
-	function tcp:try_connect(host, port, addr_flags, ...)
+	function tcp:try_connect(host, port, addr_flags)
 		log('', 'sock', 'connect?', '%-4s %s:%s', self, host, port)
 		if not self.bound_addr then
 			--ConnectEx requires binding first.
-			local ok, err = self:try_bind(...)
+			local ok, err = self:try_bind()
 			if not ok then return false, err end
 		end
 		local ai, ext_ai = self:addr(host, port, addr_flags)
@@ -1625,12 +1625,13 @@ local _connect = make_async(true, false, function(self, ai)
 	return C.connect(self.s, ai.addr, ai.addrlen)
 end, EINPROGRESS)
 
-function tcp:try_connect(host, port, addr_flags, ...)
+function tcp:try_connect(host, port, addr_flags)
 	log('', 'sock', 'connect?', '%-4s %s:%s', self, host, port)
 	local ai, ext_ai = self:addr(host, port, addr_flags)
 	if not ai then return false, ext_ai end
 	if not self.bound_addr then
-		local ok, err = self:try_bind(...)
+		local bind_host = ai:family() == 'unix' and 'unix:' or '*'
+		local ok, err = self:try_bind(bind_host)
 		if not ok then
 			if not ext_ai then ai:free() end
 			return false, err
