@@ -164,67 +164,39 @@ end
 --schema processing ----------------------------------------------------------
 
 --create an optimal physical column layout based on a table schema.
-local function parse_table_schema(schema, table_name, db_max_key_size)
+local function compile_table_schema(schema, table_name, db_max_key_size)
+
+	schema.name = table_name
 
 	--index fields by name, typecheck, check for inconsistencies.
 	for i,f in ipairs(schema.fields) do
-		assertf(isstr(f.name) and #f.name > 0, 'invalid field name: %s', f.name)
-		assertf(not schema.fields[f.name],
-			'duplicate field name: %s', f.name)
-		schema.fields[f.name] = f
+		assertf(isstr(f.col) and #f.col > 0,
+			'invalid field name: %s.%s', table_name, f.col)
+		assertf(not f.index, 'duplicate field: %s.%s', table_name, f.col)
+		schema.fields[f.col] = f
 		f.index = i
-		local elem_ct = col_ct[f.type] or f.type
-		local elem_ct = assertf(elem_ct,
-			'unknown type %s for field: %s', f.type, f.name)
+		local elem_ct = col_ct[f.mdbx_type] or f.mdbx_type
+		local ok, elem_ct = pcall(ctype, elem_ct)
+		assertf(ok, 'unknown type %s for field: %s.%s', f.mdbx_type, table_name, f.col)
 		f.elem_size = sizeof(elem_ct)
-		f.elemp_ct = ctype(elem_ct..'*')
 		assertf(f.elem_size < 2^8) --must fit 8 bit (see sort below)
 		assertf(not (f.maxlen and f.len),
-			'both maxlen and len specified for field: %s', f.name)
+			'both maxlen and len specified for field: %s.%s', table_name, f.col)
 	end
 
 	--split fields into key_fields and val_fields.
 	local key_fields = {}
 	local val_fields = {}
 
-	--parse pk and set f.descending, .type, .collation.
-	for s in words(schema.pk) do
-		local col, s1 = s:match'^(.-):(.*)'
-		local order = 'asc'
-		local collation
-		if not col then
-			col = s
-		else
-			local s2, s3 = s1:match'^(.-):(.*)'
-			if s2 then
-				if s2 == 'asc' or s2 == 'desc' then
-					order, collation = s2, s3
-				else
-					collation, order = s2, s3
-				end
-			else
-				if s1 == 'asc' or s1 == 'desc' then
-					order = s1
-				else
-					collation = s1
-				end
-			end
-			assertf(order == 'desc' or order == 'asc', 'invalid order: %s', order)
-		end
-
-		local f = assertf(schema.fields[col], 'pk field not found: %s', col)
-		f.descending = order == 'desc' or nil
-		if f.type == 'utf8' then
-			collation = collation or 'utf8'
-			assertf(collation == 'utf8_ai_ci' or collation == 'utf8',
-				'invalid collation %s for field: %s', collation, f.name)
-			f.collation = collation
-			assert(f.maxlen, 'utf8 field not varsize: %s', col)
-		else
-			assertf(not collation, 'collation on %s field: %s', f.type, col)
-		end
+	--parse pk and set f.descending.
+	for i,col in ipairs(schema.pk) do
+		local f = assertf(schema.fields[col],
+			'pk col unknown: %s for table: %s', col, table_name)
 		add(key_fields, f)
 		f.key_index = #key_fields
+		if schema.pk.desc then
+			f.descending = schema.pk.desc[i]
+		end
 	end
 	assert(#key_fields > 0, 'table missing pk: %s', table_name)
 
@@ -232,7 +204,7 @@ local function parse_table_schema(schema, table_name, db_max_key_size)
 	for i,f in ipairs(schema.fields) do
 		if not f.key_index then --not a key field
 			add(val_fields, f)
-			f.key_index = #val_fields
+			f.val_index = #val_fields
 		end
 	end
 
@@ -256,8 +228,8 @@ local function parse_table_schema(schema, table_name, db_max_key_size)
 	--store u32 and u64 simple keys in little-endian and use fast comparator.
 	if #key_fields == 1 then
 		local f = key_fields[1]
-		if not f.descending and (f.type == 'u32' or f.type == 'u64') then
-			schema.int_key = f.type
+		if not f.descending and (f.mdbx_type == 'u32' or f.mdbx_type == 'u64') then
+			schema.int_key = f.mdbx_type
 		end
 	end
 
@@ -331,8 +303,8 @@ local function parse_table_schema(schema, table_name, db_max_key_size)
 				cur_offset = cur_offset + f.elem_size * (f.len or 1)
 			end
 			if is_val and not f.fixed_offset then
-				local dot_index = fixsize_n+2 - kv_index --field's index in d.o.t.
-				assert(dot_index >= 0 and dot_index < dot_len)
+				local dot_index = kv_index - fixsize_n - 2 --field's index in d.o.t.
+				assertf(dot_index >= 0 and dot_index < dot_len)
 				f.offset = nulls_size + dot_index * dyn_offset_size
 			end
 		end
@@ -342,7 +314,7 @@ local function parse_table_schema(schema, table_name, db_max_key_size)
 end
 
 --create encoders and decoders for a layouted schema.
-local function compile_table_schema(schema)
+local function prepare_table_schema(schema)
 
 	local key_fields = schema.key_fields
 	local val_fields = schema.val_fields
@@ -351,8 +323,8 @@ local function compile_table_schema(schema)
 	--stored in little endian.
 	if schema.int_key then
 		local f = key_fields[1]
-		local elemp_ct = f.elemp_ct
 		local elem_size = f.elem_size
+		local elemp_ct = elem_size == 4 and u32p or u64p
 		function schema.encode_key_record(rec, rec_buf_sz, val)
 			assert(rec_buf_sz >= elem_size)
 			cast(elemp_ct, rec)[0] = val
@@ -392,7 +364,7 @@ local function compile_table_schema(schema)
 
 			--setup C schema.
 			local sc = fields._sc[kv_index-1]
-			sc.type = is_key and int_schema_col_type or schema_col_types[f.type]
+			sc.type = is_key and int_schema_col_type or schema_col_types[f.mdbx_type]
 			sc.len = f.maxlen or f.len or 1
 			sc.fixed_size = f.maxlen and 0 or 1
 			sc.descending = f.descending and 1 or 0
@@ -401,13 +373,14 @@ local function compile_table_schema(schema)
 			sc.offset = f.offset or 0
 
 			--create field getters and setters.
-			local elemp_ct = f.elemp_ct
+			local elem_ct = col_ct[f.mdbx_type] or f.mdbx_type
+			local elemp_ct = ctype(elem_ct..'*')
 			local elem_size = f.elem_size
 			if f.len or f.maxlen then --array
 				local maxlen = f.len or f.maxlen
-				function f.val_len(val) return #val end
-				if f.type == 'utf8' then --utf8 strings
-					local ai_ci = f.collation == 'utf8_ai_ci'
+				function f.get_val_len(val) return #val end
+				if f.mdbx_type == 'utf8' then --utf8 strings
+					local ai_ci = f.mdbx_collation == 'utf8_ai_ci'
 					if ai_ci then
 						local desc = f.descending
 						function f.encode(buf, val)
@@ -464,7 +437,7 @@ local function compile_table_schema(schema)
 					end
 				end
 			else --scalar
-				function f.val_len() return 1 end
+				function f.get_val_len() return 1 end
 				function f.encode(buf, val)
 					cast(elemp_ct, buf)[0] = val
 				end
@@ -479,7 +452,7 @@ local function compile_table_schema(schema)
 
 end
 
-local open_table_raw = Tx.open_table
+local try_open_table = Tx.try_open_table
 
 function Tx:save_table_schema(table_name, schema)
 	--NOTE: only saving enough information to read the data back in absence of
@@ -488,22 +461,22 @@ function Tx:save_table_schema(table_name, schema)
 		type = 1, --layout type (the only one we have, implemented here)
 		dyn_offset_size = schema.dyn_offset_size,
 		int_key = schema.int_key,
-		key_fields = {max_rec_size = max_key_size},
-		val_fields = {max_rec_size = max_val_size},
+		key_fields = {max_rec_size = schema.key_fields.max_rec_size},
+		val_fields = {max_rec_size = schema.val_fields.max_rec_size},
 	}
 	for i=1,2 do
 		local F = i == 1 and 'key_fields' or 'val_fields'
 		for i,f in ipairs(schema[F]) do
 			t[F][i] = {
-				name = f.name,
+				col = f.col,
 				index = f.index, --in original schema fields array
-				type = f.type,
+				mdbx_type = f.mdbx_type,
 				maxlen = f.maxlen, --varsize
 				len = f.len, --fixsize
 				--computed attributes
 				elem_size = f.elem_size, --for validating custom types in the future.
 				descending = f.descending,
-				collation = f.collation,
+				mdbx_collation = f.mdbx_collation,
 				fixed_offset = f.fixed_offset, --what offset means.
 				offset = f.offset, --null for varsize keys
 			}
@@ -511,14 +484,14 @@ function Tx:save_table_schema(table_name, schema)
 	end
 	local v = pp(t, false)
 	local k = table_name
-	local dbi = open_table_raw(self, '$schema', 'w')
+	local dbi = assert(try_open_table(self, '$schema', 'w'))
 	self:put_raw(dbi, k, #k, v, #v)
 end
 
 function Tx:load_table_schema(table_name)
 	if not self:table_exists'$schema' then return end
 	local k = table_name
-	local dbi, schema = open_table_raw(self, '$schema')
+	local dbi, schema = assert(try_open_table(self, '$schema'))
 	local v, v_len = self:get_raw(dbi, k, #k)
 	if not v then return end
 	local schema = eval(str(v, v_len))
@@ -532,11 +505,7 @@ function Tx:load_table_schema(table_name)
 	for i,f in ipairs(schema.val_fields) do
 		schema.fields[f.index] = f
 	end
-	schema.pk = cat(imap(schema.key_fields, function(f)
-		return f.name .. (f.descending and ':desc' or '') ..
-			(f.collation ~= ':utf8' and f.collation or '')
-	end), ' ')
-	return schema --not compiled
+	return schema --compiled but not prepared
 end
 
 local function table_schema(self, table_name)
@@ -544,17 +513,13 @@ local function table_schema(self, table_name)
 		'no schema for table: %s', table_name)
 end
 
-function Tx:open_table(table_name, flags)
+function Tx:try_open_table(table_name, flags)
 	if not table_name then --opening the unnamed root table
-		return open_table_raw(self)
+		return try_open_table(self)
 	end
-	local paper_schema = attr(attr(self.db, 'schema'), 'tables')[table_name]
-	if paper_schema and not paper_schema.compiled then
-		local db_max_key_size = self.db:db_max_key_size()
-		parse_table_schema(paper_schema, table_name, db_max_key_size)
-		compile_table_schema(paper_schema)
-		paper_schema.compiled = true
-	end
+	local db_schema = self.db.schema
+	local tables = db_schema and db_schema.tables
+	local paper_schema = tables and tables[table_name]
 	local dbi = self.db.dbis[table_name]
 	if dbi then
 		assertf(not paper_schema or paper_schema.opened,
@@ -562,51 +527,62 @@ function Tx:open_table(table_name, flags)
 		return dbi, paper_schema
 	end
 	local stored_schema = self:load_table_schema(table_name)
-	if not paper_schema then
-		if not stored_schema then --no paper schema, no stored schema
-			return open_table_raw(self, table_name, flags)
-		else --old table for which paper schema was lost, use stored schema
-			compile_table_schema(stored_schema)
-			stored_schema.compiled = true
-			self.db.schema.tables[table_name] = stored_schema
-			paper_schema = stored_schema
+	if stored_schema and not paper_schema then
+		--old table for which paper schema was lost, use stored schema.
+		paper_schema = stored_schema
+		paper_schema.compiled = true
+	end
+	if paper_schema then
+		if not paper_schema.compiled then
+			local db_max_key_size = self.db:db_max_key_size()
+			compile_table_schema(paper_schema, table_name, db_max_key_size)
+			paper_schema.compiled = true
 		end
-	else
-		if stored_schema then --table has stored schema, schemas must match.
-			local errs
-			for i=1,2 do
-				local F = i == 1 and 'key_fields' or 'val_fields'
-				for i,pf in ipairs(paper_schema[F]) do
-					local sf = stored_schema[F][i]
-					for _,k in ipairs{
-						'name', 'index', 'type', 'maxlen', 'len',
-						'elem_size', 'descending', 'collation',
-						'fixed_offset', 'offset',
-					} do
-						local pv = pf[k]
-						local sv = sf and sf[k]
-						if pv ~= sv then
-							errs = errs or {}
-							add(errs, fmt(' %s.%s expected: %s, got: %s, for table: %s',
-								F, k, pv, sv, table_name))
-						end
+		if not paper_schema.prepared then
+			prepare_table_schema(paper_schema)
+			paper_schema.prepared = true
+		end
+		attr(attr(self.db, 'schema'), 'tables')[table_name] = paper_schema
+	end
+	if stored_schema and paper_schema ~= stored_schema then
+		--table has stored schema, schemas must match.
+		local errs
+		for i=1,2 do
+			local F = i == 1 and 'key_fields' or 'val_fields'
+			for i,pf in ipairs(paper_schema[F]) do
+				local sf = stored_schema[F][i]
+				for _,k in ipairs{
+					'col', 'index', 'mdbx_type', 'maxlen', 'len',
+					'elem_size', 'descending', 'mdbx_collation',
+					'fixed_offset', 'offset',
+				} do
+					local pv = pf[k]
+					local sv = sf and sf[k]
+					if pv ~= sv then
+						errs = errs or {}
+						add(errs, fmt(' %s.%s expected: %s, got: %s, for table: %s',
+							F, k, pv, sv, table_name))
 					end
 				end
 			end
-			if errs then
-				error(cat(errs, '\n'))
-			end
 		end
-		flags = repl(flags or 0, 'w', C.MDBX_CREATE)
-		if not stored_schema and band(flags, C.MDBX_CREATE) ~= 1 then
-			self:save_table_schema(table_name, paper_schema)
+		if errs then
+			error(cat(errs, '\n'))
 		end
-		local dbi = open_table_raw(self, table_name, bor(flags,
-			paper_schema.int_key and C.MDBX_INTEGERKEY or 0
-		))
-		paper_schema.opened = true
-		return dbi, paper_schema
 	end
+	flags = flags or self:is_readonly() and 0 or 'w'
+	flags = repl(flags, 'w', C.MDBX_CREATE)
+	if not stored_schema and paper_schema and band(flags, C.MDBX_CREATE) ~= 1 then
+		self:save_table_schema(table_name, paper_schema)
+	end
+	local dbi, err, created = try_open_table(self, table_name, bor(flags,
+		paper_schema and paper_schema.int_key and C.MDBX_INTEGERKEY or 0
+	))
+	if not dbi then return nil, err end
+	if paper_schema then
+		paper_schema.opened = true
+	end
+	return dbi, paper_schema, created
 end
 
 local function key_field(schema, col)
@@ -616,8 +592,8 @@ local function key_field(schema, col)
 end
 
 local function val_field(schema, col)
-	local f = assertf(schema.fields[col], 'unknown field: %s', col)
-	assertf(f.val_index, 'not a value field: %s', col)
+	local f = assertf(schema.fields[col], 'unknown field: %s.%s', schema.name, col)
+	assertf(f.val_index, 'not a value field: %s.%s', schema.name, col)
 	return f
 end
 
@@ -649,7 +625,7 @@ function Db:encode_key_record(schema, rec, rec_buf_sz, ...)
 		for ki,f in ipairs(schema.key_fields) do
 			local val = select(f.index, ...)
 			assert(val ~= nil)
-			local len = f.val_len(val)
+			local len = f.get_val_len(val)
 			local len = min(len, f.maxlen or f.len or 1) --truncate
 			f.encode(pp[0], val, len)
 			C.schema_key_add(schema._st, ki-1, rec, rec_buf_sz, len, pp)
@@ -670,7 +646,7 @@ function Db:encode_val_record(schema, rec, rec_buf_sz, ...)
 		if val == nil then
 			len = -1
 		else
-			len = f.val_len(val)
+			len = f.get_val_len(val)
 			len = min(len, f.maxlen or f.len or 1) --truncate
 			f.encode(pp[0], val, len)
 		end
@@ -707,11 +683,16 @@ function Db:decode_is_null(schema, col, rec, rec_sz)
 	return C.schema_val_is_null(schema._st, f.val_index-1, rec, rec_sz) ~= 0
 end
 
-function Tx:get_raw_by_pk(table_name, ...)
-	local dbi, schema = self:open_table(table_name)
+local function get_raw_by_pk(self, dbi, schema, ...)
+	if not dbi then return nil end
 	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local key_sz = self.db:encode_key_record(schema, key_rec, key_buf_sz, ...)
 	return self:get_raw(dbi, key_rec, key_sz)
+end
+
+function Tx:get_raw_by_pk(table_name, ...)
+	local dbi, schema = self:try_open_table(table_name)
+	return get_raw_by_pk(self, dbi, schema, ...)
 end
 
 do
@@ -736,6 +717,13 @@ function Db:decode_key_record(schema, rec, rec_sz, t)
 	end
 	return t
 end
+end
+
+function Tx:is_null(table_name, col, ...)
+	local dbi, schema = self:try_open_table(table_name)
+	local rec, rec_sz = get_raw_by_pk(self, dbi, schema, ...)
+	if not rec then return nil end
+	return self.db:decode_is_null(schema, col, rec, rec_sz)
 end
 
 do
@@ -769,17 +757,18 @@ function Db:decode_key_col(schema, col, rec, rec_sz)
 end
 end
 
-function Tx:get_record(table_name, ...)
-	local dbi, schema = self:open_table(table_name)
-	local rec, rec_sz = self:get_raw_by_pk(table_name, ...)
-	return self.db:decode_val_record(schema, rec, rec_sz, {...})
+function get_record(self, table_name, ...)
+	local dbi, schema = self:try_open_table(table_name)
+	local rec, rec_sz = get_raw_by_pk(self, dbi, schema, ...)
+	if not rec then return nil end
+	return self.db:decode_val_record(schema, rec, rec_sz, {...}), schema
 end
-
+function Tx:get_record(table_name, ...)
+	return (get_record(self, table_name, ...))
+end
 function Tx:get(table_name, ...)
-	local dbi, schema = self:open_table(table_name)
-	local rec, rec_sz = self:get_raw_by_pk(table_name, ...)
-	local t = self.db:decode_val_record(schema, rec, rec_sz, {...})
-	if not t then return end
+	local t, schema = get_record(self, table_name, ...)
+	if not t then return nil end
 	return unpack(t, 1, #schema.fields)
 end
 
@@ -846,7 +835,6 @@ if not ... then
 	local varsize_key1_tables = {}
 	local varsize_key2_tables = {}
 	for order in words'asc desc' do
-
 		--single numeric keys + vals at fixed offsets.
 		for typ in words(types) do
 			local name = typ..':'..order
@@ -855,11 +843,11 @@ if not ... then
 				test_type = typ,
 				test_order = order,
 				fields = {
-					{name = 'k' , type = typ},
-					{name = 'v1', type = typ},
-					{name = 'v2', type = typ},
+					{col = 'k' , mdbx_type = typ},
+					{col = 'v1', mdbx_type = typ},
+					{col = 'v2', mdbx_type = typ},
 				},
-				pk = 'k:'..order,
+				pk = {'k', desc = {order == 'desc'}},
 			}
 			add(num_tables, tbl)
 			schema.tables[tbl.name] = tbl
@@ -869,10 +857,10 @@ if not ... then
 		local tbl = {
 			name = 'varsize_key1'..':'..order,
 			fields = {
-				{name = 's', type = 'utf8', maxlen = 100},
-				{name = 'v', type = 'utf8', maxlen = 100},
+				{col = 's', mdbx_type = 'utf8', maxlen = 100},
+				{col = 'v', mdbx_type = 'utf8', maxlen = 100},
 			},
-			pk = 's:'..order,
+			pk = {'s', desc = {order == 'desc'}},
 		}
 		add(varsize_key1_tables, tbl)
 		schema.tables[tbl.name] = tbl
@@ -882,12 +870,12 @@ if not ... then
 			local tbl = {
 				name = 'varsize_key2'..':'..order..':'..order2,
 				fields = {
-					{name = 's1', type = 'utf8', maxlen = 100},
-					{name = 's2', type = 'utf8', maxlen = 100},
-					{name = 's3', type = 'utf8', maxlen = 100},
-					{name = 's4', type = 'utf8', maxlen = 100},
+					{col = 's1', mdbx_type = 'utf8', maxlen = 100},
+					{col = 's2', mdbx_type = 'utf8', maxlen = 100},
+					{col = 's3', mdbx_type = 'utf8', maxlen = 100},
+					{col = 's4', mdbx_type = 'utf8', maxlen = 100},
 				},
-				pk = 's1:'..order..' s2:'..order2,
+				pk = {'s1', 's2', desc = {order == 'desc', order2 == 'desc'}},
 			}
 			add(varsize_key2_tables, tbl)
 			schema.tables[tbl.name] = tbl
@@ -950,7 +938,6 @@ if not ... then
 			end
 		end)
 		local tx = db:tx()
-		pr('***', tbl.pk, '***')
 		local t1 = {}
 		for t in tx:each_record(tbl.name) do
 			add(t1, t)
@@ -998,10 +985,10 @@ if not ... then
 		local tx = db:tx()
 		pr('***', tbl.pk, '***')
 		local t1 = {}
-		for t in tx:each_record(tbl.name) do
-			--assert(db:decode_is_null(tbl.name, 's3', v.data, v.size) == (s3 == nil))
-			--assert(db:decode_is_null(tbl.name, 's4', v.data, v.size) == (s4 == nil))
-			add(t1, t)
+		for s1, s2, s3, s4 in tx:each(tbl.name) do
+			assert(tx:is_null(tbl.name, 's3', s1, s2) == (s3 == nil))
+			assert(tx:is_null(tbl.name, 's4', s1, s2) == (s4 == nil))
+			add(t1, {s1, s2, s3, s4})
 		end
 		local s1, s2, s3, s4 = tx:get(tbl.name, 'xx', 'y')
 		assert(s1 == 'xx')
