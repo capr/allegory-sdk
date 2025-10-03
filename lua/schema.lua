@@ -919,3 +919,5 @@ function schema:resolve_types(fields, opt) --{field1, ...}
 	end
 	return fields
 end
+
+return schema
