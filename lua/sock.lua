@@ -2646,7 +2646,9 @@ local create_tcp = _G.tcp
 
 function try_connect(self, host, port, timeout)
 	if not issocket(self) then
-		return try_connect(create_tcp(), self, host, port)
+		local ai, err = try_getaddrinfo(host, port)
+		if not ai then return nil, err end
+		return try_connect(create_tcp(ai:family()), self, ai)
 	end
 	self:settimeout(timeout)
 	local ok, err = self:try_connect(host, port)
