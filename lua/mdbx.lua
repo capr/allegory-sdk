@@ -768,7 +768,7 @@ end
 --opt.file_mode
 do
 local envp = new'MDBX_env*[1]'
-function mdbx_open(dir, opt)
+function mdbx_open(file, opt)
 	opt = opt or {}
 	check(C.mdbx_env_create(envp))
 	local env = envp[0]
@@ -776,14 +776,14 @@ function mdbx_open(dir, opt)
 	check(C.mdbx_env_set_geometry(env, size, size, size, -1, -1, -1))
 	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_readers, opt.max_readers or 1024))
 	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_db, opt.max_dbs or 1024))
-	check(C.mdbx_env_open(env, dir,
-		opt.readonly and C.MDBX_RDONLY or 0,
+	check(C.mdbx_env_open(env, file,
+		bor(C.MDBX_NOSUBDIR, opt.readonly and C.MDBX_RDONLY or 0),
 		(unixperms_parse(opt.file_mode or '0660'))
 	))
 
 	local dbis = {}
 	local db = object(Db, {
-		dir = dir,
+		file = file,
 		env = env,
 		dbis = dbis,
 		readonly = opt.readonly,
