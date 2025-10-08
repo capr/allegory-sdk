@@ -55,6 +55,7 @@ ARRAYS
 	add(t, v)                      insert(t, v)
 	push(t, v)                     insert(t, v)
 	pop(t, v)                      remove(t, v)
+	clear                        = table.clear
 	sort(t, [cmp]) -> t          = table.sort
 	extend(dt, t1, ...) -> dt      extend an array with contents of other arrays
 	append(dt, v1, ...) -> dt      append non-nil values to an array
@@ -265,6 +266,7 @@ if not ... then require'glue_test'; return end
 
 ffi = require'ffi'
 bit = require'bit'
+require'table.clear'
 require'time'
 require'pp'
 
@@ -427,6 +429,8 @@ push = add
 function pop(t, v)
 	return remove(t, v)
 end
+
+clear = table.clear
 
 --scan list for value. works with ffi arrays too given i and j.
 --Works on ffi arrays too if i and j are provided.
