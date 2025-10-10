@@ -787,7 +787,8 @@ function mdbx_open(file, opt)
 		env = env,
 		dbis = dbis,
 		readonly = opt.readonly,
-		_free_tx = {},
+		_free_ro_tx = {},
+		_free_rw_tx = {},
 		_free_cur = {},
 	})
 
@@ -807,37 +808,53 @@ local Tx = {}; mdbx_tx = Tx
 
 local function tx_free(self)
 	self:close_cursors()
-	self.txn = nil
-	self.parent_tx = nil
-	push(self.db._free_tx, self)
-	if self.child_txs then --child txs are aborted automatically.
-		for _,tx in ipairs(self.child_txs) do
-			tx_free(tx)
+	if self.readonly then --we reuse r/o txns
+		push(self.db._free_ro_tx, self)
+	else --we can only reuse r/w txs
+		if self.db.current_txw == self then
+			self.db.current_txw = nil
 		end
-		clear(self.child_txs)
+		self.txn = nil
+		self.parent_tx = nil
+		push(self.db._free_rw_tx, self)
+		if self.child_txs then --child txs are aborted automatically.
+			for _,tx in ipairs(self.child_txs) do
+				tx_free(tx)
+			end
+			clear(self.child_txs)
+		end
 	end
 end
 
 do
 local txnp = new'MDBX_txn*[1]'
-function Db:tx(flags, parent_tx)
-	flags = flags or (parent_tx and not parent_tx:is_readonly() and 'w') or 'r'
-	if flags == 'r' then flags = C.MDBX_RDONLY end
-	if flags == 'w' then flags = 0 end
-	local tx = pop(self._free_tx) or object(Tx, {db = self})
-	check(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn, flags, txnp, nil))
-	if parent_tx then
-		self.parent_tx = parent_tx
-		add(attr(parent_tx, 'child_txs'), self)
+function Db:tx()
+	local fl = self._free_ro_tx
+	local tx = fl[#fl]
+	if tx then
+		check(C.mdbx_txn_renew(tx.txn))
+		pop(fl)
+	else
+		local flags = C.MDBX_RDONLY
+		check(C.mdbx_txn_begin_ex(self.env, nil, flags, txnp, nil))
+		tx = object(Tx, {db = self, flags = flags, txn = txnp[0], readonly = true})
 	end
-	tx.txn = txnp[0]
-	tx.flags = flags
 	return tx
 end
+function Db:txw(parent_tx, flags)
+	assert(parent_tx or not self.current_txw, 'write transaction already opened')
+	flags = flags or 0
+	check(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn, flags, txnp, nil))
+	local tx = pop(self._free_rw_tx) or object(Tx, {db = self, readonly = false})
+	tx.txn = txnp[0]
+	if parent_tx then
+		tx.parent_tx = parent_tx
+		add(attr(parent_tx, 'child_txs'), tx)
+	else
+		self.current_txw = tx
+	end
+	return tx
 end
-
-function Tx:is_readonly()
-	return band(self.flags, C.MDBX_RDONLY) ~= 0
 end
 
 function Tx:tx()
@@ -850,29 +867,35 @@ end
 
 function Tx:close_cursors()
 	if not self.cursors then return end
-	check(C.mdbx_txn_release_all_cursors_ex(self.txn, 1, nil))
 	for _,cur in ipairs(self.cursors) do
-		push(self.db._free_cur, cur)
-		cur.tx = nil
+		cur:close()
 	end
 end
 
 function Tx:commit()
 	assert(not self:closed(), 'transaction closed')
-	check(C.mdbx_txn_commit_ex(self.txn, nil))
+	if self.readonly then
+		check(C.mdbx_txn_reset(self.txn))
+	else
+		check(C.mdbx_txn_commit_ex(self.txn, nil))
+	end
 	tx_free(self)
 end
 
 function Tx:abort()
 	assert(not self:closed(), 'transaction closed')
-	C.mdbx_txn_abort(self.txn)
-	tx_free(self)
-	--dbis to created tables must be removed from db.dbis map on abort.
-	if self.created_tables then
-		for _,table_name in ipairs(self.created_tables) do
-			self.db.dbis[table_name] = nil
+	if self.readonly then
+		check(C.mdbx_txn_reset(self.txn))
+	else
+		check(C.mdbx_txn_abort(self.txn))
+		--dbis to created tables must be removed from db.dbis map on abort.
+		if self.created_tables then
+			for _,table_name in ipairs(self.created_tables) do
+				self.db.dbis[table_name] = nil
+			end
 		end
 	end
+	tx_free(self)
 end
 
 --pass table_name = false to open the "main" dbi.
@@ -881,7 +904,7 @@ local dbip = new'MDBX_dbi[1]'
 function Tx:try_open_table(table_name, flags)
 	local dbi = self.db.dbis[table_name or false]
 	if dbi then return dbi end
-	flags = flags or self:is_readonly() and 0 or 'w'
+	flags = flags or self.readonly and 0 or 'w'
 	flags = repl(flags, 'w', C.MDBX_CREATE)
 	local create = band(flags, C.MDBX_CREATE) ~= 0
 	local created = create and not self:table_exists(table_name)
@@ -952,12 +975,12 @@ function Tx:raw_cursor(tab)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
 	local cur = pop(self.db._free_cur)
 	if cur then
+		check(C.mdbx_cursor_bind(self.txn, cur.mdbx_cursor, dbi))
 		cur.tx = self
-		C.mdbx_cursor_renew(self.txn, self.cursor)
 	else
 		cur = object(Cur, {tx = self})
 		check(C.mdbx_cursor_open(self.txn, dbi, curp))
-		cur.cursor = curp[0]
+		cur.mdbx_cursor = curp[0]
 	end
 	add(attr(self, 'cursors'), cur)
 	return cur
@@ -970,7 +993,7 @@ end
 
 function Cur:close()
 	if self:closed() then return end
-	C.mdbx_cursor_unbind(self.cursor)
+	check(C.mdbx_cursor_unbind(self.mdbx_cursor))
 	push(self.tx.db._free_cur, self)
 	self.tx = nil
 end
@@ -980,7 +1003,7 @@ local key = new'MDBX_val'
 local val = new'MDBX_val'
 function Cur:next_raw_kv()
 	if self:closed() then return end
-	local rc = C.mdbx_cursor_get(self.cursor, key, val, C.MDBX_NEXT)
+	local rc = C.mdbx_cursor_get(self.mdbx_cursor, key, val, C.MDBX_NEXT)
 	if rc == 0 then return key, val end
 	if rc == C.MDBX_NOTFOUND then
 		self:close()
@@ -1035,13 +1058,13 @@ if not ... then
 
 	local db = mdbx_open('testdb')
 
-	local tx = db:tx'w'
+	local tx = db:txw()
 	tx:open_table('users', 'w')
 	tx:commit()
 
 	s = _('%03x %d foo bar', 32, 3141592)
 
-	local tx = db:tx'w'
+	local tx = db:txw()
 	tx:put_raw('users', new('int[1]', 123456789), 4, cast(u8p, s), #s)
 	tx:commit()
 

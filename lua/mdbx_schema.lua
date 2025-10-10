@@ -568,7 +568,7 @@ function Tx:try_open_table(table_name, flags)
 			error(cat(errs, '\n'))
 		end
 	end
-	flags = flags or self:is_readonly() and 0 or 'w'
+	flags = flags or self.readonly and 0 or 'w'
 	flags = repl(flags, 'w', C.MDBX_CREATE)
 	if not stored_schema and paper_schema and band(flags, C.MDBX_CREATE) ~= 1 then
 		self:save_table_schema(table_name, paper_schema)
@@ -898,7 +898,7 @@ if not ... then
 	--test int and float decoders and encoders
 	for _,tbl in ipairs(num_tables) do
 		local typ = tbl.test_type
-		local tx = db:tx'w'
+		local tx = db:txw()
 		local bits = num(typ:sub(2))
 		local ntyp = typ:sub(1,1)
 		local nums =
@@ -917,7 +917,7 @@ if not ... then
 		if tbl.fields.k.descending then
 			reverse(nums)
 		end
-		tx = db:tx'r'
+		tx = db:tx()
 		local i = 1
 		for k, v1, v2 in tx:each(tbl.name) do
 			pr(tbl.name, k, v1, v2)
@@ -937,7 +937,7 @@ if not ... then
 			{'aa', 'bb'},
 			{'b' , nil },
 		}
-		local tx = db:tx'w'
+		local tx = db:txw()
 		tx:put_records(tbl.name, t)
 		tx:commit()
 
@@ -980,7 +980,7 @@ if not ... then
 			{'a'  , ''   , 'a'  , ''   , },
 			{'xx' , 'y'  , 'z'  , 'zz' , },
 		}
-		local tx = db:tx'w'
+		local tx = db:txw()
 		tx:put_records(tbl.name, t)
 		tx:commit()
 
