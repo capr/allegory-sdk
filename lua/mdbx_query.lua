@@ -15,13 +15,14 @@ function dbname(ns)
 		or pconfig(ns, 'db_name', scriptname..(ns and '_'..ns or ''))
 end
 
-local db
 do
 local _db
 function db()
-	assert(config('db_engine', 'mdbx') == 'mdbx')
-	_db = mdbx_open(indir(vardir(), config('db_name', scriptname)..'.mdbx'))
-	_db.schema = schema
+	if not _db then
+		assert(config('db_engine', 'mdbx') == 'mdbx')
+		_db = mdbx_open(indir(config('db_dir', vardir()), config('db_name', scriptname)..'.mdbx'))
+		_db.schema = schema
+	end
 	return _db
 end
 end
@@ -53,4 +54,3 @@ function atomic(mode, f, ...)
 	return finish(tx, xpcall(f, traceback, tx, ...))
 end
 end
-

@@ -611,6 +611,21 @@ end
 local key_rec_buffer = buffer()
 local val_rec_buffer = buffer()
 
+function Db:extract_schema()
+	local schema = schema()
+	self:atomic(function(tx)
+		for table_name in tx:each_table() do
+			schema.tables[table_name] = tx:load_table_schema(table_name)
+		end
+	end)
+	return schema
+end
+
+function Db:schema_diff()
+	local ss = self:extract_schema()
+	return self.schema:diff(ss)
+end
+
 --writing --------------------------------------------------------------------
 
 do
@@ -677,11 +692,6 @@ function Tx:put_records(table_name, records)
 end
 
 --reading --------------------------------------------------------------------
-
-function Db:decode_is_null(schema, col, rec, rec_sz)
-	local f, vi = val_field(schema, col)
-	return C.schema_val_is_null(schema._st, vi-1, rec, rec_sz) ~= 0
-end
 
 local function get_raw_by_pk(self, dbi, schema, ...)
 	if not dbi then return nil end
@@ -754,9 +764,10 @@ end
 
 function Tx:is_null(table_name, col, ...)
 	local dbi, schema = self:try_open_table(table_name)
+	local f, vi = val_field(schema, col)
 	local rec, rec_sz = get_raw_by_pk(self, dbi, schema, ...)
 	if not rec then return nil end
-	return self.db:decode_is_null(schema, col, rec, rec_sz)
+	return C.schema_val_is_null(schema._st, vi-1, rec, rec_sz) ~= 0
 end
 
 local decode_val do

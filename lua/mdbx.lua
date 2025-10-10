@@ -751,15 +751,19 @@ require'sock'
 mdbx_version = C.mdbx_version
 mdbx_build = C.mdbx_build
 
+local function try_check(rc)
+	if rc == 0 then return true end
+	return false, str(C.mdbx_strerror(rc))
+end
 local function check(rc)
-	if rc == 0 then return end
-	error(str(C.mdbx_strerror(rc)), 2)
+	local ok, err = try_check(rc)
+	if not ok then error(err, 3) end
 end
 
 local Db = {}; mdbx_db = Db
 
 function Db:close()
-	C.mdbx_env_close_ex(self.env, 0)
+	check(C.mdbx_env_close_ex(self.env, 0))
 	self.dbis = nil
 	self.env = nil
 end
@@ -768,18 +772,32 @@ end
 --opt.file_mode
 do
 local envp = new'MDBX_env*[1]'
-function mdbx_open(file, opt)
+function try_mdbx_open(file, opt)
+
+	local ok, err = try_mkdirs(file)
+	if not ok then return nil, err end
+
 	opt = opt or {}
+
 	check(C.mdbx_env_create(envp))
 	local env = envp[0]
 	local size = 1024e4
 	check(C.mdbx_env_set_geometry(env, size, size, size, -1, -1, -1))
 	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_readers, opt.max_readers or 1024))
 	check(C.mdbx_env_set_option(env, C.MDBX_opt_max_db, opt.max_dbs or 1024))
-	check(C.mdbx_env_open(env, file,
+
+	log(opt.readonly and '' or 'note', 'mdbx',
+		'opening', '%s (%s)', file, opt.readonly and 'r/o' or 'r/w')
+	local ok, err = try_check(C.mdbx_env_open(env, file,
 		bor(C.MDBX_NOSUBDIR, opt.readonly and C.MDBX_RDONLY or 0),
 		(unixperms_parse(opt.file_mode or '0660'))
 	))
+	if not ok then
+		check(C.mdbx_env_close_ex(env, 0))
+		return nil, err
+	end
+	log(opt.readonly and '' or 'note', 'mdbx',
+		'open', '%s (%s)', file, opt.readonly and 'r/o' or 'r/w')
 
 	local dbis = {}
 	local db = object(Db, {
@@ -794,6 +812,9 @@ function mdbx_open(file, opt)
 
 	return db
 end
+end
+function mdbx_open(...)
+	return assert(try_mdbx_open(...))
 end
 
 function Db:dbi(table_name)
@@ -896,6 +917,22 @@ function Tx:abort()
 		end
 	end
 	tx_free(self)
+end
+
+do
+local function finish(tx, ok, ...)
+	if ok then
+		tx:commit()
+		return ...
+	else
+		tx:abort()
+		error(..., 2)
+	end
+end
+function Db:atomic(f, ...)
+	local tx = self:tx()
+	finish(tx, xpcall(f, traceback, tx, ...))
+end
 end
 
 --pass table_name = false to open the "main" dbi.
