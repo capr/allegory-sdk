@@ -140,7 +140,6 @@ anonymous then that user is also deleted afterwards.
 ]==]
 
 require'glue'
-require'query'
 require'schema'
 require'blake3'
 require'bcrypt'
@@ -260,10 +259,6 @@ function usr_delete(usr_to_delete)
 	delete_row('usr', {['usr:old'] = usr_to_delete})
 	clear_userinfo_cache(usr_to_delete)
 end
-
-qmacro.usr     = function() return sqlval(usr()) end
-qmacro.realusr = function() return sqlval(realusr()) end
-qmacro.tenant  = function() return sqlval(tenant()) end
 
 --config ---------------------------------------------------------------------
 
@@ -482,10 +477,9 @@ end
 local function create_user()
 	allow(config('allow_create_user', true))
 	wait(0.1) --make flooding up the table a bit slower
-
-	local tenant = check500(first_row([[
-		select tenant from tenant where host = ?
-	]], host()), 'no tenant for host %s', host())
+	atomic(function()
+		local tenant = check500(get('tenant-by-host', 'tenant', host())
+			, 'no tenant for host %s', host())
 
 	local usr = query([[
 		insert into usr set

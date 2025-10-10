@@ -57,7 +57,6 @@ TODO:
 require'glue'
 require'sock'   --[own]threadenv()
 require'fs'     --load(), save()
-require'query'  --$lang() etc. macros
 require'schema' --lang_schema()
 
 --lang, country, currency API ------------------------------------------------
@@ -600,12 +599,6 @@ local function mkapi(name, names, rows, cols, default_val)
 	_G[name] = get
 	_G['set'..name] = set
 	_G['default_'..name] = default
-	qmacro[name] = function()
-		return sqlval(get())
-	end
-	qmacro[default_name] = function()
-		return sqlval(default())
-	end
 end
 mkapi('lang'     , 'langs'      , lang_rows     , lang_cols     , 'en' )
 mkapi('currency' , 'currencies' , currency_rows , currency_cols , 'USD')
