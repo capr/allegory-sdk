@@ -626,23 +626,16 @@ end
 
 --filesystem API -------------------------------------------------------------
 
-function wwwdirs()
-	local t = {}
-	local paths = config('www_dirs', 'www;sdk/www')
-	if paths then
-		for s in paths:gmatch'[^;]+' do
-			if not path_isabs(s) then
-				s = path_normalize(indir(scriptdir(), s))
-			end
-			add(t, s)
-		end
+local _wwwdirs = {}
+function wwwdir(path) --relative to scripdir()
+	if not path_isabs(path) then
+		path = path_normalize(indir(scriptdir(), path))
 	end
-	if #t == 0 then
-		add(t, indir(scriptdir(), 'www'))
-	end
-	return t
+	add(_wwwdirs, path)
 end
-wwwdirs = memoize(wwwdirs)
+function wwwdirs()
+	return _wwwdirs
+end
 
 function tmppath(patt, t)
 	assert(not patt:find'[\\/]') --no subdirs

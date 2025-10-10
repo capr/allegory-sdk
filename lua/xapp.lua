@@ -31,7 +31,12 @@ CONFIG
 
 --NOTE: www_dirs must be set before any jsfile(), cssfile(), htmlfile() calls!
 require'glue'
-config('www_dirs', 'www;sdk/www;sdk/canvas-ui/www')
+require'webb'
+
+local sdkdir = path_normalize(indir(exedir(), '../..'), nil, {dot_dot_dirs = false})
+wwwdir'www'
+wwwdir(indir(sdkdir, 'www'))
+wwwdir(indir(sdkdir, 'canvas-ui/www'))
 
 require'daemon'
 require'webb_spa'
@@ -52,8 +57,6 @@ ui_grid.js
 adapter.js
 webrtc.js
 ]]
-
-require'xauth'
 
 local function xapp(...)
 
@@ -104,14 +107,7 @@ local function xapp(...)
 	app.schema:import'schema_std'
 	app.schema:import'webb_auth'
 
-	sqlpps.mysql    .define_symbol('current_timestamp', app.schema.env.current_timestamp)
-	sqlpps.tarantool.define_symbol('current_timestamp', app.schema.env.current_timestamp)
-
 	config('db_schema', app.schema)
-
-	if config('multilang', true) then
-		require'xlang'
-	end
 
 	cmd('install [forealz]', 'Install or migrate the app', function(opt, doit)
 		create_db()
