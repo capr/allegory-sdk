@@ -19,8 +19,6 @@
 		- varsize keys are 0-terminated so they are not 8-bit clean!
 
 TODO:
-	- tx:get()
-	- cols list on: db:decode_record(), tx:get_record(), tx:each_record()
 	- no-gc rec update: copy-rec, resize, set, put
 	- update and upsert rec with single lookup
 	- delete rec
@@ -325,14 +323,14 @@ local function prepare_table_schema(schema)
 		local f = key_fields[1]
 		local elem_size = f.elem_size
 		local elemp_ct = elem_size == 4 and u32p or u64p
-		function schema.encode_key_record(rec, rec_buf_sz, val)
+		function schema.encode_int_key(rec, rec_buf_sz, val)
 			assert(rec_buf_sz >= elem_size)
 			cast(elemp_ct, rec)[0] = val
 			return elem_size
 		end
-		function schema.decode_key_record(rec, rec_sz, t)
+		function schema.decode_int_key(rec, rec_sz)
 			assert(rec_sz == elem_size)
-			t[1] = cast(elemp_ct, rec)[0]
+			return cast(elemp_ct, rec)[0]
 		end
 	end
 
@@ -593,8 +591,9 @@ end
 
 local function val_field(schema, col)
 	local f = assertf(schema.fields[col], 'unknown field: %s.%s', schema.name, col)
-	assertf(f.val_index, 'not a value field: %s.%s', schema.name, col)
-	return f
+	local vi = f.val_index
+	assertf(vi, 'not a value field: %s.%s', schema.name, col)
+	return f, vi
 end
 
 Db.table_schema = table_schema
@@ -618,8 +617,9 @@ do
 local pp = new'u8*[1]'
 function Db:encode_key_record(schema, rec, rec_buf_sz, ...)
 	if #schema.key_fields == 0 then return 0 end
-	if schema.encode_key_record then
-		return schema.encode_key_record(rec, rec_buf_sz, ...)
+	local encode_int_key = schema.encode_int_key
+	if encode_int_key then
+		return encode_int_key(rec, rec_buf_sz, ...)
 	else
 		pp[0] = rec
 		for ki,f in ipairs(schema.key_fields) do
@@ -679,8 +679,8 @@ end
 --reading --------------------------------------------------------------------
 
 function Db:decode_is_null(schema, col, rec, rec_sz)
-	local f = val_field(schema, col)
-	return C.schema_val_is_null(schema._st, f.val_index-1, rec, rec_sz) ~= 0
+	local f, vi = val_field(schema, col)
+	return C.schema_val_is_null(schema._st, vi-1, rec, rec_sz) ~= 0
 end
 
 local function get_raw_by_pk(self, dbi, schema, ...)
@@ -695,27 +695,60 @@ function Tx:get_raw_by_pk(table_name, ...)
 	return get_raw_by_pk(self, dbi, schema, ...)
 end
 
-do
+local cols_list = memoize(function(cols)
+	return collect(words(cols))
+end)
+
+local m_cols_list = memoize(function(cols)
+	return collect(words(cols))
+end)
+local function cols_list(cols)
+	if not cols then
+		return nil, nil
+	end
+	local as
+	if cols:starts'[' then
+		assert(cols:ends']')
+		cols = cols:sub(2, -2)
+		as = '[]'
+	elseif cols:starts'{' then
+		assert(cols:ends'}')
+		cols = cols:sub(2, -2)
+		as = '{}'
+	end
+	return #cols > 0 and m_cols_list(cols) or nil, as
+end
+
+local decode_key do
 local pout = new'u8*[1]'
 local pp = new'u8*[1]'
-function Db:decode_key_record(schema, rec, rec_sz, t)
-	t = t or {}
-	if schema.decode_key_record then
-		schema.decode_key_record(rec, rec_sz, t)
+function decode_key(schema, rec, rec_sz, t, as)
+	local key_fields = schema.key_fields
+	local decode_int_key = schema.decode_int_key
+	if decode_int_key then
+		local v = decode_int_key(rec, rec_sz)
+		local k = as == '{}' and key_fields[1].col or 1
+		t[k] = v
+		return 1
 	else
-		local out, out_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+		local out, out_sz = key_rec_buffer(key_fields.max_rec_size)
 		pp[0] = rec
-		for ki,f in ipairs(schema.key_fields) do
+		local kn = #key_fields
+		for ki = 1, kn do
+			local f = key_fields[ki]
 			local len = C.schema_get_key(schema._st, ki-1,
 				rec, rec_sz,
 				out, out_sz,
 				pout, pp)
+			local k = as == '{}' and f.col or ki
 			if len ~= -1 then
-				t[f.index] = f.decode(pout[0], len)
+				t[k] = f.decode(pout[0], len)
+			else
+				t[k] = nil
 			end
 		end
+		return kn
 	end
-	return t
 end
 end
 
@@ -726,91 +759,71 @@ function Tx:is_null(table_name, col, ...)
 	return self.db:decode_is_null(schema, col, rec, rec_sz)
 end
 
-do
+local decode_val do
 local pout = new'u8*[1]'
-function Db:decode_val_record(schema, rec, rec_sz, t)
-	t = t or {}
-	for vi,f in ipairs(schema.val_fields) do
+function decode_val(schema, rec, rec_sz, t, cols, as, i0)
+	local n = cols and #cols or #schema.val_fields
+	for i=1,n do
+		local f, col, vi
+		if cols then
+			col = cols[i]
+			f, vi = val_field(schema, col)
+		else
+			f = schema.val_fields[i]
+			vi = i
+			col = f.col
+		end
 		local len = C.schema_get_val(schema._st, vi-1, rec, rec_sz, pout)
+		local k = as == '{}' and col or i0 + i - 1
 		if len ~= -1 then
-			t[f.index] = f.decode(pout[0], len)
+			t[k] = f.decode(pout[0], len)
+		else
+			t[k] = nil
 		end
 	end
-	return t
+	return n
 end
 end
 
-do
-local pout = new'u8*[1]'
-function Db:decode_key_col(schema, col, rec, rec_sz)
-	local f = key_field(schema, col)
-	local out, out_sz = key_rec_buffer(cols.max_rec_size)
-	local len = C.schema_get_key(schema._st, col.key_index-1,
-		rec, rec_sz,
-		out, out_sz,
-		pout)
-	if len ~= -1 then
-		return col.decode(pout[0], len)
-	else
-		return nil
-	end
-end
-end
-
-function get_record(self, table_name, ...)
+function Tx:get(table_name, cols, ...)
 	local dbi, schema = self:try_open_table(table_name)
 	local rec, rec_sz = get_raw_by_pk(self, dbi, schema, ...)
 	if not rec then return nil end
-	return self.db:decode_val_record(schema, rec, rec_sz, {...}), schema
-end
-function Tx:get_record(table_name, ...)
-	return (get_record(self, table_name, ...))
-end
-function Tx:get(table_name, ...)
-	local t, schema = get_record(self, table_name, ...)
-	if not t then return nil end
-	return unpack(t, 1, #schema.fields)
+	local cols, as = cols_list(cols)
+	local t = {}
+	local n = decode_val(schema, rec, rec_sz, t, cols, as, 1)
+	if as then
+		return t, n
+	else
+		return unpack(t, 1, n)
+	end
 end
 
 function Tx:cursor(table_name)
 	local dbi, schema = self:open_table(table_name)
 	local cur = self:raw_cursor(dbi)
 	cur.schema = schema
+	cur._cols = nil
 	return cur
 end
 
-function Cur:next_record(_, t)
-	t = t or {}
+function Cur:next(_, cols)
 	local k,v = self:next_raw_kv()
 	if not k then return end
-	self.tx.db:decode_key_record(self.schema, k.data, k.size, t)
-	self.tx.db:decode_val_record(self.schema, v.data, v.size, t)
-	return t
-end
-
-function Cur:next()
-	local n = #self.schema.fields
-	local t = self._t
-	if not t then
-		t = {}
-		self._t = t
+	local t, cols, as = self._t or {}, self._cols, self._as
+	local kn = decode_key(self.schema, k.data, k.size, t, as)
+	local vn = decode_val(self.schema, v.data, v.size, t, cols, as, kn + 1)
+	local n = kn + vn
+	if as then
+		return t, n
 	else
-		for i=n,1,-1 do
-			t[i] = nil
-		end
+		return unpack(t, 1, n) --keys can't be nil so this can't stop too soon.
 	end
-	local t = self:next_record(nil, t)
-	if not t then return end
-	return unpack(t, 1, n)
 end
-
-function Tx:each_record(tbl_name)
-	return Cur.next_record, self:cursor(tbl_name)
-end
-
-function Tx:each(tbl_name)
+function Tx:each(tbl_name, cols)
 	local cur = self:cursor(tbl_name)
-	cur._t = {}
+	cur._cols, cur._as = cols_list(cols)
+	cur._t = not cur._as and {} or nil --can reuse t in unpack mode
 	return Cur.next, cur
 end
 
@@ -825,10 +838,10 @@ if not ... then
 		str(mdbx_version.git.commit, 6))
 	pr()
 
-	rm'mdbx_schema_test/mdbx.dat'
-	rm'mdbx_schema_test/mdbx.lck'
+	rm'mdbx_schema_test.mdb'
+	rm'mdbx_schema_test.mdb-lck'
 	local schema = {tables = {}}
-	local db = mdbx_open('mdbx_schema_test')
+	local db = mdbx_open('mdbx_schema_test.mdb')
 	db.schema = schema
 	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
 	local num_tables = {}
@@ -841,7 +854,6 @@ if not ... then
 			local tbl = {
 				name = name,
 				test_type = typ,
-				test_order = order,
 				fields = {
 					{col = 'k' , mdbx_type = typ},
 					{col = 'v1', mdbx_type = typ},
@@ -908,7 +920,6 @@ if not ... then
 		tx = db:tx'r'
 		local i = 1
 		for k, v1, v2 in tx:each(tbl.name) do
-			-- --assert(kv == db:decode_key_col(tbl.name, 'k', k.data, k.size))
 			pr(tbl.name, k, v1, v2)
 			assertf(k  == nums[i], '%q ~= %q', k , nums[i])
 			assertf(v1 == nums[i], '%q ~= %q', v1, nums[i])
@@ -939,12 +950,11 @@ if not ... then
 		end)
 		local tx = db:tx()
 		local t1 = {}
-		for t in tx:each_record(tbl.name) do
+		for t in tx:each(tbl.name, '[]') do
 			add(t1, t)
 		end
 		tx:commit()
 		for i=1,#t do
-			pr(t1[i][1], t1[i][2])
 			assert(t1[i][1] == t[i][1])
 			assert(t1[i][2] == t[i][2])
 		end
@@ -990,9 +1000,7 @@ if not ... then
 			assert(tx:is_null(tbl.name, 's4', s1, s2) == (s4 == nil))
 			add(t1, {s1, s2, s3, s4})
 		end
-		local s1, s2, s3, s4 = tx:get(tbl.name, 'xx', 'y')
-		assert(s1 == 'xx')
-		assert(s2 == 'y')
+		local s3, s4 = tx:get(tbl.name, 's3 s4', 'xx', 'y')
 		assert(s3 == 'z')
 		assert(s4 == 'zz')
 		tx:commit()
@@ -1043,7 +1051,7 @@ if not ... then
 	db:close()
 
 	--reopen db to check that stored schema matches paper schema.
-	local db = mdbx_open('mdbx_schema_test')
+	local db = mdbx_open('mdbx_schema_test.mdb')
 	db.schema = schema
 	local tx = db:tx()
 	for tab in tx:each_table() do
@@ -1064,7 +1072,7 @@ if not ... then
 --} mdbx_version;
 
 	--[[
-	local db = mdbx_open('mdbx_schema_test')
+	local db = mdbx_open('mdbx_schema_test.mdb')
 	db:load_schema()
 	local u = {
 		uid = 1234,

@@ -805,15 +805,26 @@ end
 
 local Tx = {}; mdbx_tx = Tx
 
+local function tx_free(self)
+	self:close_cursors()
+	self.txn = nil
+	self.parent_tx = nil
+	push(self.db._free_tx, self)
+	if self.child_txs then --child txs are aborted automatically.
+		for _,tx in ipairs(self.child_txs) do
+			tx_free(tx)
+		end
+		clear(self.child_txs)
+	end
+end
+
 do
 local txnp = new'MDBX_txn*[1]'
 function Db:tx(flags, parent_tx)
 	flags = flags or (parent_tx and not parent_tx:is_readonly() and 'w') or 'r'
 	if flags == 'r' then flags = C.MDBX_RDONLY end
 	if flags == 'w' then flags = 0 end
-	local tx = pop(self._free_tx) or object(Tx, {
-		db = self,
-	})
+	local tx = pop(self._free_tx) or object(Tx, {db = self})
 	check(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn, flags, txnp, nil))
 	if parent_tx then
 		self.parent_tx = parent_tx
@@ -839,43 +850,28 @@ end
 
 function Tx:close_cursors()
 	if not self.cursors then return end
-	for cur in pairs(self.cursors) do
-		cur:close()
+	check(C.mdbx_txn_release_all_cursors_ex(self.txn, 1, nil))
+	for _,cur in ipairs(self.cursors) do
+		push(self.db._free_cur, cur)
+		cur.tx = nil
 	end
 end
 
 function Tx:commit()
 	assert(not self:closed(), 'transaction closed')
-	self:close_cursors()
 	check(C.mdbx_txn_commit_ex(self.txn, nil))
-	self.txn = nil
-	push(self.db._free_tx, self)
-	if self.parent_tx then --child takes place of parent.
-		self.parent_tx.txn = nil
-		push(self.db._free_tx, self.parent_tx)
-		self.parent_tx = nil
-	end
+	tx_free(self)
 end
 
 function Tx:abort()
 	assert(not self:closed(), 'transaction closed')
-	self:close_cursors()
+	C.mdbx_txn_abort(self.txn)
+	tx_free(self)
 	--dbis to created tables must be removed from db.dbis map on abort.
 	if self.created_tables then
 		for _,table_name in ipairs(self.created_tables) do
 			self.db.dbis[table_name] = nil
 		end
-	end
-	C.mdbx_txn_abort(self.txn)
-	self.txn = nil
-	push(self.db._free_tx, self)
-	if self.child_txs then --child txs are aborted automatically.
-		for _,tx in ipairs(self.child_txs) do
-			tx.txn = nil
-			push(self.db._free_tx, tx)
-			tx.parent_tx = nil
-		end
-		self.child_txs = nil
 	end
 end
 
@@ -950,29 +946,33 @@ end
 end
 
 local Cur = {}; mdbx_cur = Cur
+do
+local curp = new'MDBX_cursor*[1]'
 function Tx:raw_cursor(tab)
 	local dbi = isnum(tab) and tab or self.db:dbi(tab)
 	local cur = pop(self.db._free_cur)
 	if cur then
 		cur.tx = self
+		C.mdbx_cursor_renew(self.txn, self.cursor)
 	else
-		cur = object(Cur, {tx = self, cursor = new'MDBX_cursor*[1]'})
+		cur = object(Cur, {tx = self})
+		check(C.mdbx_cursor_open(self.txn, dbi, curp))
+		cur.cursor = curp[0]
 	end
-	check(C.mdbx_cursor_open(self.txn, dbi, cur.cursor))
-	attr(self, 'cursors')[cur] = true
+	add(attr(self, 'cursors'), cur)
 	return cur
+end
 end
 
 function Cur:closed()
-	return self.cursor[0] == nil
+	return self.tx == nil
 end
 
 function Cur:close()
 	if self:closed() then return end
-	C.mdbx_cursor_close(self.cursor[0])
-	self.cursor[0] = nil
-	self.tx.cursors[self] = nil
+	C.mdbx_cursor_unbind(self.cursor)
 	push(self.tx.db._free_cur, self)
+	self.tx = nil
 end
 
 do
@@ -980,7 +980,7 @@ local key = new'MDBX_val'
 local val = new'MDBX_val'
 function Cur:next_raw_kv()
 	if self:closed() then return end
-	local rc = C.mdbx_cursor_get(self.cursor[0], key, val, C.MDBX_NEXT)
+	local rc = C.mdbx_cursor_get(self.cursor, key, val, C.MDBX_NEXT)
 	if rc == 0 then return key, val end
 	if rc == C.MDBX_NOTFOUND then
 		self:close()
