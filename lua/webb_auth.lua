@@ -478,26 +478,27 @@ local function create_user()
 	allow(config('allow_create_user', true))
 	wait(0.1) --make flooding up the table a bit slower
 	atomic(function()
-		local tenant = check500(get('tenant-by-host', 'tenant', host())
-			, 'no tenant for host %s', host())
+		local tenant = check500(get('tenant-by-host', 'tenant', host()),
+			'no tenant for host %s', host())
 
-	local usr = query([[
-		insert into usr set
-			tenant = :tenant,
-			clientip = :clientip,
-			#if multilang()
-			lang = :lang,
-			#endif
-			atime = now(),
-			ctime = now(),
-			mtime = now()
-	]], {
-		tenant = tenant,
-		clientip = client_ip(),
-		lang = lang(),
-	}).insert_id
+		local usr = query([[
+			insert into usr set
+				tenant = :tenant,
+				clientip = :clientip,
+				#if multilang()
+				lang = :lang,
+				#endif
+				atime = now(),
+				ctime = now(),
+				mtime = now()
+		]], {
+			tenant = tenant,
+			clientip = client_ip(),
+			lang = lang(),
+		}).insert_id
 
-	session().usr = usr
+		session().usr = usr
+	end)
 
 	return usr
 end

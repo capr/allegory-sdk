@@ -83,8 +83,8 @@ field names. With the first variant only flag names clash with field names
 which is more acceptable.
 
 API
-	schema(opt) -> sc`              create a new schema object
-	schema_diff(sc1, sc2) -> diff`  find out what changed between `sc1` and `sc2`
+	schema.new(opt) -> sc`          create a new schema object
+	schema.diff(sc1, sc2) -> diff`  find out what changed between `sc1` and `sc2`
 	diff:pp()`                      pretty print a schema diff
 
 ]=]
@@ -100,7 +100,7 @@ require'glue'
 
 local function isschema(t) return istab(t) and t.is_schema end
 
-local schema = {is_schema = true, package = {}, isschema = isschema}
+schema = {is_schema = true, package = {}, isschema = isschema}
 
 --NOTE: the double-underscore is for disambiguation, not for aesthetics.
 schema.fk_name_format = 'fk_%s__%s'
@@ -294,9 +294,9 @@ do
 			end,
 		})
 	end
-	function _G.schema(opt)
+	function schema.new(opt)
 		assert(opt ~= schema, 'use dot notation')
-		local self = update(opt or {}, schema)
+		local self = object(schema, opt)
 		local env = update({self = self}, schema.env)
 		self.flags = update({}, schema.flags)
 		self.types = update({}, schema.types)
@@ -643,6 +643,9 @@ local function diff_procs(self, p1, p0, sc0)
 end
 
 local function diff_tables(self, t1, t0, sc0)
+	if (t1.raw or nil) ~= (t0.raw or nil) then --can't convert
+		return true
+	end
 	local d = {}
 	d.fields   = diff_maps(self, t1.fields  , t0.fields  , diff_fields   , map_fields, sc0, true)
 	local pk   = diff_maps(self, {pk=t1.pk} , {pk=t0.pk} , diff_ixs      , nil, sc0, true)
@@ -653,7 +656,7 @@ local function diff_tables(self, t1, t0, sc0)
 	d.triggers = diff_maps(self, t1.triggers, t0.triggers, diff_triggers , nil, sc0, sc0.supports_triggers)
 	d.add_pk    = pk and pk.add    and pk.add.pk
 	d.remove_pk = pk and pk.remove and pk.remove.pk
-	if not (next(d) or t1.name ~= t0.name) then return nil end
+	if isempty(d) or t1.name ~= t0.name then return nil end
 	d.old = t0
 	d.new = t1
 	return d
@@ -669,10 +672,6 @@ function schema.diff(sc0, sc1) --sync sc0 to sc1.
 	self.tables = diff_maps(self, sc1.tables, sc0.tables, diff_tables, nil, sc0, true)
 	self.procs  = diff_maps(self, sc1.procs , sc0.procs , diff_procs , nil, sc0, sc0.supports_procs)
 	return setmetatable(self, self)
-end
-
-function schema_diff(sc0, sc1)
-	return sc0:diff(sc1)
 end
 
 --diff pretty-printing -------------------------------------------------------

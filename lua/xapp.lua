@@ -42,6 +42,7 @@ require'daemon'
 require'webb_spa'
 require'xrowset'
 require'schema'
+require'mdbx_query'
 
 js[[
 document.addEventListener('DOMContentLoaded', function init_all() {
@@ -99,7 +100,9 @@ local function xapp(...)
 		checkfound(action(unpack(args())))
 	end)
 
-	app.schema = schema()
+	app.schema = schema.new()
+
+	app.schema.engine = 'mdbx'
 
 	app.schema.env.null = null
 	app.schema.env.Sf = Sf
@@ -110,10 +113,10 @@ local function xapp(...)
 	config('db_schema', app.schema)
 
 	cmd('install [forealz]', 'Install or migrate the app', function(opt, doit)
-		create_db()
 		local dry = doit ~= 'forealz'
 		db():sync_schema(app.schema, {dry = dry})
 		if not dry then
+			--[[
 			insert_or_update_row('tenant', {
 				tenant = 1,
 				name = 'default',
@@ -126,6 +129,7 @@ local function xapp(...)
 					roles = 'dev admin',
 				}
 			end
+			]]
 			if app.install then
 				app:install()
 			end
@@ -133,7 +137,7 @@ local function xapp(...)
 		say'Install done.'
 	end)
 
-	return app
+	_G.app = app
 end
 
 return xapp
