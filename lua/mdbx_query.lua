@@ -20,8 +20,11 @@ local _db
 function db()
 	if not _db then
 		assert(config('db_engine', 'mdbx') == 'mdbx')
-		_db = mdbx_open(indir(config('db_dir', vardir()), config('db_name', scriptname)..'.mdbx'))
-		_db.schema = schema
+		local db_dir = config('db_dir', vardir())
+		local db_file = config('db_name', scriptname)..'.mdbx'
+		local db_path = indir(db_dir, db_file)
+		_db = mdbx_open(db_path)
+		_db.schema = app.schema
 	end
 	return _db
 end
@@ -38,19 +41,6 @@ function get(...)
 end
 end
 
-do
-local function finish(tx, ok, ...)
-	if ok then
-		tx:commit()
-		return ...
-	else
-		tx:abort()
-		error(...)
-	end
-end
-function atomic(mode, f, ...)
-	if isfunc(mode) then mode, f = 'r', mode end
-	local tx = db():tx(mode)
-	return finish(tx, xpcall(f, traceback, tx, ...))
-end
+function atomic(...)
+	return db():atomic(...)
 end
