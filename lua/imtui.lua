@@ -44,10 +44,6 @@ require'rect'
 
 ui = {}
 
-local function array_clear(a)
-	while #a > 0 do del(a) end
-end
-
 --print debugging via `tail -f imtui.log` ------------------------------------
 
 local DEBUG = false
@@ -1500,7 +1496,7 @@ function measure_req_all()
 		s.w = a[i+2]
 		s.h = a[i+3]
 	end
-	array_clear(measure_req)
+	clear(measure_req)
 end
 
 -- input-render loop ---------------------------------------------------------
@@ -1769,7 +1765,7 @@ end
 ui.add_ct_min_wh = add_ct_min_wh
 
 local function ct_stack_push(a, i)
-	add(ct_stack, i)
+	push(ct_stack, i)
 end
 
 -- calculate a[i+2]=min_w (for axis=0) or a[i+3]=min_h (for axis=1).
@@ -1870,12 +1866,12 @@ function ui.cmd_box_ct(cmd, fr, halign, valign, min_w, min_h, ...)
 		0, --next_ext_i
 		...
 	)
-	add(ct_stack, i)
+	push(ct_stack, i)
 	return i
 end
 
 local function box_ct_end_measure(a, _, axis)
-	local i = assert(del(ct_stack), 'end command outside a container')
+	local i = assert(pop(ct_stack), 'end command outside a container')
 	local cmd = a[i-1]
 	local measure_end_f = cmd.measure_end
 	if measure_end_f then
@@ -1904,7 +1900,7 @@ local function box_ct_widget_end(cmd, t)
 
 		create = function(end_cmd)
 			--end_scope()
-			local ct_i = assert(del(ct_stack), 'end command outside container')
+			local ct_i = assert(pop(ct_stack), 'end command outside container')
 			local end_i = ui.cmd(end_cmd, ct_i)
 			a[end_i+0] = a[end_i+0] - end_i -- make relative
 			local next_i = cmd_next_i(a, end_i)
@@ -2235,9 +2231,9 @@ local function word_wrapper()
 
 	ww.set_text = function(s1)
 		if s1 == s then return end
-		array_clear(words )
-		array_clear(widths)
-		array_clear(lines )
+		clear(words )
+		clear(widths)
+		clear(lines )
 		last_ct_w = nil
 		s = sanitize(s1):trim()
 	end
@@ -2284,7 +2280,7 @@ local function word_wrapper()
 		if not s then return end
 		if ct_w == last_ct_w then return end
 		last_ct_w = ct_w
-		array_clear(lines)
+		clear(lines)
 		local line_w = 0
 		local max_line_w = 0
 		local line_i = 1
