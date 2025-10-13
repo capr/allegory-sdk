@@ -30,7 +30,7 @@ TRANSACTIONS
 
 TABLES
 
-	tx:[try_]open_table([table_name], ['w'], [flags]) -> t, created
+	tx:dbi(table_name, ['w']) -> dbi
 	tx:[try_]stat(table_name|dbi) -> MDBX_stat    get storage metrics on table
 
 	tx:[try_]rename_table (table_name|dbi)  rename table
@@ -1089,7 +1089,7 @@ local val = new'MDBX_val'
 function Tx:try_get_raw(tab, key_data, key_sz)
 	key.data = cast('u8*', key_data)
 	key.size = key_sz
-	local val, err = self:get_raw_kv(tab, key, val)
+	local val, err = self:try_get_raw_kv(tab, key, val)
 	if not val then return nil, 0, err end
 	return val.data, val.size
 end

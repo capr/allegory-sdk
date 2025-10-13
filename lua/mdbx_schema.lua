@@ -513,7 +513,7 @@ function Tx:load_table_schema(table_name)
 	if not self:table_exists'$schema' then return end
 	local k = table_name
 	local dbi, schema = assert(try_raw_open_table(self, '$schema'))
-	local v, v_len = self:get_raw('$schema', k, #k)
+	local v, v_len = self:try_get_raw('$schema', k, #k)
 	if not v then return end
 	local schema = eval(str(v, v_len))
 	--reconstruct schema from stored table schema.
@@ -707,9 +707,24 @@ function Db:sync_schema(src, opt)
 				for tbl_name, tbl in sortedpairs(diff.tables.update) do
 					if tbl.uks then
 						if tbl.uks.add then
-							for uk_name, uk in pairs(tbl.uks.add) do
+							for _,uk in pairs(tbl.uks.add) do
 								if not dry then
-									tx:open_table(tbl_name)
+									local schema = self.schema.tables[tbl_name]
+									local uk_name = tbl_name..'-by-'..cat(uk, '-')
+									local uk_fields = {}
+									local uk_schema = {fields = uk_fields, pk = uk}
+									for _,col in ipairs(uk) do
+										local f = update({}, schema.fields[col])
+										add(uk_fields, f)
+									end
+									local db_max_key_size = self:db_max_key_size()
+									compile_table_schema(uk_schema, uk_name, db_max_key_size)
+									prepare_table_schema(uk_schema)
+									self.schema.tables[uk_name] = uk_schema
+									tx:create_table(uk_name)
+									for cur, t in tx:each(tbl_name, '[]') do
+										tx:put(t)
+									end
 								end
 								pr(tbl_name, uk_name, uk)
 							end
@@ -988,8 +1003,8 @@ end
 local function cur_next(self, _, val_cols)
 	return self, self:next(val_cols)
 end
-function Tx:each(tbl_name, val_cols)
-	local cur = self:cursor(tbl_name)
+function Tx:each(tbl_name, val_cols, mode)
+	local cur = self:cursor(tbl_name, mode)
 	cur._val_cols, cur._as = cols_list(val_cols)
 	cur._t = not cur._as and {} or nil --can reuse t in unpack mode
 	return cur_next, cur
