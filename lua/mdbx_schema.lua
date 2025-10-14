@@ -644,98 +644,6 @@ end
 local key_rec_buffer = buffer()
 local val_rec_buffer = buffer()
 
---schema sync'ing ------------------------------------------------------------
-
-function Db:extract_schema()
-	require'schema'
-	local schema = schema.new{engine = 'mdbx'}
-	schema.relevant_field_attrs = {
-		col=1,
-		col_pos=1,
-		mdbx_type=1,
-		maxlen=1,
-		len=1,
-	}
-	self:atomic(function(tx)
-		for table_name in tx:each_table() do
-			if not table_name:starts'$' and not table_name:has'-by-' then
-				schema.tables[table_name] = tx:load_table_schema(table_name) or {raw = true}
-			end
-		end
-		for table_name in tx:each_table() do
-			if not table_name:starts'$' and table_name:has'-by-' then
-				local table_name, cols = table_name:match'(.?)-by-(.*)'
-				local x = cols:gmatch'[^%-]+'
-				local table_schema = schema.tables[table_name]
-				--add(attr(table_schema, 'uks'),
-			end
-		end
-	end)
-	return schema
-end
-
-function Db:schema_diff()
-	local ss = self:extract_schema()
-	return self.schema:diff(ss)
-end
-
-function Db:sync_schema(src, opt)
-	opt = opt or empty
-	require'schema'
-	local src_sc =
-		schema.isschema(src) and src
-		or inherits(src, mdbx_db) and src:extract_schema()
-		or assertf(false, 'schema or mdbx_db expected, got %s', type(src))
-	local this_sc = self:extract_schema()
-	local diff = schema.diff(this_sc, src_sc)
-	diff:pp()
-	local dry = opt.dry
-	local function P(...)
-		pr(_(...))
-	end
-	self:atomic(dry and 'r' or 'w', function(tx)
-		if diff.tables then
-			if diff.tables.add then
-				for tbl_name, tbl in sortedpairs(diff.tables.add) do
-					P('create table: %s %s', tbl_name, tx.readonly and 'r/o' or 'r/w')
-					if not dry then
-						tx:open_table(tbl_name)
-					end
-				end
-			end
-			if diff.tables.update then
-				for tbl_name, tbl in sortedpairs(diff.tables.update) do
-					if tbl.uks then
-						if tbl.uks.add then
-							for _,uk in pairs(tbl.uks.add) do
-								if not dry then
-									local schema = self.schema.tables[tbl_name]
-									local uk_name = tbl_name..'-by-'..cat(uk, '-')
-									local uk_fields = {}
-									local uk_schema = {fields = uk_fields, pk = uk}
-									for _,col in ipairs(uk) do
-										local f = update({}, schema.fields[col])
-										add(uk_fields, f)
-									end
-									local db_max_key_size = self:db_max_key_size()
-									compile_table_schema(uk_schema, uk_name, db_max_key_size)
-									prepare_table_schema(uk_schema)
-									self.schema.tables[uk_name] = uk_schema
-									tx:create_table(uk_name)
-									for cur, t in tx:each(tbl_name, '[]') do
-										tx:put(t)
-									end
-								end
-								pr(tbl_name, uk_name, uk)
-							end
-						end
-					end
-				end
-			end
-		end
-	end)
-end
-
 --writing --------------------------------------------------------------------
 
 local encode_key_record do
@@ -1003,11 +911,134 @@ end
 local function cur_next(self, _, val_cols)
 	return self, self:next(val_cols)
 end
-function Tx:each(tbl_name, val_cols, mode)
+function Tx:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
 	cur._val_cols, cur._as = cols_list(val_cols)
-	cur._t = not cur._as and {} or nil --can reuse t in unpack mode
+	cur._t = t or {}
 	return cur_next, cur
+end
+
+--schema sync'ing ------------------------------------------------------------
+
+function Db:extract_schema()
+	require'schema'
+	local schema = schema.new{engine = 'mdbx'}
+	schema.relevant_field_attrs = {
+		col=1,
+		col_pos=1,
+		mdbx_type=1,
+		maxlen=1,
+		len=1,
+	}
+	self:atomic(function(tx)
+		for table_name in tx:each_table() do
+			if not table_name:starts'$' and not table_name:has'-by-' then
+				schema.tables[table_name] = tx:load_table_schema(table_name) or {raw = true}
+			end
+		end
+		for table_name in tx:each_table() do
+			if not table_name:starts'$' and table_name:has'-by-' then
+				local table_name, cols = table_name:match'(.?)-by-(.*)'
+				local x = cols:gmatch'[^%-]+'
+				local table_schema = schema.tables[table_name]
+				--add(attr(table_schema, 'uks'),
+			end
+		end
+	end)
+	return schema
+end
+
+function Db:schema_diff()
+	local ss = self:extract_schema()
+	return self.schema:diff(ss)
+end
+
+function Tx:create_index(tbl_name, cols)
+	local dbi, schema = self:dbi_schema(tbl_name)
+
+	--create index schema
+	local ix_tbl_name = tbl_name..'-by-'..cat(cols, '-')
+	local ix_fields = {}
+	for _,col in ipairs(cols) do
+		local f = update({}, schema.fields[col])
+		add(ix_fields, f)
+	end
+	local ix_schema = {fields = ix_fields, pk = cols}
+	local db_max_key_size = self.db:db_max_key_size()
+	compile_table_schema(ix_schema, ix_tbl_name, db_max_key_size)
+	prepare_table_schema(ix_schema)
+	self.db.schema.tables[ix_tbl_name] = ix_schema
+
+	--create index table and fill it up
+	self:create_table(ix_tbl_name)
+	local dt = {}
+	local key_rec, key_buf_sz = key_rec_buffer(ix_schema.key_fields.max_rec_size)
+	for cur, k, v in tx:each_raw_kv(tbl_name, '[]') do
+		local kn = decode_key(schema, k.data, k.size, dt, '[]')
+		local key_sz = encode_key_record(uk_schema, key_rec, key_buf_sz, unpack(dt, 1, kn))
+		self:put_raw(dbi, key_rec, key_sz, v.data, v.size)
+	end
+end
+
+function Db:sync_schema(src, opt)
+	opt = opt or empty
+	require'schema'
+	local src_sc =
+		schema.isschema(src) and src
+		or inherits(src, mdbx_db) and src:extract_schema()
+		or assertf(false, 'schema or mdbx_db expected, got %s', type(src))
+	local this_sc = self:extract_schema()
+	local diff = schema.diff(this_sc, src_sc)
+	diff:pp()
+	local dry = opt.dry
+	local function P(...)
+		pr(_(...))
+	end
+	self:atomic(dry and 'r' or 'w', function(tx)
+		if diff.tables then
+			if diff.tables.add then
+				for tbl_name, tbl in sortedpairs(diff.tables.add) do
+					P('create table: %s %s', tbl_name, tx.readonly and 'r/o' or 'r/w')
+					if not dry then
+						tx:open_table(tbl_name)
+					end
+				end
+			end
+			if diff.tables.update then
+				for tbl_name, tbl in sortedpairs(diff.tables.update) do
+					if tbl.uks then
+						if tbl.uks.add then
+							for _,uk in pairs(tbl.uks.add) do
+								if not dry then
+									local schema = self.schema.tables[tbl_name]
+									local uk_name = tbl_name..'-by-'..cat(uk, '-')
+									local uk_fields = {}
+									for _,col in ipairs(uk) do
+										local f = update({}, schema.fields[col])
+										add(uk_fields, f)
+									end
+									local uk_schema = {fields = uk_fields, pk = uk}
+									local db_max_key_size = self:db_max_key_size()
+									compile_table_schema(uk_schema, uk_name, db_max_key_size)
+									prepare_table_schema(uk_schema)
+									self.schema.tables[uk_name] = uk_schema
+									tx:create_table(uk_name)
+									local dt = {}
+									local key_rec, key_buf_sz = key_rec_buffer(uk_schema.key_fields.max_rec_size)
+									for cur, k, v in tx:each_raw_kv(tbl_name, '[]') do
+										local kn = decode_key(schema, k.data, k.size, dt, '[]')
+										local key_sz = encode_key_record(uk_schema, key_rec, key_buf_sz, unpack(dt, 1, kn))
+										self:put_raw(dbi, key_rec, key_sz, v.data, v.size)
+									end
+								end
+								pr(tbl_name, uk_name, uk)
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
 end
 
 --test -----------------------------------------------------------------------
