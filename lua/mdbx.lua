@@ -867,6 +867,10 @@ function mdbx_open(file, opt, ...)
 		file, opt and opt.readonly and 'r/o' or 'r/w', err)
 end
 
+function mdbx_drop(file, mode)
+	checkz(C.mdbx_env_delete(file, mode))
+end
+
 function Db:db_max_key_size()
 	return C.mdbx_env_get_maxkeysize_ex(self.env, C.MDBX_DB_DEFAULTS)
 end
@@ -1029,7 +1033,7 @@ function Tx:dbi(tab, mode)
 end
 
 function Tx:try_rename_table(tab, new_table_name)
-	local dbi = isnum(tab) and tab self:dbi(tab)
+	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	checkz(C.mdbx_dbi_rename(self.txn, dbi, new_table_name))
 	return true
@@ -1039,9 +1043,9 @@ function Tx:rename_table(tab, new_table_name)
 end
 
 function Tx:try_drop_table(tab)
-	local dbi = isnum(tab) and tab self:dbi(tab)
+	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
-	checkz(C.mdbx_drop(self.txn, t.dbi, 1))
+	checkz(C.mdbx_drop(self.txn, dbi, 1))
 	local ot = self.db.open_tables
 	local t = ot[dbi]
 	ot[dbi] = nil
@@ -1055,19 +1059,19 @@ function Tx:drop_table(tab)
 end
 
 function Tx:try_clear_table(tab)
-	local dbi = isnum(tab) and tab self:dbi(tab)
+	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
-	checkz(C.mdbx_drop(self.txn, t.dbi, 0))
+	checkz(C.mdbx_drop(self.txn, dbi, 0))
 	return true
 end
 function Tx:clear_table(tab)
 	assert(self:try_clear_table(tab))
 end
 
-function Tx:create_table(tab)
-	local t, created = self:open_table(tab, 'w')
+function Tx:create_table(tbl_name)
+	local t, created = self:open_table(tbl_name, 'w')
 	if not created then
-		self:clear_table(tab)
+		self:clear_table(tbl_name)
 	end
 end
 

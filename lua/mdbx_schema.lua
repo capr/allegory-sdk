@@ -62,6 +62,7 @@ TODO:
 
 require'mdbx'
 require'utf8proc'
+require'cjson' -- for null
 local C = ffi.load'mdbx_schema' --see src/c/mdbx_schema/mdbx_schema.c
 
 local
@@ -441,7 +442,8 @@ local function prepare_table_schema(schema)
 					end
 				else --array
 					function f.encode(buf, val, len)
-						assertf(typeof(val) == 'table', 'invalid val type: %s', typeof(val))
+						assertf(typeof(val) == 'table', 'invalid val type: %s for %s.%s',
+							typeof(val), schema.name, f.col)
 						local buf = cast(elemp_ct, buf)
 						for i = 1, len do
 							buf[i-1] = val[i]
@@ -472,7 +474,6 @@ local function prepare_table_schema(schema)
 
 end
 
-local raw_open_table = Tx.open_table
 local try_raw_open_table = Tx.try_open_table
 
 function Tx:save_table_schema(table_name, schema)
@@ -505,14 +506,13 @@ function Tx:save_table_schema(table_name, schema)
 	end
 	local k = table_name
 	local v = pp(t, false)
-	local dbi = raw_open_table(self, '$schema', 'w')
-	self:put_raw(dbi, k, #k, v, #v)
+	self:put_raw('$schema', k, #k, v, #v)
 end
 
 function Tx:load_table_schema(table_name)
+	if table_name == '$schema' then return end
 	if not self:table_exists'$schema' then return end
 	local k = table_name
-	local dbi, schema = assert(try_raw_open_table(self, '$schema'))
 	local v, v_len = self:try_get_raw('$schema', k, #k)
 	if not v then return end
 	local schema = eval(str(v, v_len))
@@ -579,8 +579,8 @@ function Tx:try_open_table(tab, mode, flags)
 					local sv = sf and sf[k]
 					if pv ~= sv then
 						errs = errs or {}
-						add(errs, fmt(' %s.%s expected: %s, got: %s, for table: %s',
-							F, k, pv, sv, table_name))
+						add(errs, fmt(' %s[%d].%s expected: %s, got: %s, for table: %s',
+							F, i, k, pv, sv, table_name))
 					end
 				end
 			end
@@ -607,7 +607,7 @@ function Tx:dbi(tab, mode)
 			t = self:open_table(tab, 'w')
 		else
 			local err
-			t = self:try_open_table(tab)
+			t, err = self:try_open_table(tab)
 			if not t then return nil, err end
 		end
 	end
@@ -626,6 +626,15 @@ function Tx:try_drop_table(tab)
 	assert(name)
 	assert(try_raw_drop_table(self, dbi))
 	self:delete_table_schema(name)
+	return true
+end
+
+function Tx:create_table(tbl_name)
+	self:delete_table_schema(tbl_name)
+	local t, created = self:open_table(tbl_name, 'w')
+	if not created then
+		self:clear_table(tbl_name)
+	end
 end
 
 local function key_field(schema, col)
@@ -676,7 +685,7 @@ function encode_val_record(schema, rec, rec_buf_sz, ...)
 	for vi,f in ipairs(schema.val_fields) do
 		local val = select(f.col_pos, ...)
 		local len
-		if val == nil then
+		if val == nil or val == null then
 			len = -1
 		else
 			len = f.get_val_len(val)
@@ -973,14 +982,20 @@ function Tx:create_index(tbl_name, cols)
 	self:create_table(ix_tbl_name)
 	local dt = {}
 	local key_rec, key_buf_sz = key_rec_buffer(ix_schema.key_fields.max_rec_size)
-	for cur, k, v in tx:each_raw_kv(tbl_name, '[]') do
-		local kn = decode_key(schema, k.data, k.size, dt, '[]')
+	for cur, k, v in self:each_raw_kv(tbl_name, '[]') do
+		local vn = decode_val(schema, v.data, v.size, cols, dt, '[]')
 		local key_sz = encode_key_record(uk_schema, key_rec, key_buf_sz, unpack(dt, 1, kn))
-		self:put_raw(dbi, key_rec, key_sz, v.data, v.size)
+		self:put_raw(dbi, key_rec, key_sz, k.data, k.size)
 	end
 end
 
 function Db:sync_schema(src, opt)
+	local tx = self:txw()
+	for tbl in tx:each_table() do
+		pr('DROP ', tbl)
+		tx:drop_table(tbl)
+	end
+	tx:commit()
 	opt = opt or empty
 	require'schema'
 	local src_sc =
@@ -998,9 +1013,14 @@ function Db:sync_schema(src, opt)
 		if diff.tables then
 			if diff.tables.add then
 				for tbl_name, tbl in sortedpairs(diff.tables.add) do
-					P('create table: %s %s', tbl_name, tx.readonly and 'r/o' or 'r/w')
+					P('create table: %s', tbl_name)
 					if not dry then
-						tx:open_table(tbl_name)
+						tx:create_table(tbl_name)
+					end
+					if tbl.rows then
+						for _,row in ipairs(tbl.rows) do
+							tx:put(tbl_name, unpack(row))
+						end
 					end
 				end
 			end
@@ -1010,26 +1030,7 @@ function Db:sync_schema(src, opt)
 						if tbl.uks.add then
 							for _,uk in pairs(tbl.uks.add) do
 								if not dry then
-									local schema = self.schema.tables[tbl_name]
-									local uk_name = tbl_name..'-by-'..cat(uk, '-')
-									local uk_fields = {}
-									for _,col in ipairs(uk) do
-										local f = update({}, schema.fields[col])
-										add(uk_fields, f)
-									end
-									local uk_schema = {fields = uk_fields, pk = uk}
-									local db_max_key_size = self:db_max_key_size()
-									compile_table_schema(uk_schema, uk_name, db_max_key_size)
-									prepare_table_schema(uk_schema)
-									self.schema.tables[uk_name] = uk_schema
-									tx:create_table(uk_name)
-									local dt = {}
-									local key_rec, key_buf_sz = key_rec_buffer(uk_schema.key_fields.max_rec_size)
-									for cur, k, v in tx:each_raw_kv(tbl_name, '[]') do
-										local kn = decode_key(schema, k.data, k.size, dt, '[]')
-										local key_sz = encode_key_record(uk_schema, key_rec, key_buf_sz, unpack(dt, 1, kn))
-										self:put_raw(dbi, key_rec, key_sz, v.data, v.size)
-									end
+									tx:create_index(tbl_name, uk)
 								end
 								pr(tbl_name, uk_name, uk)
 							end
