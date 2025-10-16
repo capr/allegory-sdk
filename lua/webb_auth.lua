@@ -477,8 +477,8 @@ end
 local function create_user()
 	allow(config('allow_create_user', true))
 	wait(0.1) --make flooding up the table a bit slower
-	atomic(function()
-		local tenant = check500(get('tenant-by-host', 'tenant', host()),
+	atomic(function(tx)
+		local tenant = check500(tx:get('tenant-by-host', 'tenant', host()),
 			'no tenant for host %s', host())
 
 		local usr = query([[

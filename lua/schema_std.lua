@@ -118,7 +118,7 @@ return function()
 	types.bin       = {type = 'binary', mysql_type = 'varbinary', tarantool_type = 'string', mdbx_type = 'u8'}
 	types.text      = {str, mysql_type = 'text', size = 0xffff, maxlen = 0xffff, utf8_bin}
 	types.longtext  = {str, mysql_type = 'longtext', size = 0xffffffff, maxlen = 0xffffffff, utf8_bin}
-	types.chr       = {str, mysql_type = 'char', padded = true, mdbx_type = 'u8'}
+	types.chr       = {str, mysql_type = 'char', padded = true, mdbx_type = 'utf8'}
 	types.blob      = {type = 'binary', mysql_type = 'mediumblob', size = 0xffffff, tarantool_type = 'string', tarantool_collation = 'none', mdbx_type = 'u8'}
 
 	types.timeofday = {type = 'timeofday', align = 'center', mysql_type = 'time', tarantool_type = 'number', mdbx_type = 'f64',

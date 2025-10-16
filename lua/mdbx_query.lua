@@ -37,8 +37,14 @@ local function abort(tx, ...)
 end
 function get(...)
 	local tx = db():tx()
-	abort(tx, tx:get(...))
+	return abort(tx, tx:get(...))
 end
+end
+
+function put(...)
+	local tx = db():txw()
+	tx:put(...)
+	tx:commit()
 end
 
 function atomic(...)

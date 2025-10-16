@@ -116,8 +116,7 @@ local function xapp(...)
 		local dry = doit ~= 'forealz'
 		db():sync_schema(app.schema, {dry = dry})
 		if not dry then
-			--[[
-			insert_or_update_row('tenant', {
+			put('tenant', '{}', {
 				tenant = 1,
 				name = 'default',
 				host = config'host',
@@ -129,7 +128,6 @@ local function xapp(...)
 					roles = 'dev admin',
 				}
 			end
-			]]
 			if app.install then
 				app:install()
 			end
