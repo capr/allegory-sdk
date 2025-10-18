@@ -30,7 +30,7 @@ TRANSACTIONS
 
 TABLES
 
-	tx:dbi(table_name, ['w']) -> dbi
+	tx:dbi(table_name|dbi, ['w']) -> dbi
 	tx:[try_]stat(table_name|dbi) -> MDBX_stat    get storage metrics on table
 
 	tx:[try_]rename_table (table_name|dbi)  rename table
@@ -43,12 +43,9 @@ TABLES
 
 CRUD
 
-	tx:[try_]get_raw     (table_name|dbi, key_data, key_size) -> val_data, val_size | nil,0,err
-	tx:[try_]get_raw_kv  (table_name|dbi, mdbx_key, mdbx_val) -> mdbx_val | nil,err
+	tx:[must_]get_raw    (table_name|dbi, key_data, key_size) -> val_data, val_size | nil,0,err
 	tx:put_raw           (table_name|dbi, key_data, key_size, val_data, val_size, [flags])
-	tx:put_raw_kv        (table_name|dbi, mdbx_key, mdbx_val, [flags])
 	tx:[try_]del_raw     (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
-	tx:[try_]del_raw_kv  (table_name|dbi, mdbx_key, [mdbx_val], [flags]) -> true|nil,err
 
 CURSORS
 
@@ -57,9 +54,11 @@ CURSORS
 	cur:closed() -> t|f
 	tx:close_cursors()
 
-	cur:next_raw_kv    () -> mdbx_key, mdbx_val
-	cur:current_raw_kv () -> mdbx_key, mdbx_val
-	tx:each_raw_kv(table_name[, 'w']) -> iter() -> cur, mdbx_key, mdbx_val
+	cur:next_raw         () -> key,key_size, val,val_size
+	cur:current_raw      () -> key,key_size, val,val_size
+	cur:[must_]get_raw   (key_data, key_size) -> val,val_size | nil
+
+	tx:each_raw(table_name[, 'w']) -> iter() -> cur, mdbx_key, mdbx_val
 
 ]]
 
@@ -73,8 +72,8 @@ typedef int pid_t;
 typedef unsigned long int real_pthread_t;
 typedef struct { real_pthread_t _; } pthread_t;
 struct MDBX_val { /* iovec with renamed fields */
-	uint8_t* data;
-	size_t   size;
+	void*  data;
+	size_t size;
 };
 
 typedef int mdbx_filehandle_t;
@@ -799,8 +798,7 @@ int mdbx_env_chk_encount_problem(MDBX_chk_context_t *ctx);
 require'fs'
 require'sock'
 
-mdbx_version = C.mdbx_version
-mdbx_build = C.mdbx_build
+mdbx = C
 
 local function try_checkz(rc)
 	if rc == 0 then return true end
@@ -990,14 +988,14 @@ function Db:atomic(mode, f, ...)
 end
 end
 
---pass table_name = false to open the "main" dbi.
+--pass nil or false to `tab` arg to open the "main" dbi with the list of tables.
 do
 local dbip = new'MDBX_dbi[1]'
 function Tx:try_open_table(tab, mode, flags)
 	local t = self.db.open_tables[tab or false]
 	if t then return t end
 	local name = tab
-	local create = mode == 'w'
+	local create = mode == 'w' or mode == 'c'
 	flags = bor(flags or 0, create and C.MDBX_CREATE or 0)
 	local created = create and not self:table_exists(name)
 	local rc = C.mdbx_dbi_open(self.txn, name, flags, dbip)
@@ -1012,6 +1010,8 @@ function Tx:try_open_table(tab, mode, flags)
 	ot[dbi] = t
 	if created then
 		add(attr(self, 'created_tables'), t)
+	elseif mode == 'c' then
+		self:clear_table(name)
 	end
 	return t, created
 end
@@ -1023,8 +1023,8 @@ function Tx:open_table(tab, mode, flags)
 end
 
 function Tx:dbi(tab, mode)
-	if mode == 'w' then
-		return self:open_table(tab, 'w').dbi
+	if mode == 'w' or mode == 'c' then
+		return self:open_table(tab, mode).dbi
 	else
 		local t, err = self:try_open_table(tab)
 		if not t then return nil, err end
@@ -1069,79 +1069,55 @@ function Tx:clear_table(tab)
 end
 
 function Tx:create_table(tbl_name)
-	local t, created = self:open_table(tbl_name, 'w')
-	if not created then
-		self:clear_table(tbl_name)
-	end
-end
-
-function Tx:try_get_raw_kv(tab, key, val)
-	local dbi = isnum(tab) and tab or self:dbi(tab)
-	if not dbi then return nil, 'table_not_found' end
-	local rc = C.mdbx_get(self.txn, dbi, key, val)
-	if rc == 0 then return val end
-	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
-	checkz(rc)
-end
-function Tx:get_raw_kv(tab, key, val)
-	return assert(self:try_get_raw_kv(tab, key, val))
+	self:open_table(tbl_name, 'c')
 end
 
 do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
-function Tx:try_get_raw(tab, key_data, key_sz)
-	key.data = cast('u8*', key_data)
-	key.size = key_sz
-	local val, err = self:try_get_raw_kv(tab, key, val)
-	if not val then return nil, 0, err end
-	return val.data, val.size
+
+function Tx:get_raw(tab, key_data, key_size, val_data, val_size)
+	key.data = key_data
+	key.size = key_size
+	local dbi = isnum(tab) and tab or self:dbi(tab)
+	if not dbi then return nil, 'table_not_found' end
+	local rc = C.mdbx_get(self.txn, dbi, key, val)
+	if rc == 0 then return val.data, num(val.size) end
+	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
+	checkz(rc)
 end
-end
-function Tx:get_raw(tab, key_data, key_sz)
-	return assert(self:try_get_raw(tab, key_data, key_sz))
+function Tx:must_get_raw(...)
+	return assert(self:try_get_raw(...))
 end
 
-function Tx:put_raw_kv(tab, key, val, flags)
+function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
+	key.data = key_data
+	key.size = key_size
+	val.data = val_data
+	val.size = val_size
 	local dbi = isnum(tab) and tab or self:dbi(tab, 'w')
 	checkz(C.mdbx_put(self.txn, dbi, key, val, flags or 0))
 end
 
-function Tx:try_del_raw_kv(tab, key, val)
+function Tx:try_del_raw(tab, key_data, key_size, val_data, val_size)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
+	key.data = key_data
+	key.size = key_size
+	if val_data then
+		val.data = val_data
+		val.size = val_size
+	end
 	local rc = C.mdbx_del(self.txn, dbi, key, val)
 	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
 	checkz(rc)
 	return true
 end
-function Tx:del_raw_kv(tab, key, val)
-	assert(self:try_del_raw_kv(tab, key, val))
-end
-
-do
-local key = new'MDBX_val'
-local val = new'MDBX_val'
-function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
-	key.data = cast(u8p, key_data)
-	key.size = key_size
-	val.data = cast(u8p, val_data)
-	val.size = val_size
-	self:put_raw_kv(tab, key, val, flags)
-end
-function Tx:try_del_raw(tab, key_data, key_size, val_data, val_size)
-	key.data = cast(u8p, key_data)
-	key.size = key_size
-	if val_data then
-		val.data = cast(u8p, val_data)
-		val.size = val_size
-	end
-	return self:try_del_raw_kv(tab, key, val_data and val or nil)
-end
 function Tx:del_raw(...)
 	assert(self:try_del_raw(...))
 end
-end
+
+end --do
 
 local Cur = {}; mdbx_cur = Cur
 do
@@ -1177,31 +1153,52 @@ end
 do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
-local function cur_get(self, flags)
+
+function Cur:_try_get_raw(flags)
 	if self:closed() then return end
 	local rc = C.mdbx_cursor_get(self.mdbx_cursor, key, val, flags)
-	if rc == 0 then return key, val end
-	if rc == C.MDBX_NOTFOUND then
-		self:close()
+	if rc == 0 then
 		return
+			key.data, num(key.size),
+			val.data, num(val.size)
+	end
+	if rc == C.MDBX_NOTFOUND then
+		return nil, 0, nil, 0
 	end
 	checkz(rc)
 end
-function Cur:next_raw_kv()
-	return cur_get(self, C.MDBX_NEXT)
+function Cur:next_raw()
+	return self:_try_get_raw(C.MDBX_NEXT)
 end
-function Cur:current_raw_kv()
-	return cur_get(self, C.MDBX_GET_CURRENT)
+function Cur:current_raw()
+	return self:_try_get_raw(C.MDBX_GET_CURRENT)
 end
-local function each_next_raw_kv(self)
-	local key, val = cur_get(self, C.MDBX_NEXT)
-	if not key then return end
-	return self, key, val
+function Cur:try_get_raw(k, k_sz)
+	key.data = k
+	key.size = k_sz
+	local _, _, v, v_sz = self:_try_get_raw(C.MDBX_SET_KEY)
+	return v, v_sz
 end
-function Tx:each_raw_kv(tab, mode)
+function Cur:get_raw(k, k_sz)
+	local v, v_sz = self:try_get_raw(k, k_sz)
+	assert(v, 'not_found')
+	return v, v_sz
+end
+end
+
+do
+local function each_raw_next(self)
+	local k, k_sz, v, v_sz = self:_try_get_raw(C.MDBX_NEXT)
+	if not k then
+		self:close()
+		return
+	end
+	return self, k, k_sz, v, v_sz
+end
+function Tx:each_raw(tab, mode)
 	local cur = self:cursor(tab, mode)
 	if not cur then return noop end
-	return each_next_raw_kv, cur
+	return each_raw_next, cur
 end
 end
 
@@ -1224,9 +1221,8 @@ function Tx:entries(tab)
 end
 
 local function next_table(self)
-	local k = self:next_raw_kv()
-	if not k then return end
-	return str(k.data, k.size)
+	local k, k_sz = self:next_raw()
+	return k and str(k, k_sz)
 end
 function Tx:each_table()
 	local cur = self:cursor()
@@ -1237,7 +1233,7 @@ function Tx:table_count()
 end
 function Tx:table_exists(table_name)
 	if not table_name then return true end --main table always exists.
-	return self:try_get_raw(nil, table_name, #table_name) ~= nil
+	return self:get_raw(nil, cast(u8p, table_name), #table_name) ~= nil
 end
 
 -- test ----------------------------------------------------------------------
@@ -1256,10 +1252,10 @@ if not ... then
 	tx:commit()
 
 	local tx = db:tx()
-	for cur,k,v in tx:each_raw_kv'users' do
+	for cur,k,k_sz,v,v_sz in tx:each_raw'users' do
 		printf('key: %s %s, data: %s %s\n',
-			k.size, cast('int*', k.data)[0],
-			v.size, str(v.data, v.size))
+			k_sz, cast('int*', k)[0],
+			v_sz, str(v, v_sz))
 	end
 	tx:abort()
 

@@ -21,18 +21,20 @@
 
 API, extends mdbx.lua API
 
-	tx:put             (table_name|dbi, [cols], k1,...,v1,...)
-	tx:put_records     (table_name|dbi, {{k1,...,v1,...},...})
-	tx:is_null         (table_name|dbi, col, k1,...) -> is_null, [reason]
-	tx:exists          (table_name|dbi, k1,...) -> record_exists, table_exists
-	tx:get             (table_name|dbi, [cols], k1,...) -> vals...
-	tx:try_get         (table_name|dbi, [cols], k1,...) -> true, vals... | false, err
-	tx:[try_]del       (table_name|dbi, k1,...) -> true | nil,err
-	tx:[try_]del_exact (table_name|dbi, k1,...,v1,...) -> true | nil,err
+	tx:put             (table_name|dbi, [cols], keysvals...)
+	tx:put_records     (table_name|dbi, [cols], {keysvals1,...})
+	tx:is_null         (table_name|dbi, col, keys...) -> is_null, [reason]
+	tx:exists          (table_name|dbi, keys...) -> record_exists, table_exists
+	tx:[try_|must_]get (table_name|dbi, [val_cols], keys...) -> [ok, ]vals...
+	tx:try_get         (table_name|dbi, [val_cols], keys...) -> true, vals... | false, err
+	tx:[try_]del       (table_name|dbi, keys...) -> true | nil,err
+	tx:[try_]del_exact (table_name|dbi, [cols], keysvals...) -> true | nil,err
 
-	cur:current ([cols]) -> keysvals...
-	cur:next    ([cols]) -> keysvals...
-	tx:each     (tbl_name, [cols]) -> cur, keysvals...
+	cur:current        ([cols]) -> keysvals...
+	cur:next           ([cols]) -> keysvals...
+	cur:[try_|must]get ([cols], ...) -> vals...
+
+	tx:each            (tbl_name|dbi, [cols]) -> cur, keysvals...
 
 		cols format   |  vals...              | keyvals...
 		--------------+-----------------------+------------
@@ -72,6 +74,7 @@ local
 
 assert(ffi.abi'le')
 
+local mdbx_C = mdbx
 local Db = mdbx_db
 local Tx = mdbx_tx
 local Cur = mdbx_cur
@@ -521,14 +524,17 @@ function Tx:save_table_schema(table_name, schema)
 	end
 	local k = table_name
 	local v = pp(t, false)
-	self:put_raw('$schema', k, #k, v, #v)
+	self:put_raw('$schema',
+		cast(u8p, k), #k,
+		cast(u8p, v), #v
+	)
 end
 
 function Tx:load_table_schema(table_name)
 	if table_name == '$schema' then return end
 	if not self:table_exists'$schema' then return end
 	local k = table_name
-	local v, v_len = self:try_get_raw('$schema', k, #k)
+	local v, v_len = self:get_raw('$schema', cast(u8p, k), #k)
 	if not v then return end
 	local schema = eval(str(v, v_len))
 	--reconstruct schema from stored table schema.
@@ -605,7 +611,7 @@ function Tx:try_open_table(tab, mode, flags)
 		end
 	end
 	flags = bor(flags or 0,
-		paper_schema and paper_schema.int_key and C.MDBX_INTEGERKEY or 0)
+		paper_schema and paper_schema.int_key and mdbx_C.MDBX_INTEGERKEY or 0)
 	local t, created = try_raw_open_table(self, table_name, mode, flags)
 	if not t then return nil, created end
 	t.schema = paper_schema
@@ -618,8 +624,8 @@ end
 function Tx:dbi(tab, mode)
 	local t = self.db.open_tables[tab or false]
 	if not t then
-		if mode == 'w' then
-			t = self:open_table(tab, 'w')
+		if mode == 'w' or mode == 'c' then
+			t = self:open_table(tab, mode)
 		else
 			local err
 			t, err = self:try_open_table(tab)
@@ -642,15 +648,6 @@ function Tx:try_drop_table(tab)
 	assert(try_raw_drop_table(self, dbi))
 	self:delete_table_schema(name)
 	return true
-end
-
-function Tx:create_table(tbl_name)
-	self:delete_table_schema(tbl_name)
-	local t, created = self:open_table(tbl_name, 'w')
-	if not created then
-		self:clear_table(tbl_name)
-	end
-	return t
 end
 
 local function key_field(schema, col)
@@ -766,29 +763,33 @@ end
 
 function Tx:put(tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab, 'w')
-	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local val_rec, val_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	local cols, as = cols_list(cols)
 	cols = cols or schema.cols
-	local key_sz = encode_key(schema, key_rec, key_buf_sz, cols, as, ...)
-	local val_sz = encode_val(schema, val_rec, val_buf_sz, cols, as, ...)
-	self:put_raw(dbi, key_rec, key_sz, val_rec, val_sz)
+	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
+	local k_sz = encode_key(schema, k, k_buf_sz, cols, as, ...)
+	local v_sz = encode_val(schema, v, v_buf_sz, cols, as, ...)
+	self:put_raw(dbi, k, k_sz, v, v_sz)
 	if schema.indexes then
-		for _, idx in ipairs(schema.index) do
-			idx:update(key_rec, key_sz, cols, as, ...)
+		for _,idx in ipairs(schema.index) do
+			idx:update(k, k_sz, v, v_sz)
 		end
 	end
-	self:update_indexes(tab)
 end
 
-function Tx:try_del(tab, cols, ...)
+function Tx:try_del(tab, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return nil, schema end
-	local cols, as = cols_list(cols)
-	cols = cols or schema.key_cols
-	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local key_sz = encode_key(schema, key_rec, key_buf_sz, cols, as, ...)
-	return self:try_del_raw(dbi, key_rec, key_sz)
+	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+	local k_sz = encode_key(schema, k, k_buf_sz, schema.key_cols, nil, ...)
+	local ok, err = self:try_del_raw(dbi, k, k_sz)
+	if not ok then return nil, err end
+	if schema.indexes then
+		for _,idx in ipairs(schema.index) do
+			idx:del(k, k_sz)
+		end
+	end
+	return true
 end
 function Tx:del(...)
 	assert(self:try_del(...))
@@ -799,11 +800,18 @@ function Tx:try_del_exact(tab, cols, ...)
 	if not dbi then return nil, schema end
 	local cols, as = cols_list(cols)
 	cols = cols or schema.cols
-	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local val_rec, val_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
-	local key_sz = encode_key(schema, key_rec, key_buf_sz, cols, as, ...)
-	local val_sz = encode_val(schema, val_rec, val_buf_sz, cols, as, ...)
-	return self:try_del_raw(dbi, key_rec, key_sz, val_rec, val_sz)
+	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
+	local k_sz = encode_key(schema, k, k_buf_sz, cols, as, ...)
+	local v_sz = encode_val(schema, v, v_buf_sz, cols, as, ...)
+	local ok, err = self:try_del_raw(dbi, k, k_sz, v, v_sz)
+	if not ok then return nil, err end
+	if schema.indexes then
+		for _,idx in ipairs(schema.index) do
+			idx:del(k, k_sz, v, v_sz)
+		end
+	end
+	return true
 end
 function Tx:del_exact(...)
 	assert(self:try_del_exact(...))
@@ -813,21 +821,21 @@ function Tx:put_records(tab, cols, records)
 	local dbi, schema = self:dbi_schema(tab, 'w')
 	local cols, as = cols_list(cols)
 	cols = cols or schema.cols
-	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local val_rec, val_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
+	local k, k_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+	local v, v_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	for _,vals in ipairs(records) do
-		local key_sz = encode_key(schema, key_rec, key_buf_sz, cols, as, vals)
-		local val_sz = encode_val(schema, val_rec, val_buf_sz, cols, as, vals)
-		self:put_raw(dbi, key_rec, key_sz, val_rec, val_sz)
+		local k_sz = encode_key(schema, k, k_buf_sz, cols, as, vals)
+		local v_sz = encode_val(schema, v, v_buf_sz, cols, as, vals)
+		self:put_raw(dbi, k, k_sz, v, v_sz)
 	end
 end
 
 --reading --------------------------------------------------------------------
 
-local function get_raw_by_pk(self, dbi, schema, cols, as, ...)
-	local key_rec, key_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local key_sz = encode_key(schema, key_rec, key_buf_sz, cols, as, ...)
-	return self:get_raw(dbi, key_rec, key_sz)
+local function get_raw_by_pk(self, dbi, schema, ...)
+	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+	local k_sz = encode_key(schema, k, k_buf_sz, schema.key_cols, nil, ...)
+	return self:get_raw(dbi, k, k_sz)
 end
 
 local decode_key do
@@ -863,27 +871,6 @@ function decode_key(schema, rec, rec_sz, t, as)
 end
 end
 
-function Tx:is_null(tab, col, key_cols, ...) --returns is_null, [reason]
-	local dbi, schema = self:dbi_schema(tab)
-	if not dbi then return true, schema end
-	local f, vi = val_field(schema, col)
-	local key_cols, as = cols_list(key_cols)
-	key_cols = key_cols or schema.key_cols
-	local rec, rec_sz, err = get_raw_by_pk(self, dbi, schema, key_cols, as, ...)
-	if not rec then return true, err end
-	return C.schema_val_is_null(schema._st, vi-1, rec, rec_sz) ~= 0
-end
-
-function Tx:exists(tab, key_cols, ...) --returns record_exists, table_exists
-	local dbi, schema = self:dbi_schema(tab)
-	if not dbi then return false, false end
-	local key_cols, as = cols_list(key_cols)
-	key_cols = key_cols or schema.key_cols
-	local rec = get_raw_by_pk(self, dbi, schema, key_cols, as, ...)
-	if not rec then return false, true end
-	return true, true
-end
-
 local decode_val do
 local pout = new'u8*[1]'
 function decode_val(schema, rec, rec_sz, t, cols, as, i0)
@@ -910,40 +897,53 @@ function decode_val(schema, rec, rec_sz, t, cols, as, i0)
 end
 end
 
-function Tx:try_get(tab, val_cols, key_cols, ...)
+function Tx:is_null(tab, col, ...) --returns is_null, [reason]
+	local dbi, schema = self:dbi_schema(tab)
+	if not dbi then return true, schema end
+	local f, vi = val_field(schema, col)
+	local v, v_sz, err = get_raw_by_pk(self, dbi, schema, ...)
+	if not v then return true, err end
+	return C.schema_val_is_null(schema._st, vi-1, v, v_sz) ~= 0
+end
+
+function Tx:exists(tab, ...) --returns record_exists, table_exists
+	local dbi, schema = self:dbi_schema(tab)
+	if not dbi then return false, false end
+	local v = get_raw_by_pk(self, dbi, schema, ...)
+	if not v then return false, true end
+	return true, true
+end
+
+function Tx:try_get(tab, val_cols, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return false, schema end
-	local key_cols, as = cols_list(key_cols)
-	key_cols = key_cols or schema.key_cols
-	local rec, rec_sz, err = get_raw_by_pk(self, dbi, schema, key_cols, as, ...)
-	if not rec then return false, err end
+	local v, v_sz, err = get_raw_by_pk(self, dbi, schema, ...)
+	if not v then return false, err end
 	local val_cols, as = cols_list(val_cols)
 	val_cols = val_cols or schema.val_cols
 	local t = {}
-	local n = decode_val(schema, rec, rec_sz, t, val_cols, as, 1)
+	local n = decode_val(schema, v, v_sz, t, val_cols, as, 1)
 	if as then
 		return true, t, n
 	else
 		return true, unpack(t, 1, n)
 	end
 end
-do
-local function finish(ok, ...)
+
+local function skip_ok(ok, ...)
 	if not ok then return end
 	return ...
 end
-function Tx:get(...)
-	return finish(self:try_get(...))
-end
-end
-do
-local function finish(ok, ...)
+local function must_ok(ok, ...)
 	assert(ok, ...)
 	return ...
 end
-function Tx:must_get(...)
-	return finish(self:get(...))
+
+function Tx:get(...)
+	return skip_ok(self:try_get(...))
 end
+function Tx:must_get(...)
+	return must_ok(self:try_get(...))
 end
 
 local raw_cursor = Tx.cursor
@@ -956,40 +956,60 @@ function Tx:cursor(tab, mode)
 	return cur
 end
 
-local function decode_kv(schema, k, v, t, val_cols, as)
-	local kn = decode_key(schema, k.data, k.size, t, as)
-	local vn = decode_val(schema, v.data, v.size, t, val_cols, as, kn + 1)
+local function decode_kv(schema, k, k_sz, v, v_sz, t, val_cols, as)
+	local kn = decode_key(schema, k, k_sz, t, as)
+	local vn = decode_val(schema, v, v_sz, t, val_cols, as, kn + 1)
 	local n = kn + vn
 	if as then
-		return t, n
+		return true, t, n
 	else
-		return unpack(t, 1, n) --keys can't be nil so this can't stop too soon.
+		return true, unpack(t, 1, n) --keys can't be nil so this can't stop too soon.
 	end
 end
-function Cur:current(val_cols)
-	local k,v = self:current_raw_kv()
+function Cur:_try_get(val_cols, flags)
+	local k, k_sz, v, v_sz = self:_try_get_raw(flags)
 	if not k then return end
 	local t, val_cols, as = self._t, self._val_cols, self._as
 	if not t then t, val_cols, as = {}, cols_list(val_cols) end
 	val_cols = val_cols or self.schema.val_cols
-	return decode_kv(self.schema, k, v, t, val_cols, as)
+	return decode_kv(self.schema, k, k_sz, v, v_sz, t, val_cols, as)
+end
+function Cur:try_current(val_cols)
+	return self:_try_get(val_cols, mdbx_C.MDBX_GET_CURRENT)
+end
+function Cur:current(val_cols)
+	return skip_ok(self:_try_get(val_cols, mdbx_C.MDBX_GET_CURRENT))
+end
+function Cur:try_next(val_cols)
+	return self:_try_get(val_cols, mdbx_C.MDBX_NEXT)
 end
 function Cur:next(val_cols)
-	local k,v = self:next_raw_kv()
-	if not k then return end
+	return skip_ok(self:_try_get(val_cols, mdbx_C.MDBX_NEXT))
+end
+function Cur:try_get(val_cols, ...)
+	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+	local k_sz = encode_key(schema, k, k_buf_sz, self.schema.key_cols, nil, ...)
+	local v, v_sz = self:get_raw(k, k_sz)
+	if not v then return end
 	local t, val_cols, as = self._t, self._val_cols, self._as
 	if not t then t, val_cols, as = {}, cols_list(val_cols) end
 	val_cols = val_cols or self.schema.val_cols
-	return decode_kv(self.schema, k, v, t, val_cols, as)
+	return decode_kv(self.schema, k, k_sz, v, v_sz, t, val_cols, as)
 end
-local function cur_next(self, _, val_cols)
-	return self, self:next(val_cols)
+function Cur:get(...)
+	return skip_ok(self:try_get(...))
+end
+function Cur:must_get(...)
+	return must_ok(self:try_get(...))
+end
+local function each_next(self)
+	return self, self:_try_get(nil, mdbx_C.MDBX_NEXT)
 end
 function Tx:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
 	cur._val_cols, cur._as = cols_list(val_cols)
 	cur._t = t or {}
-	return cur_next, cur
+	return each_next, cur
 end
 
 --schema sync'ing ------------------------------------------------------------
@@ -1050,21 +1070,59 @@ function Tx:create_index(tbl_name, cols)
 	prepare_table_schema(ix_schema)
 	self.db.schema.tables[ix_tbl_name] = ix_schema
 
+	local ix_dbi = self:dbi(ix_tbl_name, 'c')
+
 	--create index table and fill it up
-	self:create_table(ix_tbl_name)
 	local dt = {}
 	local key_rec, key_buf_sz = key_rec_buffer(ix_schema.key_fields.max_rec_size)
-	for cur, k, v in self:each_raw_kv(tbl_name, '[]') do
+	for cur, k, v in self:each_raw(tbl_name, '[]') do
 		local vn = decode_val(schema, v.data, v.size, cols, dt, '[]')
 		local key_sz = encode_key(ix_schema, key_rec, key_buf_sz, '[]', dt)
 		self:put_raw(dbi, key_rec, key_sz, k.data, k.size)
 	end
 
 	--create index update function
+	local ix = {}
+	add(attr(schema, 'indexes'), ix)
 	local ix = attr(attr(schema, 'indexes'), ix_tbl_name)
-	function ix:update()
+
+	function ix:update(tx, k, k_sz, v, v_sz)
+
+		-- 1. check if row with same pkey exists
+		-- 2. derive new unique key from new_value
+		-- 3. if existing row, derive old unique key
+		-- 4. check uniqueness: is ukey already used by another row?
+		-- 5. if existing row and unique key changed, remove old index entry
+		-- 6. upsert into main table
+		-- 7. upsert unique index
+		--[[
+
+		A -> X		X -> A
+		------------------
+	!	A -> X	!	X -> A
+	~	A -> Y		Y -> A
+	+	B -> X		X -> B
+	+	B -> Y		Y -> B
+
+		]]
+
+		local dt = {}
+		local key_rec, key_buf_sz = key_rec_buffer(ix_schema.key_fields.max_rec_size)
+		local vn = decode_val(schema, v, v_sz, cols, dt, '[]')
+		local key_sz = encode_key_record(ix_schema, key_rec, key_buf_sz, '[]', dt)
+		--local tx:get_raw(ix_dbi, key_rec, key_sz)
 
 	end
+
+	function ix:del(tx, k, k_sz)
+		--
+	end
+
+	function ix:drop(tx)
+		tx:drop_table(ix_dbi)
+		ix_dbi = nil
+	end
+
 end
 
 function Db:sync_schema(src, opt)
@@ -1293,7 +1351,7 @@ if not ... then
 			assert(tx:is_null(tbl.name, 's4', s1, s2) == (s4 == nil))
 			add(t1, {s1, s2, s3, s4})
 		end
-		local s3, s4 = tx:get(tbl.name, 's3 s4', nil, 'xx', 'y')
+		local s3, s4 = tx:get(tbl.name, 's3 s4', 's1 s2', 'xx', 'y')
 		assert(s3 == 'z')
 		assert(s4 == 'zz')
 		tx:commit()
