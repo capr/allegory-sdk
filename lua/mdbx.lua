@@ -45,7 +45,9 @@ CRUD
 
 	tx:[must_]get_raw    (table_name|dbi, key_data, key_size) -> val_data, val_size | nil,0,err
 	tx:put_raw           (table_name|dbi, key_data, key_size, val_data, val_size, [flags])
-	tx:[try_]del_raw     (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
+	tx:insert_raw        (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'exists'
+	tx:update_raw        (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'not_found'
+	tx:[must_]del_raw    (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
 
 CURSORS
 
@@ -57,6 +59,7 @@ CURSORS
 	cur:next_raw         () -> key,key_size, val,val_size
 	cur:current_raw      () -> key,key_size, val,val_size
 	cur:[must_]get_raw   (key_data, key_size) -> val,val_size | nil
+	cur:set_raw          (key_data, key_size, val_data, val_size)
 
 	tx:each_raw(table_name[, 'w']) -> iter() -> cur, mdbx_key, mdbx_val
 
@@ -1072,7 +1075,6 @@ function Tx:create_table(tbl_name)
 	self:open_table(tbl_name, 'c')
 end
 
-do
 local key = new'MDBX_val'
 local val = new'MDBX_val'
 
@@ -1096,10 +1098,24 @@ function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
 	val.data = val_data
 	val.size = val_size
 	local dbi = isnum(tab) and tab or self:dbi(tab, 'w')
-	checkz(C.mdbx_put(self.txn, dbi, key, val, flags or 0))
+	local rc = C.mdbx_put(self.txn, dbi, key, val, flags or 0)
+	if rc == C.MDBX_KEYEXIST then return nil, 'exists', val.data, num(val.size) end
+	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
+	checkz(rc)
+	return true
 end
 
-function Tx:try_del_raw(tab, key_data, key_size, val_data, val_size)
+function Tx:insert_raw(tab, key_data, key_size, val_data, val_size, flags)
+	return self:put_raw(tab, key_data, key_size, val_data, val_size,
+		bor(flags or 0, C.MDBX_NOOVERWRITE))
+end
+
+function Tx:update_raw(tab, key_data, key_size, val_data, val_size, flags)
+	return self:put_raw(tab, key_data, key_size, val_data, val_size,
+		bor(flags or 0, C.MDBX_CURRENT))
+end
+
+function Tx:del_raw(tab, key_data, key_size, val_data, val_size)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
 	key.data = key_data
@@ -1113,14 +1129,12 @@ function Tx:try_del_raw(tab, key_data, key_size, val_data, val_size)
 	checkz(rc)
 	return true
 end
-function Tx:del_raw(...)
-	assert(self:try_del_raw(...))
+function Tx:must_del_raw(...)
+	assert(self:del_raw(...))
 end
 
-end --do
-
 local Cur = {}; mdbx_cur = Cur
-do
+
 local curp = new'MDBX_cursor*[1]'
 function Tx:cursor(tab, mode)
 	local dbi = isnum(tab) and tab or self:dbi(tab, mode)
@@ -1137,7 +1151,6 @@ function Tx:cursor(tab, mode)
 	add(attr(self, 'cursors'), cur)
 	return cur
 end
-end
 
 function Cur:closed()
 	return self.tx == nil
@@ -1150,12 +1163,8 @@ function Cur:close()
 	self.tx = nil
 end
 
-do
-local key = new'MDBX_val'
-local val = new'MDBX_val'
-
-function Cur:_try_get_raw(flags)
-	if self:closed() then return end
+function Cur:_get_raw(flags)
+	assert(not self:closed(), 'closed')
 	local rc = C.mdbx_cursor_get(self.mdbx_cursor, key, val, flags)
 	if rc == 0 then
 		return
@@ -1168,27 +1177,35 @@ function Cur:_try_get_raw(flags)
 	checkz(rc)
 end
 function Cur:next_raw()
-	return self:_try_get_raw(C.MDBX_NEXT)
+	return self:_get_raw(C.MDBX_NEXT)
 end
 function Cur:current_raw()
-	return self:_try_get_raw(C.MDBX_GET_CURRENT)
-end
-function Cur:try_get_raw(k, k_sz)
-	key.data = k
-	key.size = k_sz
-	local _, _, v, v_sz = self:_try_get_raw(C.MDBX_SET_KEY)
-	return v, v_sz
+	return self:_get_raw(C.MDBX_GET_CURRENT)
 end
 function Cur:get_raw(k, k_sz)
-	local v, v_sz = self:try_get_raw(k, k_sz)
+	key.data = k
+	key.size = k_sz
+	local _, _, v, v_sz = self:_get_raw(C.MDBX_SET_KEY)
+	return v, v_sz
+end
+function Cur:must_get_raw(k, k_sz)
+	key.data = k
+	key.size = k_sz
+	local _, _, v, v_sz = self:_get_raw(C.MDBX_SET_KEY)
 	assert(v, 'not_found')
 	return v, v_sz
 end
+
+function Cur:set_raw(v, v_sz)
+	assert(not self:closed(), 'closed')
+	checkz(C.mdbx_cursor_get(self.mdbx_cursor, key, val, C.MDBX_GET_CURRENT))
+	val.data = v
+	val.size = v_sz
+	checkz(C.mdbx_cursor_put(self.mdbx_cursor, key, val, C.MDBX_CURRENT))
 end
 
-do
 local function each_raw_next(self)
-	local k, k_sz, v, v_sz = self:_try_get_raw(C.MDBX_NEXT)
+	local k, k_sz, v, v_sz = self:_get_raw(C.MDBX_NEXT)
 	if not k then
 		self:close()
 		return
@@ -1200,7 +1217,6 @@ function Tx:each_raw(tab, mode)
 	if not cur then return noop end
 	return each_raw_next, cur
 end
-end
 
 do
 local stat = new'MDBX_stat'
@@ -1211,9 +1227,9 @@ function Tx:try_stat(tab)
 	checkz(C.mdbx_dbi_stat(self.txn, dbi, stat, stat_sz))
 	return stat
 end
-end
 function Tx:stat(tab)
 	return assert(self:try_stat(tab))
+end
 end
 
 function Tx:entries(tab)

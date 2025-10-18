@@ -22,6 +22,8 @@
 API, extends mdbx.lua API
 
 	tx:put             (table_name|dbi, [cols], keysvals...)
+	tx:insert          (table_name|dbi, [cols], keysvals...) -> true | nil,'exists'
+	tx:update          (table_name|dbi, [cols], keysvals...) -> true | nil,'not_found'
 	tx:put_records     (table_name|dbi, [cols], {keysvals1,...})
 	tx:is_null         (table_name|dbi, col, keys...) -> is_null, [reason]
 	tx:exists          (table_name|dbi, keys...) -> record_exists, table_exists
@@ -74,7 +76,7 @@ local
 
 assert(ffi.abi'le')
 
-local mdbx_C = mdbx
+local mdbx = mdbx
 local Db = mdbx_db
 local Tx = mdbx_tx
 local Cur = mdbx_cur
@@ -554,7 +556,7 @@ function Tx:load_table_schema(table_name)
 end
 
 function Tx:delete_table_schema(table_name)
-	self:try_del_raw('$schema', table_name, #table_name)
+	self:del_raw('$schema', table_name, #table_name)
 end
 
 function Tx:try_open_table(tab, mode, flags)
@@ -611,7 +613,7 @@ function Tx:try_open_table(tab, mode, flags)
 		end
 	end
 	flags = bor(flags or 0,
-		paper_schema and paper_schema.int_key and mdbx_C.MDBX_INTEGERKEY or 0)
+		paper_schema and paper_schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
 	local t, created = try_raw_open_table(self, table_name, mode, flags)
 	if not t then return nil, created end
 	t.schema = paper_schema
@@ -761,7 +763,7 @@ function encode_val(schema, rec, rec_buf_sz, cols, as, ...)
 end
 end
 
-function Tx:put(tab, cols, ...)
+local function put(self, flags, tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab, 'w')
 	local cols, as = cols_list(cols)
 	cols = cols or schema.cols
@@ -769,20 +771,40 @@ function Tx:put(tab, cols, ...)
 	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	local k_sz = encode_key(schema, k, k_buf_sz, cols, as, ...)
 	local v_sz = encode_val(schema, v, v_buf_sz, cols, as, ...)
-	self:put_raw(dbi, k, k_sz, v, v_sz)
 	if schema.indexes then
-		for _,idx in ipairs(schema.index) do
-			idx:update(k, k_sz, v, v_sz)
+		local cur = self:cursor(dbi, 'w')
+		local v0, v0_sz = cur:get_raw(dbi, k, k_sz)
+		local nothing_changed = v0 and v0_sz == v_sz and memcmp(v, v0, v_sz) == 0
+		if not nothing_changed then
+			--TODO: copy v0, v0_sz in temp buffer
+			for _,idx in ipairs(schema.index) do
+				idx:update(k, k_sz, v, v_sz, v0, v0_sz)
+			end
+			if v0 then
+				cur:set_raw(dbi, v, v_sz)
+			end
 		end
+		cur:close()
+	else
+		self:put_raw(dbi, k, k_sz, v, v_sz, flags)
 	end
 end
+function Tx:put(...)
+	return put(self, nil, ...)
+end
+function Tx:insert(...)
+	return put(self, C.MDBX_NOOVERWRITE, ...)
+end
+function Tx:update(...)
+	return put(self, C.MDBX_CURRENT, ...)
+end
 
-function Tx:try_del(tab, ...)
+function Tx:del(tab, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return nil, schema end
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local k_sz = encode_key(schema, k, k_buf_sz, schema.key_cols, nil, ...)
-	local ok, err = self:try_del_raw(dbi, k, k_sz)
+	local ok, err = self:del_raw(dbi, k, k_sz)
 	if not ok then return nil, err end
 	if schema.indexes then
 		for _,idx in ipairs(schema.index) do
@@ -791,11 +813,11 @@ function Tx:try_del(tab, ...)
 	end
 	return true
 end
-function Tx:del(...)
-	assert(self:try_del(...))
+function Tx:must_del(...)
+	assert(self:del(...))
 end
 
-function Tx:try_del_exact(tab, cols, ...)
+function Tx:del_exact(tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return nil, schema end
 	local cols, as = cols_list(cols)
@@ -804,7 +826,7 @@ function Tx:try_del_exact(tab, cols, ...)
 	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	local k_sz = encode_key(schema, k, k_buf_sz, cols, as, ...)
 	local v_sz = encode_val(schema, v, v_buf_sz, cols, as, ...)
-	local ok, err = self:try_del_raw(dbi, k, k_sz, v, v_sz)
+	local ok, err = self:del_raw(dbi, k, k_sz, v, v_sz)
 	if not ok then return nil, err end
 	if schema.indexes then
 		for _,idx in ipairs(schema.index) do
@@ -813,8 +835,8 @@ function Tx:try_del_exact(tab, cols, ...)
 	end
 	return true
 end
-function Tx:del_exact(...)
-	assert(self:try_del_exact(...))
+function Tx:must_del_exact(...)
+	assert(self:del_exact(...))
 end
 
 function Tx:put_records(tab, cols, records)
@@ -967,7 +989,7 @@ local function decode_kv(schema, k, k_sz, v, v_sz, t, val_cols, as)
 	end
 end
 function Cur:_try_get(val_cols, flags)
-	local k, k_sz, v, v_sz = self:_try_get_raw(flags)
+	local k, k_sz, v, v_sz = self:_get_raw(flags)
 	if not k then return end
 	local t, val_cols, as = self._t, self._val_cols, self._as
 	if not t then t, val_cols, as = {}, cols_list(val_cols) end
@@ -975,16 +997,16 @@ function Cur:_try_get(val_cols, flags)
 	return decode_kv(self.schema, k, k_sz, v, v_sz, t, val_cols, as)
 end
 function Cur:try_current(val_cols)
-	return self:_try_get(val_cols, mdbx_C.MDBX_GET_CURRENT)
+	return self:_try_get(val_cols, mdbx.MDBX_GET_CURRENT)
 end
 function Cur:current(val_cols)
-	return skip_ok(self:_try_get(val_cols, mdbx_C.MDBX_GET_CURRENT))
+	return skip_ok(self:_try_get(val_cols, mdbx.MDBX_GET_CURRENT))
 end
 function Cur:try_next(val_cols)
-	return self:_try_get(val_cols, mdbx_C.MDBX_NEXT)
+	return self:_try_get(val_cols, mdbx.MDBX_NEXT)
 end
 function Cur:next(val_cols)
-	return skip_ok(self:_try_get(val_cols, mdbx_C.MDBX_NEXT))
+	return skip_ok(self:_try_get(val_cols, mdbx.MDBX_NEXT))
 end
 function Cur:try_get(val_cols, ...)
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
@@ -1003,7 +1025,7 @@ function Cur:must_get(...)
 	return must_ok(self:try_get(...))
 end
 local function each_next(self)
-	return self, self:_try_get(nil, mdbx_C.MDBX_NEXT)
+	return self, self:_try_get(nil, mdbx.MDBX_NEXT)
 end
 function Tx:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
@@ -1054,6 +1076,9 @@ local function index_update(dbi, schema, ix_schema, k, v, dt)
 	self:put_raw(dbi, key_rec, key_sz, k.data, k.size)
 end
 
+local ix1_key_rec_buffer = buffer()
+local ix2_key_rec_buffer = buffer()
+
 function Tx:create_index(tbl_name, cols)
 	local dbi, schema = self:dbi_schema(tbl_name)
 
@@ -1074,7 +1099,7 @@ function Tx:create_index(tbl_name, cols)
 
 	--create index table and fill it up
 	local dt = {}
-	local key_rec, key_buf_sz = key_rec_buffer(ix_schema.key_fields.max_rec_size)
+	local key_rec, key_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 	for cur, k, v in self:each_raw(tbl_name, '[]') do
 		local vn = decode_val(schema, v.data, v.size, cols, dt, '[]')
 		local key_sz = encode_key(ix_schema, key_rec, key_buf_sz, '[]', dt)
@@ -1086,32 +1111,34 @@ function Tx:create_index(tbl_name, cols)
 	add(attr(schema, 'indexes'), ix)
 	local ix = attr(attr(schema, 'indexes'), ix_tbl_name)
 
-	function ix:update(tx, k, k_sz, v, v_sz)
+	function ix:update(tx, k, k_sz, v, v_sz, v0, v0_sz)
 
-		-- 1. check if row with same pkey exists
-		-- 2. derive new unique key from new_value
-		-- 3. if existing row, derive old unique key
-		-- 4. check uniqueness: is ukey already used by another row?
-		-- 5. if existing row and unique key changed, remove old index entry
-		-- 6. upsert into main table
-		-- 7. upsert unique index
-		--[[
+		--[[ cases to cover:
 
-		A -> X		X -> A
-		------------------
-	!	A -> X	!	X -> A
-	~	A -> Y		Y -> A
-	+	B -> X		X -> B
-	+	B -> Y		Y -> B
+				A -> X     X -> A
+			--------------------
+			!  A -> X   ! X -> A                handled by the caller
+			~  A -> Y   + Y -> A   - X -> A
+			+  B -> X   x X -> B
+			+  B -> Y   + Y -> B
 
 		]]
 
 		local dt = {}
-		local key_rec, key_buf_sz = key_rec_buffer(ix_schema.key_fields.max_rec_size)
+		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 		local vn = decode_val(schema, v, v_sz, cols, dt, '[]')
-		local key_sz = encode_key_record(ix_schema, key_rec, key_buf_sz, '[]', dt)
-		--local tx:get_raw(ix_dbi, key_rec, key_sz)
+		local xk_sz = encode_key_record(ix_schema, xk, xk_buf_sz, '[]', dt)
 
+		if v0 then --record updated: remove the old index and add the new one.
+			local xk0, xk0_buf_sz = ix2_key_rec_buffer(ix_schema.key_fields.max_rec_size)
+			local vn = decode_val(schema, v0, v0_sz, cols, dt, '[]')
+			local xk0_sz = encode_key_record(ix_schema, xk0, xk0_buf_sz, '[]', dt)
+			idx:must_del_raw(xk0, xk0_sz)
+			idx:put_raw(xk, xk_sz, k, k_sz)
+		else --insert record: insert index, but updating it is an unique violation.
+			assertf(idx:put_raw(xk, xk_sz, k, k_sz, mdbx.MDBX_NOOVERWRITE),
+				'unique index violation: %s', ix_tbl_name)
+		end
 	end
 
 	function ix:del(tx, k, k_sz)
