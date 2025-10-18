@@ -248,6 +248,8 @@ FFI ALLOCATION
 	malloc(size) -> p              C malloc
 	realloc(p, size) -> p          C realloc
 	free(p)                        C free
+	memcmp(p1, p2, sz) -> i        memcmp
+
 CONFIG
 	config(k[, default]) -> v      get/set global config value
 	with_config(conf, f, ...) -> ...    run f with custom config table
@@ -2368,7 +2370,10 @@ cdef[[
 void* malloc  (size_t size);
 void* realloc (void* ptr, size_t size);
 void  free    (void* ptr);
+int   memcmp  (const void * ptr1, const void * ptr2, size_t num);
 ]]
+
+memcmp = C.memcmp
 
 local function ptr(p) --convert nulls to nil so that `if not p` works.
 	return p ~= nil and p or nil
