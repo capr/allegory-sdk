@@ -48,6 +48,7 @@ CRUD
 	tx:[try_]insert_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'exists'
 	tx:[try_]update_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'not_found'
 	tx:[must_]del_raw    (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
+	tx:gen_id            (table_name|dbi) -> n     next sequence
 
 CURSORS
 
@@ -1139,6 +1140,14 @@ function Tx:del_raw(tab, key_data, key_size, val_data, val_size)
 end
 function Tx:must_del_raw(...)
 	assert(self:del_raw(...))
+end
+
+local seqbuf = u64a(1)
+function Tx:gen_id(tab)
+	local dbi = isnum(tab) and tab or self:dbi(tab)
+	if not dbi then return nil, 'table_not_found' end
+	checkz(C.mdbx_dbi_sequence(self.txn, dbi, seqbuf, 1))
+	return num(seqbuf[0])
 end
 
 local Cur = {}; mdbx_cur = Cur

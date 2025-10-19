@@ -116,8 +116,8 @@ local function xapp(...)
 		local dry = doit ~= 'forealz'
 		db():sync_schema(app.schema, {dry = dry})
 		if not dry then
-			put('tenant', '{}', {
-				tenant = 1,
+			insert('tenant', '{}', {
+				--tenant = 1,
 				name = 'default',
 				host = config'host',
 			})
