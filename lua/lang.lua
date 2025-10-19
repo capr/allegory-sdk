@@ -625,7 +625,7 @@ function lang_schema()
 	tables.currency = {
 		currency    , currency, not_null, pk,
 		decimals    , int16, not_null,
-		en_name     , name, not_null, uk(currency, en_name),
+		en_name     , name, not_null, uk(en_name),
 		symbol      , name,
 	}
 

@@ -243,13 +243,24 @@ local function add_pk(self, tbl, cols)
 	assertf(not tbl.pk, 'pk already applied for table `%s`', tbl.name)
 	tbl.pk = check_cols('pk', tbl, cols)
 	tbl.pk.desc = imap(cols, return_false)
+	--apply `not_null` flag to fields.
+	for _,col in ipairs(tbl.pk) do
+		local fld = tbl.fields[col]
+		fld.not_null = true
+	end
 end
 
-local function add_ix(self, T, tbl, cols)
+local function add_ix(self, T, tbl, cols, unique)
 	local t = attr(tbl, T..'s')
 	local k = _(self.ix_name_format, T, tbl.name, cat(cols, '_'))
 	assertf(not t[k], 'duplicate %s `%s`', T, k)
 	t[k] = check_cols(T, tbl, cols)
+	if unique then --apply `not_null` flag to fields.
+		for _,col in ipairs(tbl.pk) do
+			local fld = tbl.fields[col]
+			fld.not_null = true
+		end
+	end
 end
 
 local function add_fk(self, tbl, cols, ref_tbl_name, ondelete, onupdate, fld)
@@ -399,23 +410,23 @@ function schema:add_weak_fk(tbl, cols, ref_tbl)
 	self:add_fk(tbl, cols, ref_tbl, 'set null')
 end
 
-local function ix_func(T)
+local function ix_func(T, unique)
 	return function(arg1, ...)
 		if isschema(arg1) then --used as flag: make an index on current field.
 			local self, tbl, fld = arg1, ...
-			add_ix(self, T, tbl, {fld.col, desc = {false}})
+			add_ix(self, T, tbl, {fld.col, desc = {false}}, unique)
 			fld[T] = true
 		else --called by user, return a flag generator.
 			local cols = pack(arg1, ...)
 			return function(self, tbl, fld)
 				local cols = parse_ix_cols(fld, unpack(cols))
-				add_ix(self, T, tbl, cols)
+				add_ix(self, T, tbl, cols, unique)
 			end
 		end
 	end
 end
-schema.env.uk = ix_func'uk'
-schema.env.ix = ix_func'ix'
+schema.env.uk = ix_func('uk', true)
+schema.env.ix = ix_func('ix')
 
 schema.flags = {} --not used
 schema.types = {} --not used
@@ -423,13 +434,8 @@ schema.type_attrs = {} --not used
 
 function schema.env.pk(arg1, ...)
 	if isschema(arg1) then --used as flag.
-		local self, tbl, cur_fld = arg1, ...
+		local self, tbl = arg1, ...
 		add_pk(self, tbl, imap(tbl.fields, 'col'))
-		--apply `not_null` flag to all fields up to this.
-		for _,fld in ipairs(tbl.fields) do
-			fld.not_null = true
-			if fld == cur_fld then break end
-		end
 	else --called by user, return a flag generator.
 		local cols = pack(arg1, ...)
 		return function(self, tbl, fld)

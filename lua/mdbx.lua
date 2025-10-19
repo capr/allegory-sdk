@@ -45,8 +45,8 @@ CRUD
 
 	tx:[must_]get_raw    (table_name|dbi, key_data, key_size) -> val_data, val_size | nil,0,err
 	tx:put_raw           (table_name|dbi, key_data, key_size, val_data, val_size, [flags])
-	tx:try_insert_raw    (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'exists'
-	tx:try_update_raw    (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'not_found'
+	tx:[try_]insert_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'exists'
+	tx:[try_]update_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'not_found'
 	tx:[must_]del_raw    (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
 
 CURSORS
@@ -1079,10 +1079,10 @@ local key = new'MDBX_val'
 local val = new'MDBX_val'
 
 function Tx:get_raw(tab, key_data, key_size, val_data, val_size)
-	key.data = key_data
-	key.size = key_size
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
+	key.data = key_data
+	key.size = key_size
 	local rc = C.mdbx_get(self.txn, dbi, key, val)
 	if rc == 0 then return val.data, num(val.size) end
 	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
@@ -1093,11 +1093,11 @@ function Tx:must_get_raw(...)
 end
 
 function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
+	local dbi = isnum(tab) and tab or self:dbi(tab, 'w')
 	key.data = key_data
 	key.size = key_size
 	val.data = val_data
 	val.size = val_size
-	local dbi = isnum(tab) and tab or self:dbi(tab, 'w')
 	local rc = C.mdbx_put(self.txn, dbi, key, val, flags or 0)
 	if rc == C.MDBX_KEYEXIST then return nil, 'exists', val.data, num(val.size) end
 	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
