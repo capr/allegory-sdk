@@ -358,6 +358,9 @@ local function prepare_table_schema(schema)
 			schema.val_cols[f.col] = #schema.val_cols
 		end
 	end
+	schema.    cols.__s__ = cat(schema.    cols, ',')
+	schema.key_cols.__s__ = cat(schema.key_cols, ',')
+	schema.val_cols.__s__ = cat(schema.val_cols, ',')
 
 	--generate direct key record decoders and encoders for u32/u64 keys
 	--stored in little endian.
@@ -670,29 +673,25 @@ local val_rec_buffer = buffer()
 --cached column lists --------------------------------------------------------
 
 local m_cols_list = memoize(function(cols)
+	if cols:starts'[' then
+		assert(cols:ends']')
+		cols = cols:sub(2, -2)
+	elseif cols:starts'{' then
+		assert(cols:ends'}')
+		cols = cols:sub(2, -2)
+	end
 	local t = collect(words(cols))
 	assert(#t > 0)
 	for i,col in ipairs(t) do t[col] = i end
+	t.__s__ = cat(t, ',')
 	return t
 end)
 local function cols_list(cols)
-	local as
-	if cols then
-		if cols == '[]' then
-			cols, as = nil, '[]'
-		elseif cols == '{}' then
-			cols, as = nil, '{}'
-		elseif cols:starts'[' then
-			assert(cols:ends']')
-			cols = cols:sub(2, -2)
-			as = '[]'
-		elseif cols:starts'{' then
-			assert(cols:ends'}')
-			cols = cols:sub(2, -2)
-			as = '{}'
-		end
-	end
-	return cols and m_cols_list(cols), as
+	if not cols then return nil, nil end
+	if cols == '[]' then return nil, '[]' end
+	if cols == '{}' then return nil, '{}' end
+	local as = cols:starts'[' and '[]' or cols:starts '{' and '{}' or nil
+	return m_cols_list(cols), as
 end
 
 local function select_col(cols, as, col, ...)
@@ -789,7 +788,7 @@ local function put(self, flags, op, tab, cols, ...)
 		local cur = self:cursor(dbi, 'w')
 		local v0, v0_sz = cur:get_raw(k, k_sz)
 		if v0 then
-			--next mdbx command will invalidate v0 so we need to copy it.
+			--next mdbx command will invalidate v0 so we need to save it.
 			local v0_unstable = v0
 			v0, v0_sz = put_v0_buffer(v0_sz)
 			copy(v0, v0_unstable, v0_sz)
@@ -804,6 +803,7 @@ local function put(self, flags, op, tab, cols, ...)
 	else
 		self:put_raw(dbi, k, k_sz, v, v_sz, flags)
 	end
+	log('note', 'db', op, '%s %s', schema.name, cols.__s__)
 end
 function Tx:put(...)
 	return put(self, nil, 'put', ...)

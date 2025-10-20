@@ -116,18 +116,20 @@ local function xapp(...)
 		local dry = doit ~= 'forealz'
 		db():sync_schema(app.schema, {dry = dry})
 		if not dry then
-			insert('tenant', '{}', {
-				--tenant = 1,
-				name = 'default',
-				host = config'host',
-			})
-			if config'dev_email' then
-				usr_create_or_update{
-					tenant = 1,
-					email = config'dev_email',
-					roles = 'dev admin',
-				}
-			end
+			atomic('w', function(tx)
+				tx:insert('tenant', '{}', {
+					--tenant = 1,
+					name = 'default',
+					host = config'host',
+				})
+				if config'dev_email' then
+					usr_create_or_update{
+						tenant = 1,
+						email = config'dev_email',
+						roles = 'dev admin',
+					}
+				end
+			end)
 			if app.install then
 				app:install()
 			end
