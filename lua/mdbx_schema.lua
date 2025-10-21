@@ -1,6 +1,5 @@
 --go@ plink -t root@m1 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
 --go@ plink -t root@m1 sdk/bin/debian12/luajit sp2/sp.lua -v install forealz
---go @ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
 --[[
 
 	mdbx schema: structured data and multi-key indexing for mdbx.
@@ -25,7 +24,7 @@ API, extends mdbx.lua API
 	tx:put             (table_name|dbi, [cols], keysvals...)
 	tx:[try_]insert    (table_name|dbi, [cols], keysvals...) -> true | nil,'exists'
 	tx:[try_]update    (table_name|dbi, [cols], keysvals...) -> true | nil,'not_found'
-	tx:put_records     (table_name|dbi, [cols], {keysvals1,...})
+	tx:put_records     (table_name|dbi, [cols, ]{keysvals1,...})
 	tx:is_null         (table_name|dbi, col, keys...) -> is_null, [reason]
 	tx:exists          (table_name|dbi, keys...) -> record_exists, table_exists
 	tx:[try_|must_]get (table_name|dbi, [val_cols], keys...) -> [ok, ]vals...
@@ -35,7 +34,8 @@ API, extends mdbx.lua API
 
 	cur:current        ([cols]) -> keysvals...
 	cur:next           ([cols]) -> keysvals...
-	cur:[try_|must]get ([cols], ...) -> vals...
+	cur:update         ([val_cols], vals...)
+	cur:[try_|must]get ([val_cols], keys...) -> vals...
 
 	tx:each            (tbl_name|dbi, [cols]) -> cur, keysvals...
 
@@ -802,7 +802,7 @@ local function put(self, flags, op, tab, cols, ...)
 			idx:update(self, k, k_sz, v, v_sz, v0, v0_sz)
 		end
 		if v0 then
-			cur:set_raw(dbi, v, v_sz)
+			cur:set_raw(v, v_sz)
 		end
 		cur:close()
 	else
@@ -861,6 +861,9 @@ function Tx:must_del_exact(...)
 end
 
 function Tx:put_records(tab, cols, records)
+	if istab(cols) then
+		cols, records = '[]', cols
+	end
 	local dbi, schema = self:dbi_schema(tab, 'w')
 	local cols, as = cols_list(cols)
 	cols = cols or schema.cols
@@ -967,6 +970,8 @@ function Tx:try_get(tab, val_cols, ...)
 	end
 end
 
+--cursors --------------------------------------------------------------------
+
 local function skip_ok(ok, ...)
 	if not ok then return end
 	return ...
@@ -1006,10 +1011,9 @@ end
 function Cur:_try_get(val_cols, flags)
 	local k, k_sz, v, v_sz = self:_get_raw(flags)
 	if not k then return end
-	local t, val_cols, as = self._t, self._val_cols, self._as
-	if not t then t, val_cols, as = {}, cols_list(val_cols) end
+	local val_cols, as = cols_list(val_cols)
 	val_cols = val_cols or self.schema.val_cols
-	return decode_kv(self.schema, k, k_sz, v, v_sz, t, val_cols, as)
+	return decode_kv(self.schema, k, k_sz, v, v_sz, t or {}, val_cols, as)
 end
 function Cur:try_current(val_cols)
 	return self:_try_get(val_cols, mdbx.MDBX_GET_CURRENT)
@@ -1039,17 +1043,38 @@ end
 function Cur:must_get(...)
 	return must_ok(self:try_get(...))
 end
+
+function Cur:update(val_cols, ...)
+	local schema = self.schema
+	local val_cols, as = cols_list(val_cols)
+	val_cols = val_cols or schema.val_cols
+	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
+	local k, k_sz, v0, v0_sz = self:current_raw()
+	if not k then return nil, 'not_found' end
+	assert(v_buf_sz >= v0_sz)
+	copy(v, v0, v0_sz)
+	local v_sz = encode_val(self, schema, 'set', v, v_buf_sz, val_cols, as, ...)
+	self:set_raw(v, v_sz)
+end
+
 local function each_next_skip_ok(self, ok, ...)
 	if not ok then return end
 	return self, ...
 end
 local function each_next(self)
-	return each_next_skip_ok(self, self:_try_get(nil, mdbx.MDBX_NEXT))
+	local k, k_sz, v, v_sz = self:_get_raw(mdbx.MDBX_NEXT)
+	if not k then return end
+	local t, val_cols, as = self._t, self._val_cols, self._as
+	return each_next_skip_ok(self,
+		decode_kv(self.schema, k, k_sz, v, v_sz, t or {}, val_cols, as))
 end
 function Tx:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
-	cur._val_cols, cur._as = cols_list(val_cols)
-	cur._t = t or {}
+	cur._each = true
+	local val_cols, as = cols_list(val_cols)
+	val_cols = val_cols or cur.schema.val_cols
+	cur._val_cols, cur._as = val_cols, as
+	cur._t = t or (not cur._as and {} or nil)
 	return each_next, cur
 end
 
@@ -1376,8 +1401,6 @@ if not ... then
 			add(t1, t)
 		end
 		tx:commit()
-		pr(t1)
-		pr(t)
 		for i=1,#t do
 			assert(t1[i][1] == t[i][1], t[i][1])
 			assert(t1[i][2] == t[i][2], t[i][2])
@@ -1424,7 +1447,7 @@ if not ... then
 			assert(tx:is_null(tbl.name, 's4', s1, s2) == (s4 == nil))
 			add(t1, {s1, s2, s3, s4})
 		end
-		local s3, s4 = tx:get(tbl.name, 's3 s4', 's1 s2', 'xx', 'y')
+		local s3, s4 = tx:get(tbl.name, 's3 s4', 'xx', 'y')
 		assert(s3 == 'z')
 		assert(s4 == 'zz')
 		tx:commit()
