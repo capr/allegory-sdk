@@ -941,8 +941,8 @@ function Tx:is_null(tab, col, ...) --returns is_null, [reason]
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return true, schema end
 	local f, vi = val_field(schema, col)
-	local v, v_sz, err = get_raw_by_pk(self, dbi, schema, ...)
-	if not v then return true, err end
+	local v, v_sz = get_raw_by_pk(self, dbi, schema, ...)
+	if not v then return true, v_sz end
 	return C.schema_val_is_null(schema._st, vi-1, v, v_sz) ~= 0
 end
 
@@ -954,15 +954,23 @@ function Tx:exists(tab, ...) --returns record_exists, table_exists
 	return true, true
 end
 
-function Tx:try_get(tab, val_cols, ...)
+function Tx:try_get(tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return false, schema end
-	local v, v_sz, err = get_raw_by_pk(self, dbi, schema, ...)
-	if not v then return false, err end
-	local val_cols, as = cols_list(val_cols)
-	val_cols = val_cols or schema.val_cols
+	local v, v_sz = get_raw_by_pk(self, dbi, schema, ...)
+	if not v then return false, v_sz end
+	local cols, as = cols_list(cols)
+	if schema.is_index then
+		local t_dbi, t_schema = self:dbi_schema(schema.table)
+		if not t_dbi then return false, t_schema end
+		cols = cols or t_schema.cols
+		local k, k_sz = v, v_sz
+		v, v_sz = self:must_get_raw(t_dbi, k, k_sz)
+	else
+		cols = cols or schema.val_cols
+	end
 	local t = {}
-	local n = decode_val(schema, v, v_sz, t, val_cols, as)
+	local n = decode_val(schema, v, v_sz, t, cols, as)
 	if as then
 		return true, t, n
 	else
@@ -1127,7 +1135,7 @@ function Tx:create_index(tbl_name, uk)
 		local f = update({}, schema.fields[col])
 		add(ix_fields, f)
 	end
-	local ix_schema = {fields = ix_fields, pk = uk, is_index = true}
+	local ix_schema = {fields = ix_fields, pk = uk, is_index = true, table = tbl_name}
 	local db_max_key_size = self.db:db_max_key_size()
 	compile_table_schema(ix_schema, ix_tbl_name, db_max_key_size)
 	prepare_table_schema(ix_schema)
@@ -1233,20 +1241,17 @@ function Db:sync_schema(src, opt)
 			if diff.tables.add then
 				for tbl_name, tbl in sortedpairs(diff.tables.add) do
 					P('create table: %s', tbl_name)
-					if not dry then
-						tx:create_table(tbl_name)
-					end
+					tx:create_table(tbl_name)
 					if tbl.rows then
 						for _,row in ipairs(tbl.rows) do
+							assert(not tx.readonly)
 							tx:insert(tbl_name, '[]', row)
 						end
 					end
 					if tbl.uks then
 						for uk_name, uk in pairs(tbl.uks) do
 							P('create uk: %s', uk_name)
-							if not dry then
-								tx:create_index(tbl_name, uk)
-							end
+							tx:create_index(tbl_name, uk)
 						end
 					end
 				end
@@ -1262,9 +1267,7 @@ function Db:sync_schema(src, opt)
 						if tbl.uks.add then
 							for uk_name, uk in pairs(tbl.uks.add) do
 								P('create uk: %s', uk_name)
-								if not dry then
-									tx:create_index(tbl_name, uk)
-								end
+								tx:create_index(tbl_name, uk)
 							end
 						end
 					end
