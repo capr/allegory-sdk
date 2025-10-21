@@ -1,3 +1,4 @@
+--go@ plink -t root@m1 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
 --go@ plink -t root@m1 sdk/bin/debian12/luajit sp2/sp.lua -v install forealz
 --go @ c:/tools/plink -batch -i c:/users/woods/.ssh/id_ed25519.ppk root@172.20.10.3 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
 --[[
@@ -409,7 +410,7 @@ local function prepare_table_schema(schema)
 			local sc = fields._sc[kv_index-1]
 			sc.type = is_key and int_schema_col_type or schema_col_types[f.mdbx_type]
 			sc.len = f.maxlen or 1
-			sc.fixed_size = f.padded and 1 or 0
+			sc.fixed_size = f.maxlen and not f.padded and 0 or 1
 			sc.descending = f.descending and 1 or 0
 			sc.elem_size_shift = log2(f.elem_size)
 			sc.fixed_offset = f.fixed_offset and 1 or 0
@@ -715,7 +716,6 @@ end
 local function resolve_null_val(self, schema, f, op)
 	local default = f.mdbx_default
 	if isfunc(default) then
-		pr(schema.name, f.col, op)
 		default = default(self, schema, f, op)
 	end
 	local val = default
@@ -741,9 +741,14 @@ function encode_key(self, schema, op, rec, rec_buf_sz, cols, as, ...)
 		if encode_int_key then
 			return encode_int_key(rec, rec_buf_sz, val)
 		else
-			local len = f.get_val_len(val)
-			local len = min(len, f.maxlen or 1) --truncate
-			f.encode(pp[0], val, len)
+			local len
+			if val ~= nil then
+				len = f.get_val_len(val)
+				len = min(len, f.maxlen or 1) --truncate
+				f.encode(pp[0], val, len)
+			else
+				len = -1
+			end
 			C.schema_key_add(schema._st, ki-1, rec, rec_buf_sz, len, pp)
 		end
 	end
@@ -758,10 +763,10 @@ function encode_val(self, schema, op, rec, rec_buf_sz, cols, as, ...)
 	C.schema_val_add_start(schema._st, rec, rec_buf_sz, pp)
 	for vi,f in ipairs(schema.val_fields) do
 		local val = select_col(cols, as, f.col, ...)
-		local len
 		if val == nil or val == null then
 			val = resolve_null_val(self, schema, f, op)
 		end
+		local len
 		if val ~= nil then
 			len = f.get_val_len(val)
 			len = min(len, f.maxlen or 1) --truncate
@@ -859,8 +864,8 @@ function Tx:put_records(tab, cols, records)
 	local dbi, schema = self:dbi_schema(tab, 'w')
 	local cols, as = cols_list(cols)
 	cols = cols or schema.cols
-	local k, k_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local v, v_sz = val_rec_buffer(schema.val_fields.max_rec_size)
+	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
+	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	for _,vals in ipairs(records) do
 		local k_sz = encode_key(self, schema, 'put', k, k_buf_sz, cols, as, vals)
 		local v_sz = encode_val(self, schema, 'put', v, v_buf_sz, cols, as, vals)
@@ -1034,8 +1039,12 @@ end
 function Cur:must_get(...)
 	return must_ok(self:try_get(...))
 end
+local function each_next_skip_ok(self, ok, ...)
+	if not ok then return end
+	return self, ...
+end
 local function each_next(self)
-	return self, self:_try_get(nil, mdbx.MDBX_NEXT)
+	return each_next_skip_ok(self, self:_try_get(nil, mdbx.MDBX_NEXT))
 end
 function Tx:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
@@ -1121,6 +1130,7 @@ function Tx:create_index(tbl_name, uk)
 
 	local dt0 = {}
 	function ix.update(ix, self, k, k_sz, v, v_sz, v0, v0_sz)
+
 		--[[ cases to cover:
 		      record       index
          ----------------------
@@ -1244,10 +1254,10 @@ end
 if not ... then
 
 	pr('libmdbx.so vesion: ',
-		mdbx_version.major..'.'..
-		mdbx_version.minor..'.'..
-		mdbx_version.patch,
-		str(mdbx_version.git.commit, 6))
+		mdbx.mdbx_version.major..'.'..
+		mdbx.mdbx_version.minor..'.'..
+		mdbx.mdbx_version.patch,
+		str(mdbx.mdbx_version.git.commit, 6))
 	pr()
 
 	rm'mdbx_schema_test.mdb'
@@ -1323,7 +1333,7 @@ if not ... then
 		for _,i in ipairs(nums) do
 			add(t, {i, i, i})
 		end
-		tx:put_records(tbl.name, t)
+		tx:put_records(tbl.name, '[k v1 v2]', t)
 		tx:commit()
 
 		if tbl.fields.k.descending then
@@ -1350,7 +1360,7 @@ if not ... then
 			{'b' , nil },
 		}
 		local tx = db:txw()
-		tx:put_records(tbl.name, t)
+		tx:put_records(tbl.name, '[]', t)
 		tx:commit()
 
 		sort(t, function(r1, r2)
@@ -1366,9 +1376,11 @@ if not ... then
 			add(t1, t)
 		end
 		tx:commit()
+		pr(t1)
+		pr(t)
 		for i=1,#t do
-			assert(t1[i][1] == t[i][1])
-			assert(t1[i][2] == t[i][2])
+			assert(t1[i][1] == t[i][1], t[i][1])
+			assert(t1[i][2] == t[i][2], t[i][2])
 		end
 		pr()
 	end
