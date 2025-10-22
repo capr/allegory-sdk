@@ -897,26 +897,28 @@ local function try_put(self, flags, op, tab, cols, ...)
 		local v0, v0_sz = cur:get_raw(k, k_sz)
 		local v_sz
 		if v0 then
-			if op == 'update' or op == 'upsert' then
-				local t = {}
-				decode_val(schema, v0, v0_sz, t, schema.cols, as)
-				if not as then
-					--
-				elseif as == '[]' then
-					--
-				elseif as == '{}' then
-					update(t, (...))
-				end
-			end
-			v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
 			--next mdbx command will invalidate v0 so we need to save it.
 			local v0_unstable = v0
 			v0, v0_sz = put_v0_buffer(v0_sz)
 			copy(v0, v0_unstable, v0_sz)
-		elseif op == 'update' then
+			if op == 'update' or op == 'upsert' then
+				local all_cols = schema.cols
+				local t = {}
+				local n = decode_val(schema, v0, v0_sz, t, all_cols, '[]')
+				for i=1,n do
+					local v = select_col(cols, as, all_cols[i], ...)
+					if v ~= nil then --when updating, nil means skip, null means null.
+						t[i] = v
+					end
+				end
+				v_sz = encode_val(self, schema, op, v, v_buf_sz, all_cols, '[]', t)
+			else -- put
+				v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
+			end
+		elseif op == 'update' then --update but existing row not found
 			cur:close()
 			return nil, v0_sz
-		else
+		else --put, insert, or upsert that is an insert
 			v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
 		end
 		if schema.indexes then
