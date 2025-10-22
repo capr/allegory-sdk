@@ -44,7 +44,7 @@ TABLES
 CRUD
 
 	tx:[must_]get_raw    (table_name|dbi, key_data, key_size) -> val_data, val_size | nil,0,err
-	tx:put_raw           (table_name|dbi, key_data, key_size, val_data, val_size, [flags])
+	tx:[try_]put_raw     (table_name|dbi, key_data, key_size, val_data, val_size, [flags])
 	tx:[try_]insert_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'exists'
 	tx:[try_]update_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'not_found'
 	tx:[must_]del_raw    (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
@@ -408,7 +408,7 @@ function Tx:must_get_raw(...)
 	return assert(self:try_get_raw(...))
 end
 
-function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
+function Tx:try_put_raw(tab, key_data, key_size, val_data, val_size, flags)
 	local dbi = isnum(tab) and tab or self:dbi(tab, 'w')
 	key.data = key_data
 	key.size = key_size
@@ -422,13 +422,17 @@ function Tx:put_raw(tab, key_data, key_size, val_data, val_size, flags)
 end
 
 function Tx:try_insert_raw(tab, key_data, key_size, val_data, val_size, flags)
-	return self:put_raw(tab, key_data, key_size, val_data, val_size,
+	return self:try_put_raw(tab, key_data, key_size, val_data, val_size,
 		bor(flags or 0, C.MDBX_NOOVERWRITE))
 end
 
 function Tx:try_update_raw(tab, key_data, key_size, val_data, val_size, flags)
-	return self:put_raw(tab, key_data, key_size, val_data, val_size,
+	return self:try_put_raw(tab, key_data, key_size, val_data, val_size,
 		bor(flags or 0, C.MDBX_CURRENT))
+end
+
+function Tx:put_raw(...)
+	assert(self:try_put_raw(...))
 end
 
 function Tx:insert_raw(...)
