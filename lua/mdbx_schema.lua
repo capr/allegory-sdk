@@ -560,7 +560,7 @@ function Tx:load_table_schema(table_name)
 end
 
 function Tx:delete_table_schema(table_name)
-	self:del_raw('$schema', table_name, #table_name)
+	self:del_raw('$schema', cast(u8p, table_name), #table_name)
 end
 
 function Tx:try_open_table(tab, mode, flags)
@@ -737,17 +737,15 @@ function encode_key(self, schema, op, rec, rec_buf_sz, cols, as, ...)
 		if val == nil or val == null then
 			val = resolve_null_val(self, schema, f, op)
 		end
+		if val == nil then
+			error(fmt('null key: %s.%s', schema.name, f.col), 2)
+		end
 		if encode_int_key then
 			return encode_int_key(rec, rec_buf_sz, val)
 		else
-			local len
-			if val ~= nil then
-				len = f.get_val_len(val)
-				len = min(len, f.maxlen or 1) --truncate
-				f.encode(pp[0], val, len)
-			else
-				len = -1
-			end
+			local len = f.get_val_len(val)
+			len = min(len, f.maxlen or 1) --truncate
+			f.encode(pp[0], val, len)
 			C.schema_key_add(schema._st, ki-1, rec, rec_buf_sz, len, pp)
 		end
 	end
@@ -868,10 +866,11 @@ function Tx:try_get(tab, cols, ...)
 	if schema.is_index then
 		local t_dbi, t_schema = self:dbi_schema(schema.table)
 		if not t_dbi then return false, t_schema end
-		cols = cols or t_schema.cols
+		cols = cols or t_schema.val_cols
 		local k, k_sz = v, v_sz
 		v, v_sz = self:must_get_raw(t_dbi, k, k_sz)
 		i0 = decode_key(t_schema, k, k_sz, t, as) + 1
+		schema = t_schema
 	else
 		cols = cols or schema.val_cols
 	end
@@ -897,38 +896,45 @@ local function try_put(self, flags, op, tab, cols, ...)
 		local v0, v0_sz = cur:get_raw(k, k_sz)
 		local v_sz
 		if v0 then
-			--next mdbx command will invalidate v0 so we need to save it.
+			if op == 'insert' then
+				cur:close()
+				return nil, 'exists'
+			end
+			--next mdbx put command will invalidate v0 so we need to save it.
 			local v0_unstable = v0
 			v0, v0_sz = put_v0_buffer(v0_sz)
 			copy(v0, v0_unstable, v0_sz)
-			if op == 'update' or op == 'upsert' then
+			if op == 'update' or op == 'upsert' then --decode v0 and override it.
 				local all_cols = schema.cols
 				local t = {}
-				local n = decode_val(schema, v0, v0_sz, t, all_cols, '[]')
-				for i=1,n do
-					local v = select_col(cols, as, all_cols[i], ...)
+				decode_val(schema, v0, v0_sz, t, all_cols, '[]')
+				for i=1,#cols do
+					local v = select_col(cols, as, cols[i], ...)
 					if v ~= nil then --when updating, nil means skip, null means null.
 						t[i] = v
 					end
 				end
 				v_sz = encode_val(self, schema, op, v, v_buf_sz, all_cols, '[]', t)
-			else -- put
+			else --update all cols so no need to decode v0
 				v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
 			end
+			cur:set_raw(v, v_sz)
+			cur:close()
 		elseif op == 'update' then --update but existing row not found
 			cur:close()
 			return nil, v0_sz
-		else --put, insert, or upsert that is an insert
+		else --put, insert, or upsert new record
+			cur:close()
 			v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
+			local ret, err = self:put_raw(dbi, k, k_sz, v, v_sz, flags)
+			if not ret then return nil, err end
 		end
 		if schema.indexes then
 			for _,idx in ipairs(schema.indexes) do
-				idx:update(self, k, k_sz, v, v_sz, v0, v0_sz)
+				idx:update(self, op, k, k_sz, v, v_sz, v0, v0_sz)
 			end
 		end
-		cur:set_raw(v, v_sz)
-		cur:close()
-	else
+	else --put or insert with no secondary indexes to update
 		local v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
 		local ret, err = self:try_put_raw(dbi, k, k_sz, v, v_sz, flags)
 		if not ret then return nil, err end
@@ -936,17 +942,26 @@ local function try_put(self, flags, op, tab, cols, ...)
 	log('note', 'db', op, '%s %s', schema.name, cols.__s__)
 	return true
 end
-function Tx:put(...)
+function Tx:try_put(...)
 	return try_put(self, nil, 'put', ...)
+end
+function Tx:put(...)
+	assert(try_put(self, nil, 'put', ...))
 end
 function Tx:try_insert(...)
 	return try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', ...)
 end
+function Tx:insert(...)
+	return assert(try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', ...))
+end
 function Tx:try_update(...)
 	return try_put(self, mdbx.MDBX_CURRENT, 'update', ...)
 end
+function Tx:update(...)
+	assert(try_put(self, mdbx.MDBX_CURRENT, 'update', ...))
+end
 function Tx:upsert(...)
-	return try_put(self, nil, 'upsert', ...)
+	return assert(try_put(self, nil, 'upsert', ...))
 end
 
 function Tx:del(tab, ...)
@@ -1181,7 +1196,7 @@ function Tx:create_index(tbl_name, uk)
 		local xk_sz = encode_key(self, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
 		assert(k_sz <= xv_buf_sz, k_sz)
 		copy(xv, k, k_sz)
-		self:put_raw(ix_dbi, xk, xk_sz, xv, k_sz)
+		self:insert_raw(ix_dbi, xk, xk_sz, xv, k_sz)
 	end
 
 	--create index object
@@ -1189,7 +1204,7 @@ function Tx:create_index(tbl_name, uk)
 	add(attr(schema, 'indexes'), ix_schema)
 
 	local dt0 = {}
-	function ix.update(ix, self, k, k_sz, v, v_sz, v0, v0_sz)
+	function ix.update(ix, self, op, k, k_sz, v, v_sz, v0, v0_sz)
 
 		--[[ cases to cover:
 		      record       index
@@ -1225,7 +1240,7 @@ function Tx:create_index(tbl_name, uk)
 
 		local ok, err = self:try_insert_raw(ix_dbi, xk, xk_sz, k, k_sz)
 		if not ok then
-			error(fmt('unique key violation: %s: %s', ix_tbl_name, pp(dt)))
+			error(fmt('unique key violation: %s', ix_tbl_name))
 		end
 
 		clear(dt)
@@ -1495,16 +1510,43 @@ if not ... then
 	local tx = db:txw()
 	schema.tables.test_uk = {
 		fields = {
-			{col = 'id'  , mdbx_type = 'u32'},
-			{col = 'name', mdbx_type = 'utf8', maxlen = 100},
+			{col = 'k1', mdbx_type = 'utf8', maxlen = 10},
+			{col = 'k2', mdbx_type = 'utf8', maxlen = 10},
+			{col = 'u1', mdbx_type = 'utf8', maxlen = 10},
+			{col = 'u2', mdbx_type = 'utf8', maxlen = 10},
+			{col = 'f1', mdbx_type = 'utf8', maxlen = 10},
+			{col = 'f2', mdbx_type = 'utf8', maxlen = 10},
 		},
-		pk = {'id'},
+		pk = {'k1', 'k2'},
 	}
-	tx:insert('test_uk', nil, 1, 'foo')
-	tx:insert('test_uk', nil, 2, 'bar')
-	tx:insert('test_uk', nil, 3, 'baz')
-	tx:create_index('test_uk', {'name'})
+	tx:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1')
+	tx:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
+	tx:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
+	tx:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3')
+	local ok, err = pcall(function()
+		tx:create_index('test_uk', {'u1', 'u2'})
+	end)
+	assert(not ok)
+	assert(tostring(err):has'exists')
+	tx:drop_table'test_uk-by-u1-u2'
+	tx:must_del('test_uk', 'k3', 'k1')
+	tx:create_index('test_uk', {'u1', 'u2'})
+	tx:insert('test_uk', nil, 'k3', 'k1', 'u3', 'u1', 'f4')
+	tx:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u2', 'f5')
+	tx:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
+	local ok, err = pcall(function()
+		tx:insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
+	end)
+	assert(not ok)
 	tx:commit()
+	local tx = db:tx()
+	local t = tx:must_get('test_uk-by-u1-u2', '{}', 'u1', 'u1')
+	assert(t.k1 == 'k1')
+	assert(t.k2 == 'k1')
+	assert(t.u1 == 'u1')
+	assert(t.u2 == 'u1')
+	assert(t.f1 == 'f1')
+	tx:abort()
 
 	local tx = db:tx()
 	pr(rpad('TABLE ('..tx:table_count()..')', 24),

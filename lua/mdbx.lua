@@ -122,7 +122,7 @@ function try_mdbx_open(file, opt)
 		checkz(C.mdbx_env_close_ex(env, 0))
 		return nil, err
 	end
-	log(opt.readonly and '' or 'note', 'mdbx',
+	log(opt.readonly and '' or 'note', 'db',
 		'open', '%s (%s)', file, opt.readonly and 'r/o' or 'r/w')
 
 	local db = object(Db, {
@@ -140,7 +140,7 @@ end
 end
 function mdbx_open(file, opt, ...)
 	local db, err = try_mdbx_open(file, opt, ...)
-	return check('mdbx', 'open', db, '%s (%s): %s',
+	return check('db', 'open', db, '%s (%s): %s',
 		file, opt and opt.readonly and 'r/o' or 'r/w', err)
 end
 
@@ -271,6 +271,12 @@ end
 
 --tables ---------------------------------------------------------------------
 
+local function table_name(tx, tab)
+	if not tab then return '<main>' end
+	if isstr(tab) then return tab end
+	return tx.db.open_tables[tab].name
+end
+
 --pass nil or false to `tab` arg to open the "main" dbi with the list of tables.
 do
 local dbip = new'MDBX_dbi[1]'
@@ -301,7 +307,7 @@ end
 end
 function Tx:open_table(tab, mode, flags)
 	local t, err = self:try_open_table(tab, mode, flags)
-	return check('mdbx', 'open_table', t, '%s%s%s: %s',
+	return check('db', 'open_table', t, '%s%s%s: %s',
 		tab, mode and ' ' or '', mode or '', err)
 end
 
@@ -405,7 +411,7 @@ function Tx:get_raw(tab, key_data, key_size, val_data, val_size)
 	checkz(rc)
 end
 function Tx:must_get_raw(...)
-	return assert(self:try_get_raw(...))
+	return assert(self:get_raw(...))
 end
 
 function Tx:try_put_raw(tab, key_data, key_size, val_data, val_size, flags)
@@ -431,16 +437,20 @@ function Tx:try_update_raw(tab, key_data, key_size, val_data, val_size, flags)
 		bor(flags or 0, C.MDBX_CURRENT))
 end
 
-function Tx:put_raw(...)
-	assert(self:try_put_raw(...))
+function Tx:put_raw(tab, ...)
+	local ret, err = self:try_put_raw(tab, ...)
+	if ret then return ret end
+	check('db', 'put', ret, '%s: %s', table_name(self, tab), err)
 end
-
-function Tx:insert_raw(...)
-	assert(self:try_insert_raw(...))
+function Tx:insert_raw(tab, ...)
+	local ret, err = self:try_insert_raw(tab, ...)
+	if ret then return ret end
+	check('db', 'insert', ret, '%s: %s', table_name(self, tab), err)
 end
-
-function Tx:update_raw(...)
-	assert(self:try_update_raw(...))
+function Tx:update_raw(tab, ...)
+	local ret, err = self:try_update_raw(tab, ...)
+	if ret then return end
+	check('db', 'update', ret, '%s: %s', table_name(self, tab), err)
 end
 
 function Tx:del_raw(tab, key_data, key_size, val_data, val_size)
@@ -457,14 +467,16 @@ function Tx:del_raw(tab, key_data, key_size, val_data, val_size)
 	checkz(rc)
 	return true
 end
-function Tx:must_del_raw(...)
-	assert(self:del_raw(...))
+function Tx:must_del_raw(tab, ...)
+	local ret, err = self:del_raw(tab, ...)
+	if ret then return end
+	check('db', 'del', ret, '%s: %s', table_name(self, tab), err)
 end
 
 local seqbuf = u64a(1)
 function Tx:gen_id(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
-	if not dbi then return nil, 'table_not_found' end
+	assertf(dbi, 'gen_id(): table not found: %s', tab)
 	checkz(C.mdbx_dbi_sequence(self.txn, dbi, seqbuf, 1))
 	return num(seqbuf[0])
 end
