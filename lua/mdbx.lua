@@ -34,8 +34,8 @@ TABLES
 	tx:[try_]stat(table_name|dbi) -> MDBX_stat    get storage metrics on table
 
 	tx:[try_]rename_table (table_name|dbi)  rename table
-	tx:[try_]drop_table   (table_name|dbi)  delete table
-	tx:[try_]clear_table  (table_name|dbi)  delete all records
+	tx:[must_]drop_table  (table_name|dbi)  delete table
+	tx:[must_]clear_table (table_name|dbi)  delete all records
 
 	tx:each_table() -> iter() -> table_name
 	tx:table_count() -> n
@@ -271,11 +271,12 @@ end
 
 --tables ---------------------------------------------------------------------
 
-local function table_name(tx, tab)
+function Tx:table_name(tab)
 	if not tab then return '<main>' end
 	if isstr(tab) then return tab end
-	return tx.db.open_tables[tab].name
+	return self.db.open_tables[tab].name
 end
+local table_name = Tx.table_name
 
 --pass nil or false to `tab` arg to open the "main" dbi with the list of tables.
 do
@@ -300,7 +301,7 @@ function Tx:try_open_table(tab, mode, flags)
 	if created then
 		add(attr(self, 'created_tables'), t)
 	elseif mode == 'c' then
-		self:clear_table(name)
+		self:must_clear_table(name)
 	end
 	return t, created
 end
@@ -331,7 +332,7 @@ function Tx:rename_table(tab, new_table_name)
 	assert(self:try_rename_table(tab, new_table_name))
 end
 
-function Tx:try_drop_table(tab)
+function Tx:drop_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	checkz(C.mdbx_drop(self.txn, dbi, 1))
@@ -343,18 +344,22 @@ function Tx:try_drop_table(tab)
 	t.dbi = nil
 	return true
 end
-function Tx:drop_table(tab)
-	assert(self:try_drop_table(tab))
+function Tx:must_drop_table(tab)
+	local ok, err = self:drop_table(tab)
+	if ok then return end
+	check('db', 'drop_table', false, '%s: %s', table_name(self, tab), err)
 end
 
-function Tx:try_clear_table(tab)
+function Tx:clear_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	checkz(C.mdbx_drop(self.txn, dbi, 0))
 	return true
 end
-function Tx:clear_table(tab)
-	assert(self:try_clear_table(tab))
+function Tx:must_clear_table(tab)
+	local ok, err = self:clear_table(tab)
+	if ok then return end
+	check('db', 'clear_table', false, '%s: %s', table_name(self, tab), err)
 end
 
 function Tx:create_table(tbl_name)
@@ -391,7 +396,9 @@ function Tx:try_stat(tab)
 	return stat
 end
 function Tx:stat(tab)
-	return assert(self:try_stat(tab))
+	local ret, err = self:try_stat(tab)
+	if ret then return ret end
+	check('db', 'stat', false, '%s: %s', table_name(self, tab), err)
 end
 end
 
@@ -440,17 +447,17 @@ end
 function Tx:put_raw(tab, ...)
 	local ret, err = self:try_put_raw(tab, ...)
 	if ret then return ret end
-	check('db', 'put', ret, '%s: %s', table_name(self, tab), err)
+	check('db', 'put_raw', ret, '%s: %s', table_name(self, tab), err)
 end
 function Tx:insert_raw(tab, ...)
 	local ret, err = self:try_insert_raw(tab, ...)
 	if ret then return ret end
-	check('db', 'insert', ret, '%s: %s', table_name(self, tab), err)
+	check('db', 'insert_raw', ret, '%s: %s', table_name(self, tab), err)
 end
 function Tx:update_raw(tab, ...)
 	local ret, err = self:try_update_raw(tab, ...)
 	if ret then return end
-	check('db', 'update', ret, '%s: %s', table_name(self, tab), err)
+	check('db', 'update_raw', ret, '%s: %s', table_name(self, tab), err)
 end
 
 function Tx:del_raw(tab, key_data, key_size, val_data, val_size)
@@ -470,7 +477,7 @@ end
 function Tx:must_del_raw(tab, ...)
 	local ret, err = self:del_raw(tab, ...)
 	if ret then return end
-	check('db', 'del', ret, '%s: %s', table_name(self, tab), err)
+	check('db', 'del_raw', ret, '%s: %s', table_name(self, tab), err)
 end
 
 local seqbuf = u64a(1)

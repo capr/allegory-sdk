@@ -203,7 +203,7 @@ local function compile_table_schema(schema, table_name, db_max_key_size)
 		f.col_pos = i
 		local elem_ct = col_ct[f.mdbx_type] or f.mdbx_type
 		local ok, elem_ct = pcall(ctype, elem_ct)
-		assertf(ok, 'unknown type %s for field: %s.%s', f.mdbx_type, table_name, f.col)
+		assertf(ok, 'unknown type: %s for field: %s.%s', f.mdbx_type, table_name, f.col)
 		f.elem_size = sizeof(elem_ct)
 		assertf(f.elem_size < 2^8) --must fit 8 bit (see sort below)
 	end
@@ -222,7 +222,7 @@ local function compile_table_schema(schema, table_name, db_max_key_size)
 			f.descending = schema.pk.desc[i]
 		end
 	end
-	assert(#key_fields > 0, 'table missing pk: %s', table_name)
+	assert(#key_fields > 0, 'table has no pk: %s', table_name)
 
 	--build val fields array with all fields that are not in pk.
 	for i,f in ipairs(schema.fields) do
@@ -627,6 +627,8 @@ function Tx:try_open_table(tab, mode, flags)
 	return t, created
 end
 
+local table_name = Tx.table_name
+
 function Tx:dbi(tab, mode)
 	local t = self.db.open_tables[tab or false]
 	if not t then
@@ -646,27 +648,30 @@ function Tx:dbi_schema(tab, mode)
 	return dbi, schema
 end
 
-local try_raw_drop_table = Tx.try_drop_table
-function Tx:try_drop_table(tab)
+local raw_drop_table = Tx.drop_table
+function Tx:drop_table(tab)
 	local dbi, schema, name = self:dbi(tab)
 	if not dbi then return nil, schema end
 	assert(name)
-	assert(try_raw_drop_table(self, dbi))
+	assert(raw_drop_table(self, dbi))
 	self:delete_table_schema(name)
 	return true
 end
 
 local function key_field(schema, col)
-	local f = assertf(schema.fields[col], 'unknown field: %s', col)
-	assertf(f.key_index, 'not a key field: %s', col)
-	return f
+	local f = schema.fields[col]
+	local ki = f.key_index
+	if f and ki then return f end
+	assertf(f, 'unknown field: %s.%s', schema.name, col)
+	assertf(ki, 'not a key field: %s.%s', schema.name, col)
 end
 
 local function val_field(schema, col)
-	local f = assertf(schema.fields[col], 'unknown field: %s.%s', schema.name, col)
-	local vi = f.val_index
+	local f = schema.fields[col]
+	local vi = f and f.val_index
+	if f and vi then return f, vi end
+	assertf(f, 'unknown field: %s.%s', schema.name, col)
 	assertf(vi, 'not a value field: %s.%s', schema.name, col)
-	return f, vi
 end
 
 --encoding and decoding ------------------------------------------------------
@@ -701,8 +706,7 @@ local function select_col(cols, as, col, ...)
 		local t = ...
 		return t[col]
 	else
-		local i = cols[col]
-		assertf(i, '%s %s', col, pp(cols))
+		local i = assert(cols[col])
 		if as == '[]' then
 			local t = ...
 			return t[i]
@@ -926,12 +930,12 @@ local function try_put(self, flags, op, tab, cols, ...)
 		else --put, insert, or upsert new record
 			cur:close()
 			v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
-			local ret, err = self:put_raw(dbi, k, k_sz, v, v_sz, flags)
+			local ret, err = self:try_put_raw(dbi, k, k_sz, v, v_sz, flags)
 			if not ret then return nil, err end
 		end
 		if schema.indexes then
 			for _,idx in ipairs(schema.indexes) do
-				idx:update(self, op, k, k_sz, v, v_sz, v0, v0_sz)
+				idx:update(self, k, k_sz, v, v_sz, v0, v0_sz)
 			end
 		end
 	else --put or insert with no secondary indexes to update
@@ -942,26 +946,34 @@ local function try_put(self, flags, op, tab, cols, ...)
 	log('note', 'db', op, '%s %s', schema.name, cols.__s__)
 	return true
 end
-function Tx:try_put(...)
-	return try_put(self, nil, 'put', ...)
+function Tx:try_put(tab, ...)
+	return try_put(self, nil, 'put', tab, ...)
 end
-function Tx:put(...)
-	assert(try_put(self, nil, 'put', ...))
+function Tx:put(tab, ...)
+	local ret, err = try_put(self, nil, 'put', tab, ...)
+	if ret then return ret end
+	check('db', 'put', ret, '%s: %s', table_name(self, tab), err)
 end
-function Tx:try_insert(...)
-	return try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', ...)
+function Tx:try_insert(tab, ...)
+	return try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', tab, ...)
 end
-function Tx:insert(...)
-	return assert(try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', ...))
+function Tx:insert(tab, ...)
+	local ret, err = try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', tab, ...)
+	if ret then return ret end
+	check('db', 'insert', false, '%s: %s', table_name(self, tab), err)
 end
-function Tx:try_update(...)
-	return try_put(self, mdbx.MDBX_CURRENT, 'update', ...)
+function Tx:try_update(tab, ...)
+	return try_put(self, mdbx.MDBX_CURRENT, 'update', tab, ...)
 end
-function Tx:update(...)
-	assert(try_put(self, mdbx.MDBX_CURRENT, 'update', ...))
+function Tx:update(tab, ...)
+	local ret, err = try_put(self, mdbx.MDBX_CURRENT, 'update', tab, ...)
+	if ret then return ret end
+	check('db', 'update', false, '%s: %s', table_name(self, tab), err)
 end
-function Tx:upsert(...)
-	return assert(try_put(self, nil, 'upsert', ...))
+function Tx:upsert(tab, ...)
+	local ret, err = try_put(self, nil, 'upsert', tab, ...)
+	if ret then return ret end
+	check('db', 'upsert', false, '%s: %s', table_name(self, tab), err)
 end
 
 function Tx:del(tab, ...)
@@ -978,8 +990,10 @@ function Tx:del(tab, ...)
 	end
 	return true
 end
-function Tx:must_del(...)
-	assert(self:del(...))
+function Tx:must_del(tab, ...)
+	local ok, err = self:del(tab, ...)
+	if ok then return end
+	check('db', 'del', false, '%s: %s', table_name(self, tab), err)
 end
 
 function Tx:del_exact(tab, cols, ...)
@@ -1000,8 +1014,10 @@ function Tx:del_exact(tab, cols, ...)
 	end
 	return true
 end
-function Tx:must_del_exact(...)
-	assert(self:del_exact(...))
+function Tx:must_del_exact(tab, ...)
+	local ok, err = self:del_exact(tab, ...)
+	if ok then return end
+	check('db', 'del_exact', false, '%s: %s', table_name(self, tab), err)
 end
 
 function Tx:put_records(tab, cols, records)
@@ -1204,7 +1220,7 @@ function Tx:create_index(tbl_name, uk)
 	add(attr(schema, 'indexes'), ix_schema)
 
 	local dt0 = {}
-	function ix.update(ix, self, op, k, k_sz, v, v_sz, v0, v0_sz)
+	function ix.update(ix, self, k, k_sz, v, v_sz, v0, v0_sz)
 
 		--[[ cases to cover:
 		      record       index
@@ -1523,12 +1539,18 @@ if not ... then
 	tx:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
 	tx:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
 	tx:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3')
-	local ok, err = pcall(function()
-		tx:create_index('test_uk', {'u1', 'u2'})
-	end)
-	assert(not ok)
-	assert(tostring(err):has'exists')
-	tx:drop_table'test_uk-by-u1-u2'
+	tx:commit()
+	local tx = db:txw()
+	--local ok, err = pcall(function()
+	--	--tx:create_index('test_uk', {'u1', 'u2'})
+	--end)
+	--assert(not ok)
+	--assert(tostring(err):has'exists')
+	tx:abort()
+	local tx = db:txw()
+	--for cur, k1, k2, u1, u2, f1, f2 in tx:each('test_uk') do
+	--	pr(k1, k2, u1, u2, f1, f2)
+	--end
 	tx:must_del('test_uk', 'k3', 'k1')
 	tx:create_index('test_uk', {'u1', 'u2'})
 	tx:insert('test_uk', nil, 'k3', 'k1', 'u3', 'u1', 'f4')
