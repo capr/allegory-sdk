@@ -1,4 +1,4 @@
---go@ plink -t root@m1 sdk/bin/debian12/luajit sdk/lua/mdbx_schema.lua
+--go@ plink -t root@m1 sdk/bin/debian12/luajit sdk/tests/mdbx_schema_test.lua
 --go@ plink -t root@m1 sdk/bin/debian12/luajit sp2/sp.lua -v install forealz
 --[[
 
@@ -649,13 +649,23 @@ function Tx:dbi_schema(tab, mode)
 end
 
 local raw_drop_table = Tx.drop_table
-function Tx:drop_table(tab)
+local function drop_table(self, tab, drop_indexes)
 	local dbi, schema, name = self:dbi(tab)
 	if not dbi then return nil, schema end
 	assert(name)
 	assert(raw_drop_table(self, dbi))
 	self:delete_table_schema(name)
+	if drop_indexes then
+		for ix_table_name, ix_schema in pairs(self.db.schema.tables) do
+			if ix_schema.is_index and ix_schema.table == name then
+				assert(drop_table(self, ix_table_name))
+			end
+		end
+	end
 	return true
+end
+function Tx:drop_table(tab)
+	drop_table(self, tab, true)
 end
 
 local function key_field(schema, col)
@@ -934,8 +944,9 @@ local function try_put(self, flags, op, tab, cols, ...)
 			if not ret then return nil, err end
 		end
 		if schema.indexes then
-			for _,idx in ipairs(schema.indexes) do
-				idx:update(self, k, k_sz, v, v_sz, v0, v0_sz)
+			for _,ix in ipairs(schema.indexes) do
+				local ok, err = ix:update(self, k, k_sz, v, v_sz, v0, v0_sz)
+				if not ok then return nil, err end
 			end
 		end
 	else --put or insert with no secondary indexes to update
@@ -1183,7 +1194,7 @@ local ix1_key_rec_buffer = buffer()
 local ix2_key_rec_buffer = buffer()
 local ix_val_rec_buffer = buffer()
 
-function Tx:create_index(tbl_name, uk)
+function Tx:try_create_index(tbl_name, uk)
 	local dbi, schema = self:dbi_schema(tbl_name, 'w')
 
 	--create index schema
@@ -1199,7 +1210,9 @@ function Tx:create_index(tbl_name, uk)
 	prepare_table_schema(ix_schema)
 	self.db.schema.tables[ix_tbl_name] = ix_schema
 
-	local ix_dbi = self:dbi(ix_tbl_name, 'c')
+	local tx = self:txw()
+
+	local ix_dbi = tx:dbi(ix_tbl_name, 'c')
 
 	local cols = cols_list(cat(uk, ' '))
 
@@ -1207,13 +1220,19 @@ function Tx:create_index(tbl_name, uk)
 	local dt = {}
 	local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 	local xv, xv_buf_sz = ix_val_rec_buffer(schema.key_fields.max_rec_size)
-	for cur, k, k_sz, v, v_sz in self:each_raw(tbl_name) do
+	for cur, k, k_sz, v, v_sz in tx:each_raw(tbl_name) do
 		local vn = decode_val(schema, v, v_sz, dt, cols, '[]')
-		local xk_sz = encode_key(self, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
+		local xk_sz = encode_key(tx, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
 		assert(k_sz <= xv_buf_sz, k_sz)
 		copy(xv, k, k_sz)
-		self:insert_raw(ix_dbi, xk, xk_sz, xv, k_sz)
+		local ok, err = tx:try_insert_raw(ix_dbi, xk, xk_sz, xv, k_sz)
+		if not ok then
+			self.db.schema.tables[ix_tbl_name] = nil
+			tx:abort()
+			return nil, err
+		end
 	end
+	tx:commit()
 
 	--create index object
 	local ix = ix_schema
@@ -1238,6 +1257,7 @@ function Tx:create_index(tbl_name, uk)
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 		local vn = decode_val(schema, v, v_sz, dt, cols, '[]')
 		local xk_sz = encode_key(self, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
+		clear(dt)
 
 		if v0 then --record updated: remove the old index record
 
@@ -1245,6 +1265,7 @@ function Tx:create_index(tbl_name, uk)
 			local xk0, xk0_buf_sz = ix2_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 			local vn = decode_val(schema, v0, v0_sz, dt0, cols, '[]')
 			local xk0_sz = encode_key(self, ix_schema, nil, xk0, xk0_buf_sz, cols, '[]', dt0)
+			clear(dt0)
 
 			--abort if index key didn't change
 			if xk_sz == xk0_sz and memcmp(xk, xk0, xk_sz) == 0 then
@@ -1254,13 +1275,7 @@ function Tx:create_index(tbl_name, uk)
 			self:must_del_raw(ix_dbi, xk0, xk0_sz)
 		end
 
-		local ok, err = self:try_insert_raw(ix_dbi, xk, xk_sz, k, k_sz)
-		if not ok then
-			error(fmt('unique key violation: %s', ix_tbl_name))
-		end
-
-		clear(dt)
-		clear(dt0)
+		return self:try_insert_raw(ix_dbi, xk, xk_sz, k, k_sz)
 	end
 
 	function ix.del(ix, self, k, k_sz)
@@ -1272,6 +1287,7 @@ function Tx:create_index(tbl_name, uk)
 		ix_dbi = nil
 	end
 
+	return true
 end
 
 function Db:sync_schema(src, opt)
@@ -1309,7 +1325,7 @@ function Db:sync_schema(src, opt)
 					if tbl.uks then
 						for uk_name, uk in pairs(tbl.uks) do
 							P('create uk: %s', uk_name)
-							tx:create_index(tbl_name, uk)
+							assert(tx:try_create_index(tbl_name, uk))
 						end
 					end
 				end
@@ -1325,7 +1341,7 @@ function Db:sync_schema(src, opt)
 						if tbl.uks.add then
 							for uk_name, uk in pairs(tbl.uks.add) do
 								P('create uk: %s', uk_name)
-								tx:create_index(tbl_name, uk)
+								assert(tx:try_create_index(tbl_name, uk))
 							end
 						end
 					end
@@ -1333,321 +1349,4 @@ function Db:sync_schema(src, opt)
 			end
 		end
 	end)
-end
-
---test -----------------------------------------------------------------------
-
-if not ... then
-
-	pr('libmdbx.so vesion: ',
-		mdbx.mdbx_version.major..'.'..
-		mdbx.mdbx_version.minor..'.'..
-		mdbx.mdbx_version.patch,
-		str(mdbx.mdbx_version.git.commit, 6))
-	pr()
-
-	rm'mdbx_schema_test.mdb'
-	rm'mdbx_schema_test.mdb-lck'
-	local schema = {tables = {}}
-	local db = mdbx_open('mdbx_schema_test.mdb')
-	db.schema = schema
-	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
-	local num_tables = {}
-	local varsize_key1_tables = {}
-	local varsize_key2_tables = {}
-	for order in words'asc desc' do
-		--single numeric keys + vals at fixed offsets.
-		for typ in words(types) do
-			local name = typ..':'..order
-			local tbl = {
-				name = name,
-				test_type = typ,
-				fields = {
-					{col = 'k' , mdbx_type = typ},
-					{col = 'v1', mdbx_type = typ},
-					{col = 'v2', mdbx_type = typ},
-				},
-				pk = {'k', desc = {order == 'desc'}},
-			}
-			add(num_tables, tbl)
-			schema.tables[tbl.name] = tbl
-		end
-
-		--varsize key and val at fixed offset with utf8 enc/dec.
-		local tbl = {
-			name = 'varsize_key1'..':'..order,
-			fields = {
-				{col = 's', mdbx_type = 'utf8', maxlen = 100},
-				{col = 'v', mdbx_type = 'utf8', maxlen = 100},
-			},
-			pk = {'s', desc = {order == 'desc'}},
-		}
-		add(varsize_key1_tables, tbl)
-		schema.tables[tbl.name] = tbl
-
-		--varsize key and val at dyn offset.
-		for order2 in words'asc desc' do
-			local tbl = {
-				name = 'varsize_key2'..':'..order..':'..order2,
-				fields = {
-					{col = 's1', mdbx_type = 'utf8', maxlen = 100},
-					{col = 's2', mdbx_type = 'utf8', maxlen = 100},
-					{col = 's3', mdbx_type = 'utf8', maxlen = 100},
-					{col = 's4', mdbx_type = 'utf8', maxlen = 100},
-				},
-				pk = {'s1', 's2', desc = {order == 'desc', order2 == 'desc'}},
-			}
-			add(varsize_key2_tables, tbl)
-			schema.tables[tbl.name] = tbl
-		end
-
-	end
-
-	--test int and float decoders and encoders
-	for _,tbl in ipairs(num_tables) do
-		local typ = tbl.test_type
-		local tx = db:txw()
-		local bits = num(typ:sub(2))
-		local ntyp = typ:sub(1,1)
-		local nums =
-			ntyp == 'u'  and {0,1,2,2ULL^bits-1} or
-			ntyp == 'i'  and {-2LL^(bits-1),-(2LL^(bits-1)-1),-2,-1,0,1,2,2LL^(bits-1)-2,2LL^(bits-1)-1} or
-			typ == 'f64' and {-2^52,-2,-1,-0.1,-0,0,0.1,1,2^52} or
-			typ == 'f32' and {-2^23,-2,-1,cast('float', -0.1),-0,0,cast('float', 0.1),1,2^23}
-		assert(nums)
-		local t = {}
-		for _,i in ipairs(nums) do
-			add(t, {i, i, i})
-		end
-		tx:put_records(tbl.name, '[k v1 v2]', t)
-		tx:commit()
-
-		if tbl.fields.k.descending then
-			reverse(nums)
-		end
-		tx = db:tx()
-		local i = 1
-		for cur, k, v1, v2 in tx:each(tbl.name) do
-			pr(tbl.name, k, v1, v2)
-			assertf(k  == nums[i], '%q ~= %q', k , nums[i])
-			assertf(v1 == nums[i], '%q ~= %q', v1, nums[i])
-			assertf(v2 == nums[i], '%q ~= %q', v2, nums[i])
-			i = i + 1
-		end
-		tx:commit()
-	end
-
-	--test varsize_key1
-	for _,tbl in ipairs(varsize_key1_tables) do
-		local t = {
-			{'a' , 'b' },
-			{'bb', nil },
-			{'aa', 'bb'},
-			{'b' , nil },
-		}
-		local tx = db:txw()
-		tx:put_records(tbl.name, '[]', t)
-		tx:commit()
-
-		sort(t, function(r1, r2)
-			if tbl.fields.s.descending then
-				return r2[1] < r1[1]
-			else
-				return r1[1] < r2[1]
-			end
-		end)
-		local tx = db:tx()
-		local t1 = {}
-		for cur, t in tx:each(tbl.name, '[]') do
-			add(t1, t)
-		end
-		tx:commit()
-		for i=1,#t do
-			assert(t1[i][1] == t[i][1], t[i][1])
-			assert(t1[i][2] == t[i][2], t[i][2])
-		end
-		pr()
-	end
-	pr()
-
-	--test varsize_key2
-	for _,tbl in ipairs(varsize_key2_tables) do
-		local t = {
-			{'a'  , 'b'  , 'a'  , nil  , },
-			{'a'  , 'a'  , 'a'  , 'a'  , },
-			{'a'  , 'aaa', 'a'  , 'aaa', },
-			{'a'  , 'bbb', 'a'  , nil  , },
-			{'aa' , 'a'  , 'aa' , 'a'  , },
-			{'aa' , 'b'  , 'aa' , nil  , },
-			{'bb' , 'a'  , nil  , 'a'  , },
-			{'bb' , 'aa' , nil  , 'aa' , },
-			{'bb' , 'bb' , nil  , nil  , },
-			{'aa' , 'bb' , 'aa' , nil  , },
-			{'b'  , 'a'  , nil  , 'a'  , },
-			{''   , 'a'  , ''   , 'a'  , },
-			{'a'  , ''   , 'a'  , ''   , },
-			{'xx' , 'y'  , 'z'  , 'zz' , },
-		}
-		local tx = db:txw()
-		tx:put_records(tbl.name, t)
-		tx:commit()
-
-		local s1_desc = tbl.fields.s1.descending
-		local s2_desc = tbl.fields.s2.descending
-		sort(t,
-			function(r1, r2)
-				local c1; if s1_desc then c1 = r2[1] < r1[1] else c1 = r1[1] < r2[1] end
-				local c2; if s2_desc then c2 = r2[2] < r1[2] else c2 = r1[2] < r2[2] end
-				if r2[1] == r1[1] then return c2 else return c1 end
-			end)
-		local tx = db:tx()
-		pr('***', tbl.pk, '***')
-		local t1 = {}
-		for cur, s1, s2, s3, s4 in tx:each(tbl.name) do
-			assert(tx:is_null(tbl.name, 's3', s1, s2) == (s3 == nil))
-			assert(tx:is_null(tbl.name, 's4', s1, s2) == (s4 == nil))
-			add(t1, {s1, s2, s3, s4})
-		end
-		local s3, s4 = tx:get(tbl.name, 's3 s4', 'xx', 'y')
-		assert(s3 == 'z')
-		assert(s4 == 'zz')
-		tx:commit()
-		for i=1,#t do
-			pr(unpack(t1[i], 1, 4))
-			assert(t[i][1] == t1[i][1])
-			assert(t[i][2] == t1[i][2])
-			assert(t[i][3] == t1[i][3])
-			assert(t[i][4] == t1[i][4])
-		end
-		pr()
-	end
-
-	--test uks
-	local tx = db:txw()
-	schema.tables.test_uk = {
-		fields = {
-			{col = 'k1', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'k2', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'u1', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'u2', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'f1', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'f2', mdbx_type = 'utf8', maxlen = 10},
-		},
-		pk = {'k1', 'k2'},
-	}
-	tx:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1')
-	tx:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
-	tx:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
-	tx:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3')
-	tx:commit()
-	local tx = db:txw()
-	--local ok, err = pcall(function()
-	--	--tx:create_index('test_uk', {'u1', 'u2'})
-	--end)
-	--assert(not ok)
-	--assert(tostring(err):has'exists')
-	tx:abort()
-	local tx = db:txw()
-	--for cur, k1, k2, u1, u2, f1, f2 in tx:each('test_uk') do
-	--	pr(k1, k2, u1, u2, f1, f2)
-	--end
-	tx:must_del('test_uk', 'k3', 'k1')
-	tx:create_index('test_uk', {'u1', 'u2'})
-	tx:insert('test_uk', nil, 'k3', 'k1', 'u3', 'u1', 'f4')
-	tx:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u2', 'f5')
-	tx:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
-	local ok, err = pcall(function()
-		tx:insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
-	end)
-	assert(not ok)
-	tx:commit()
-	local tx = db:tx()
-	local t = tx:must_get('test_uk-by-u1-u2', '{}', 'u1', 'u1')
-	assert(t.k1 == 'k1')
-	assert(t.k2 == 'k1')
-	assert(t.u1 == 'u1')
-	assert(t.u2 == 'u1')
-	assert(t.f1 == 'f1')
-	tx:abort()
-
-	local tx = db:tx()
-	pr(rpad('TABLE ('..tx:table_count()..')', 24),
-		'ENTRIES', 'PSIZE', 'DEPTH',
-		'BR_PG', 'LEAF_PG', 'OVER_PG',
-		'TXNID')
-	pr(rep('-', 90))
-	for table_name in tx:each_table() do
-		local s = tx:stat(table_name)
-		pr(rpad(table_name, 24),
-			num(s.entries), s.psize, s.depth,
-			num(s.branch_pages), num(s.leaf_pages), num(s.overflow_pages),
-			num(s.mod_txnid))
-	end
-	tx:abort()
-	pr()
-
-	local tx = db:tx()
-	pr(rpad('TABLE ('..tx:table_count()..')', 24),
-		'KCOLS', 'VCOLS', 'PK')
-	pr(rep('-', 90))
-	for table_name in tx:each_table() do
-		local s = db.schema.tables[table_name]
-		if s then
-			pr(rpad(table_name, 24),
-				cat(imap(s.key_fields, 'name'),','),
-				cat(imap(s.val_fields, 'name'),','),
-				s.pk)
-		else
-			pr(rpad(table_name, 24), '')
-		end
-	end
-	tx:abort()
-	pr()
-
-	db:close()
-
-	--reopen db to check that stored schema matches paper schema.
-	local db = mdbx_open('mdbx_schema_test.mdb')
-	db.schema = schema
-	local tx = db:tx()
-	for tab in tx:each_table() do
-		tx:open_table(tab)
-	end
-	tx:abort()
-	db:close()
-
---	major, C.mdbx_version.minor, C.mdbx_version.patch, C.mdbx_version.tweak)
---	const char *semver_prerelease;
---	struct {
---		const char *datetime;
---		const char *tree;
---		const char *commit;
---		const char *describe;
---	} git;
---	const char *sourcery;
---} mdbx_version;
-
-	--[[
-	local db = mdbx_open('mdbx_schema_test.mdb')
-	db:load_schema()
-	local u = {
-		uid = 1234,
-		active = 1,
-		roles = {123, 321},
-		email = 'admin@some.com',
-		name = 'John Galt',
-	}
-	local key_max_sz = db:max_key_size'users'
-	local val_max_sz = db:max_val_size'users'
-	local buf_sz = key_max_sz + val_max_sz
-	local buf = u8a(buf_sz)
-	local key_sz = db:encode_key('users', u, buf, buf_sz)
-	local val_sz = db:encode_val('users', u, buf, buf_sz, key_max_sz)
-	db:encode_val_col('users', 'name', 'Dagny Taggart', buf, val_sz, key_max_sz)
-	pr(db:val_tostring('users', 'email', buf, val_sz, key_max_sz))
-	pr(db:val_tostring('users', 'name' , buf, val_sz, key_max_sz))
-	--db:decode_val('users', u, buf, sz)
-	db:close()
-	]]
-
 end

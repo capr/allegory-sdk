@@ -72,6 +72,109 @@ require'mdbx_h'
 local isnum = isnum
 local C = ffi.load'mdbx'
 
+--debugging ------------------------------------------------------------------
+
+local DEBUG = 1
+
+if DEBUG then
+	local reflect = require'reflect'
+	local function iscfunc(v)
+		if typeof(v) ~= 'cdata' then return false end
+		local ti = ffi.typeinfo(tonumber(ctype(v)))
+		local CT_code = shr(ti.info, 28)
+		return CT_code == 6
+	end
+
+	metatype(MDBX_txn, {debug_prefix = ''})
+
+	local prf = {}
+	local prf_after = {}
+	local addrs = {}
+	local function faddr(typ, p)
+		local s = tostring(p):sub(-12)
+		local t = attr(addrs, typ)
+		local i = t[s]
+		if not i then t.i = (t.i or 0) + 1; i = t.i; t[s] = i; end
+		return i
+	end
+	local function ftxn(txn)
+		return 'txn:'..faddr('txn', txn)
+	end
+	local function fdbi(dbi)
+		return 'dbi:'..dbi
+	end
+	local function fcur(cur)
+		return 'cur:'..faddr('cur', cur)
+	end
+	local function fflags(flags)
+		flags = flags or 0
+		return flags==0 and '' or 'flags='..tohex(flags)
+	end
+	local function fbin(v)
+		if not v then return 'nil' end
+		return faddr('v', v.data)..':'..num(v.size)..' '..((str(v.data, v.size) or ''):gsub('[%z\1-\31]', '.'))
+	end
+	local function fk(k) return 'k:'..fbin(k) end
+	local function fv(v) return 'v:'..fbin(v) end
+	function prf_after.mdbx_txn_begin_ex(fn, rc, env, parent, flags, txnp)
+		pr('TX-BEG', rc, ftxn(txnp[0]), parent and 'p'..ftxn(parent) or '', fflags(flags))
+	end
+	function prf_after.mdbx_txn_commit_ex(fn, rc, txn)
+		pr('TX-COM', rc, ftxn(txn))
+	end
+	function prf_after.mdbx_txn_abort(fn, rc, txn)
+		pr('TX-ABO', rc, ftxn(txn))
+	end
+	function prf_after.mdbx_txn_reset(fn, rc, txn)
+		pr('TX-RST', rc, ftxn(txn))
+	end
+	function prf_after.mdbx_dbi_open(fn, rc, txn, name, flags, dbip)
+		pr(' OPEN', rc, ftxn(txn), str(name), fdbi(dbip[0]), fflags(flags))
+	end
+	function prf_after.mdbx_dbi_close(fn, rc, env, dbi)
+		pr(' CLOSE', rc, fdbi(dbi))
+	end
+	function prf_after.mdbx_put(fn, rc, txn, dbi, k, v, flags)
+		pr('  put', rc, ftxn(txn), fdbi(dbi), fk(k), fv(v), fflags(flags))
+	end
+	function prf_after.mdbx_get(fn, rc, txn, dbi, k, v)
+		pr('  get', rc, ftxn(txn), fdbi(dbi), fk(k), rc == 0 and fv(v) or '')
+	end
+	function prf_after.mdbx_del(fn, rc, txn, dbi, k, v)
+		pr('  del', rc, ftxn(txn), fdbi(dbi), fk(k), fv(v))
+	end
+	function prf_after.mdbx_cursor_open(fn, rc, txn, dbi, curp)
+		pr(' Copen', rc, ftxn(txn), fdbi(dbi), fcur(curp[0]))
+	end
+	function prf_after.mdbx_cursor_get(fn, rc, cur, k, v, op)
+		pr('  Cget', rc, fcur(cur), fk(k), rc == 0 and fv(v) or '', fflags(op))
+	end
+	function prf_after.mdbx_cursor_unbind(fn, rc, cur)
+		pr(' Cunb', rc, fcur(cur))
+	end
+	function prf.mdbx_env_get_maxkeysize_ex() end
+	local _C = C
+	C = setmetatable({}, {__index = function(t, k)
+		local v = _C[k]
+		if iscfunc(v) then
+			t[k] = function(...)
+				local prf = prf[k]
+				local prf_after = prf_after[k]
+				if not prf and not prf_after then prf = pr end
+				if prf then prf(k, ...) end
+				local rc = v(...)
+				if prf_after then prf_after(k, rc, ...) end
+				return rc
+			end
+			return t[k]
+		else
+			t[k] = v
+			return v
+		end
+	end
+	})
+end
+
 require'fs'
 require'sock'
 
@@ -149,30 +252,35 @@ function mdbx_drop(file, mode)
 end
 
 function Db:db_max_key_size()
-	return C.mdbx_env_get_maxkeysize_ex(self.env, C.MDBX_DB_DEFAULTS)
+	local sz = C.mdbx_env_get_maxkeysize_ex(self.env, C.MDBX_DB_DEFAULTS)
+	function self:db_max_key_size()
+		return sz
+	end
+	return sz
 end
 
 --transactions ---------------------------------------------------------------
 
 local Tx = {}; mdbx_tx = Tx
 
-local function tx_free(self)
+local function tx_ro_free(self)
 	self:close_cursors()
-	if self.readonly then --we reuse r/o txns
-		push(self.db._free_ro_tx, self)
-	else --we can only reuse r/w txs
-		if self.db.current_txw == self then
-			self.db.current_txw = nil
+	push(self.db._free_ro_tx, self)
+end
+
+local function tx_rw_free(self)
+	self:close_cursors()
+	self.txn = nil
+	self.parent_tx = nil
+	if self.created_tables then
+		clear(self.created_tables)
+	end
+	push(self.db._free_rw_tx, self)
+	if self.child_txs then --child txs are aborted automatically.
+		for _,tx in ipairs(self.child_txs) do
+			tx_rw_free(tx)
 		end
-		self.txn = nil
-		self.parent_tx = nil
-		push(self.db._free_rw_tx, self)
-		if self.child_txs then --child txs are aborted automatically.
-			for _,tx in ipairs(self.child_txs) do
-				tx_free(tx)
-			end
-			clear(self.child_txs)
-		end
+		clear(self.child_txs)
 	end
 end
 
@@ -192,7 +300,6 @@ function Db:tx(flags)
 	return tx
 end
 function Db:txw(parent_tx, flags)
-	assert(parent_tx or not self.current_txw, 'write transaction already opened')
 	flags = flags or 0
 	checkz(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn, flags, txnp, nil))
 	local tx = pop(self._free_rw_tx) or object(Tx, {db = self, readonly = false})
@@ -200,8 +307,6 @@ function Db:txw(parent_tx, flags)
 	if parent_tx then
 		tx.parent_tx = parent_tx
 		add(attr(parent_tx, 'child_txs'), tx)
-	else
-		self.current_txw = tx
 	end
 	return tx
 end
@@ -226,30 +331,32 @@ function Tx:commit()
 	assert(not self:closed(), 'transaction closed')
 	if self.readonly then
 		checkz(C.mdbx_txn_reset(self.txn))
+		tx_ro_free(self)
 	else
 		checkz(C.mdbx_txn_commit_ex(self.txn, nil))
+		tx_rw_free(self)
 	end
-	tx_free(self)
 end
 
 function Tx:abort()
 	assert(not self:closed(), 'transaction closed')
 	if self.readonly then
 		checkz(C.mdbx_txn_reset(self.txn))
+		tx_ro_free(self)
 	else
 		checkz(C.mdbx_txn_abort(self.txn))
 		--dbis to created tables must be removed from db.open_tables map on abort.
 		if self.created_tables then
 			for _,t in ipairs(self.created_tables) do
+				checkz(C.mdbx_dbi_close(self.db.env, t.dbi))
 				self.db.open_tables[t.name] = nil
 				self.db.open_tables[t.dbi] = nil
 				t.name = nil
 				t.dbi = nil
 			end
-			self.created_tables = nil
 		end
+		tx_rw_free(self)
 	end
-	tx_free(self)
 end
 
 do
@@ -336,6 +443,7 @@ function Tx:drop_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	checkz(C.mdbx_drop(self.txn, dbi, 1))
+	checkz(C.mdbx_dbi_close(self.db.env, dbi))
 	local ot = self.db.open_tables
 	local t = ot[dbi]
 	ot[dbi] = nil
