@@ -290,44 +290,10 @@ function test_schema()
 	tx:abort()
 end
 
---test_encdec()
+test_encdec()
 test_uks()
 test_stat()
 test_each()
 test_schema()
 
 db:close()
-
---	major, C.mdbx_version.minor, C.mdbx_version.patch, C.mdbx_version.tweak)
---	const char *semver_prerelease;
---	struct {
---		const char *datetime;
---		const char *tree;
---		const char *commit;
---		const char *describe;
---	} git;
---	const char *sourcery;
---} mdbx_version;
-
---[[
-local db = mdbx_open('mdbx_schema_test.mdb')
-db:load_schema()
-local u = {
-	uid = 1234,
-	active = 1,
-	roles = {123, 321},
-	email = 'admin@some.com',
-	name = 'John Galt',
-}
-local key_max_sz = db:max_key_size'users'
-local val_max_sz = db:max_val_size'users'
-local buf_sz = key_max_sz + val_max_sz
-local buf = u8a(buf_sz)
-local key_sz = db:encode_key('users', u, buf, buf_sz)
-local val_sz = db:encode_val('users', u, buf, buf_sz, key_max_sz)
-db:encode_val_col('users', 'name', 'Dagny Taggart', buf, val_sz, key_max_sz)
-pr(db:val_tostring('users', 'email', buf, val_sz, key_max_sz))
-pr(db:val_tostring('users', 'name' , buf, val_sz, key_max_sz))
---db:decode_val('users', u, buf, sz)
-db:close()
-]]
