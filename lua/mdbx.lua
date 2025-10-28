@@ -76,6 +76,11 @@ local C = ffi.load'mdbx'
 
 mdbx = C
 
+if config'mdbx_debug' then
+	require'mdbx_debug'
+	C = mdbx
+end
+
 local function try_checkz(rc)
 	if rc == 0 then return true end
 	return false, str(C.mdbx_strerror(rc))
