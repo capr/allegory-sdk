@@ -49,7 +49,6 @@ API, extends mdbx.lua API
 
 
 TODO:
-	- autoincrement
 	- reverse cursor
 	- mdbx_env_chk()
 	- range lookup cursor
@@ -220,6 +219,12 @@ local function compile_table_schema(schema, table_name, db_max_key_size)
 		f.key_index = #key_fields
 		if schema.pk.desc then
 			f.descending = schema.pk.desc[i]
+		end
+		if f.auto_increment then
+			assertf(not schema.auto_increment_field,
+				'auto_increment on a second key field: %s (already on: %s)',
+				f.col, schema.auto_increment_field.col)
+			schema.auto_increment_field = f
 		end
 	end
 	assert(#key_fields > 0, 'table has no pk: %s', table_name)
@@ -500,7 +505,7 @@ end
 
 local try_raw_open_table = Tx.try_open_table
 
-function Tx:save_table_schema(table_name, schema)
+function Tx:save_table_schema(schema)
 	--NOTE: only saving enough information to read the data back in absence of
 	--a paper schema, and to validate a paper schema against the used layout.
 	local t = {
@@ -528,7 +533,7 @@ function Tx:save_table_schema(table_name, schema)
 			}
 		end
 	end
-	local k = table_name
+	local k = schema.name
 	local v = pp(t, false)
 	self:put_raw('$schema',
 		cast(u8p, k), #k,
@@ -622,7 +627,7 @@ function Tx:try_open_table(tab, mode, flags)
 	if not t then return nil, created end
 	t.schema = paper_schema
 	if not stored_schema and paper_schema and created then
-		self:save_table_schema(table_name, paper_schema)
+		self:save_table_schema(paper_schema)
 	end
 	return t, created
 end
@@ -657,7 +662,7 @@ local function drop_table(self, tab, drop_indexes)
 	self:delete_table_schema(name)
 	if drop_indexes then
 		for ix_table_name, ix_schema in pairs(self.db.schema.tables) do
-			if ix_schema.is_index and ix_schema.table == name then
+			if ix_schema.is_index and ix_schema.target_table == schema then
 				assert(drop_table(self, ix_table_name))
 			end
 		end
@@ -666,6 +671,17 @@ local function drop_table(self, tab, drop_indexes)
 end
 function Tx:drop_table(tab)
 	drop_table(self, tab, true)
+end
+
+local try_raw_rename_table = Tx.try_raw_rename_table
+function Tx:try_rename_table(tab, new_table_name)
+	local dbi, schema = self:dbi(tab)
+	local ok, err = try_raw_rename_table(self, dbi, new_table_name)
+	if not ok then return nil, err end
+	if not schema then return true end
+	local k = schema.name
+	self:del_raw(cast(u8p, k), #k)
+	self:save_table_schema(schema)
 end
 
 local function key_field(schema, col)
@@ -726,10 +742,10 @@ local function select_col(cols, as, col, ...)
 	end
 end
 
-local function resolve_null_val(self, schema, f, op)
+local function resolve_null_val(self, schema, f)
 	local default = f.mdbx_default
 	if isfunc(default) then
-		default = default(self, schema, f, op)
+		default = default(schema, f)
 	end
 	local val = default
 	if val == nil then
@@ -742,14 +758,14 @@ end
 
 local encode_key do
 local pp = new'u8*[1]'
-function encode_key(self, schema, op, rec, rec_buf_sz, cols, as, ...)
+function encode_key(self, schema, rec, rec_buf_sz, cols, as, ...)
 	if #schema.key_fields == 0 then return 0 end
 	local encode_int_key = schema.encode_int_key
 	pp[0] = rec
 	for ki,f in ipairs(schema.key_fields) do
 		local val = select_col(cols, as, f.col, ...)
 		if val == nil or val == null then
-			val = resolve_null_val(self, schema, f, op)
+			val = resolve_null_val(self, schema, f)
 		end
 		if val == nil then
 			error(fmt('null key: %s.%s', schema.name, f.col), 2)
@@ -769,13 +785,13 @@ end
 
 local encode_val do
 local pp = new'u8*[1]'
-function encode_val(self, schema, op, rec, rec_buf_sz, cols, as, ...)
+function encode_val(self, schema, rec, rec_buf_sz, cols, as, ...)
 	if #schema.val_fields == 0 then return 0 end
 	C.schema_val_add_start(schema._st, rec, rec_buf_sz, pp)
 	for vi,f in ipairs(schema.val_fields) do
 		local val = select_col(cols, as, f.col, ...)
 		if val == nil or val == null then
-			val = resolve_null_val(self, schema, f, op)
+			val = resolve_null_val(self, schema, f)
 		end
 		local len
 		if val ~= nil then
@@ -793,7 +809,7 @@ end
 
 local function get_raw_by_pk(self, dbi, schema, ...)
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local k_sz = encode_key(self, schema, 'get', k, k_buf_sz, schema.key_cols, nil, ...)
+	local k_sz = encode_key(self, schema, k, k_buf_sz, schema.key_cols, nil, ...)
 	return self:get_raw(dbi, k, k_sz)
 end
 
@@ -878,7 +894,7 @@ function Tx:try_get(tab, cols, ...)
 	local t = {}
 	local i0 = 1
 	if schema.is_index then
-		local t_dbi, t_schema = self:dbi_schema(schema.table)
+		local t_dbi, t_schema = self:dbi_schema(schema.target_table.name)
 		if not t_dbi then return false, t_schema end
 		cols = cols or t_schema.val_cols
 		local k, k_sz = v, v_sz
@@ -903,7 +919,16 @@ local function try_put(self, flags, op, tab, cols, ...)
 	cols = cols or schema.cols
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
-	local k_sz = encode_key(self, schema, op, k, k_buf_sz, cols, as, ...)
+	if op == 'insert' then
+		local af = schema.auto_increment_field
+		if af then
+			local val = select_col(cols, as, af.col, ...)
+			if val == nil then
+				val = self:gen_id(dbi)
+			end
+		end
+	end
+	local k_sz = encode_key(self, schema, k, k_buf_sz, cols, as, ...)
 	local ret, err
 	if op == 'update' or op == 'upsert' or schema.indexes then
 		local cur = self:cursor(dbi, 'w')
@@ -928,9 +953,9 @@ local function try_put(self, flags, op, tab, cols, ...)
 						t[i] = v
 					end
 				end
-				v_sz = encode_val(self, schema, op, v, v_buf_sz, all_cols, '[]', t)
+				v_sz = encode_val(self, schema, v, v_buf_sz, all_cols, '[]', t)
 			else --update all cols so no need to decode v0
-				v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
+				v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, ...)
 			end
 			cur:set_raw(v, v_sz)
 			cur:close()
@@ -939,7 +964,7 @@ local function try_put(self, flags, op, tab, cols, ...)
 			return nil, v0_sz
 		else --put, insert, or upsert new record
 			cur:close()
-			v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
+			v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, ...)
 			local ret, err = self:try_put_raw(dbi, k, k_sz, v, v_sz, flags)
 			if not ret then return nil, err end
 		end
@@ -950,7 +975,7 @@ local function try_put(self, flags, op, tab, cols, ...)
 			end
 		end
 	else --put or insert with no secondary indexes to update
-		local v_sz = encode_val(self, schema, op, v, v_buf_sz, cols, as, ...)
+		local v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, ...)
 		local ret, err = self:try_put_raw(dbi, k, k_sz, v, v_sz, flags)
 		if not ret then return nil, err end
 	end
@@ -991,7 +1016,7 @@ function Tx:del(tab, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return nil, schema end
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local k_sz = encode_key(self, schema, 'del', k, k_buf_sz, schema.key_cols, nil, ...)
+	local k_sz = encode_key(self, schema, k, k_buf_sz, schema.key_cols, nil, ...)
 	local ok, err = self:del_raw(dbi, k, k_sz)
 	if not ok then return nil, err end
 	if schema.indexes then
@@ -1014,8 +1039,8 @@ function Tx:del_exact(tab, cols, ...)
 	cols = cols or schema.cols
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
-	local k_sz = encode_key(self, schema, 'del', k, k_buf_sz, cols, as, ...)
-	local v_sz = encode_val(self, schema, 'del', v, v_buf_sz, cols, as, ...)
+	local k_sz = encode_key(self, schema, k, k_buf_sz, cols, as, ...)
+	local v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, ...)
 	local ok, err = self:del_raw(dbi, k, k_sz, v, v_sz)
 	if not ok then return nil, err end
 	if schema.indexes then
@@ -1041,8 +1066,8 @@ function Tx:put_records(tab, cols, records)
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	for _,vals in ipairs(records) do
-		local k_sz = encode_key(self, schema, 'put', k, k_buf_sz, cols, as, vals)
-		local v_sz = encode_val(self, schema, 'put', v, v_buf_sz, cols, as, vals)
+		local k_sz = encode_key(self, schema, k, k_buf_sz, cols, as, vals)
+		local v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, vals)
 		self:put_raw(dbi, k, k_sz, v, v_sz)
 	end
 end
@@ -1106,7 +1131,7 @@ function Cur:next(val_cols)
 end
 function Cur:try_get(val_cols, ...)
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local k_sz = encode_key(self, schema, 'get', k, k_buf_sz, self.schema.key_cols, nil, ...)
+	local k_sz = encode_key(self, schema, k, k_buf_sz, self.schema.key_cols, nil, ...)
 	local v, v_sz = self:get_raw(k, k_sz)
 	if not v then return end
 	local t, val_cols, as = self._t, self._val_cols, self._as
@@ -1130,7 +1155,7 @@ function Cur:update(val_cols, ...)
 	if not k then return nil, 'not_found' end
 	assert(v_buf_sz >= v0_sz)
 	copy(v, v0, v0_sz)
-	local v_sz = encode_val(self, schema, 'set', v, v_buf_sz, val_cols, as, ...)
+	local v_sz = encode_val(self, schema, v, v_buf_sz, val_cols, as, ...)
 	self:set_raw(v, v_sz)
 end
 
@@ -1204,7 +1229,12 @@ function Tx:try_create_index(tbl_name, uk)
 		local f = update({}, schema.fields[col])
 		add(ix_fields, f)
 	end
-	local ix_schema = {fields = ix_fields, pk = uk, is_index = true, table = tbl_name}
+	local ix_schema = {
+		fields = ix_fields,
+		pk = uk,
+		is_index = true,
+		target_table = schema,
+	}
 	local db_max_key_size = self.db:db_max_key_size()
 	compile_table_schema(ix_schema, ix_tbl_name, db_max_key_size)
 	prepare_table_schema(ix_schema)
@@ -1222,7 +1252,7 @@ function Tx:try_create_index(tbl_name, uk)
 	local xv, xv_buf_sz = ix_val_rec_buffer(schema.key_fields.max_rec_size)
 	for cur, k, k_sz, v, v_sz in tx:each_raw(tbl_name) do
 		local vn = decode_val(schema, v, v_sz, dt, cols, '[]')
-		local xk_sz = encode_key(tx, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
+		local xk_sz = encode_key(tx, ix_schema, xk, xk_buf_sz, cols, '[]', dt)
 		assert(k_sz <= xv_buf_sz, k_sz)
 		copy(xv, k, k_sz)
 		local ok, err = tx:try_insert_raw(ix_dbi, xk, xk_sz, xv, k_sz)
@@ -1256,7 +1286,7 @@ function Tx:try_create_index(tbl_name, uk)
 		--derive index key from v
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 		local vn = decode_val(schema, v, v_sz, dt, cols, '[]')
-		local xk_sz = encode_key(self, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
+		local xk_sz = encode_key(self, ix_schema, xk, xk_buf_sz, cols, '[]', dt)
 		clear(dt)
 
 		if v0 then --record updated: remove the old index record
@@ -1264,7 +1294,7 @@ function Tx:try_create_index(tbl_name, uk)
 			--derive old index key from v0 to compare with the new one.
 			local xk0, xk0_buf_sz = ix2_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 			local vn = decode_val(schema, v0, v0_sz, dt0, cols, '[]')
-			local xk0_sz = encode_key(self, ix_schema, nil, xk0, xk0_buf_sz, cols, '[]', dt0)
+			local xk0_sz = encode_key(self, ix_schema, xk0, xk0_buf_sz, cols, '[]', dt0)
 			clear(dt0)
 
 			--abort if index key didn't change
@@ -1293,7 +1323,6 @@ end
 function Db:sync_schema(src, opt)
 	local tx = self:txw()
 	for tbl in tx:each_table() do
-		pr('DROP ', tbl)
 		tx:drop_table(tbl)
 	end
 	tx:commit()
