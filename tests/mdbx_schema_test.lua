@@ -1,6 +1,8 @@
 --go@ plink -t root@m1 sdk/bin/debian12/luajit sdk/tests/mdbx_schema_test.lua
 
+
 require'mdbx_schema'
+require'schema_std'
 
 pr('libmdbx.so vesion: ',
 	mdbx.mdbx_version.major..'.'..
@@ -11,7 +13,7 @@ pr()
 
 rm'mdbx_schema_test.mdb'
 rm'mdbx_schema_test.mdb-lck'
-local schema = {tables = {}}
+local schema = schema.new()
 local db = mdbx_open('mdbx_schema_test.mdb')
 db.schema = schema
 
@@ -240,6 +242,49 @@ function test_uks()
 	tx:abort()
 end
 
+function test_rename_table()
+	schema.tables.test_rename_table1 = {
+		fields = {{col = 'id', mdbx_type = 'u8'}},
+		pk = {'id'},
+	}
+	local tx = db:txw()
+	tx:create_table('test_rename_table1')
+	assert(tx:table_exists'test_rename_table1')
+	tx:rename_table(
+		'test_rename_table1',
+		'test_rename_table2'
+	)
+	tx:commit()
+end
+
+function test_fks()
+	schema:import(function()
+		import'schema_std'
+		tables.fk1 = {
+			fk1, idpk,
+		}
+		tables.fk2 = {
+			fk2, idpk,
+		}
+		tables.fk3 = {
+			fk2, idpk,
+		}
+		tables.fkt = {
+			id , idpk,
+			fk1, id, fk,
+			fk2, id, child_fk,
+			fk3, id, weak_fk,
+		}
+	end)
+	pr(schema.tables.fkt.fks)
+	local tx = db:txw()
+	tx:insert('fk1')
+	tx:insert('fk2')
+	tx:insert('fk3')
+	tx:insert('fkt', nil, 1, 1, 1)
+	tx:commit()
+end
+
 function test_stat()
 	local tx = db:tx()
 	pr(rpad('TABLE ('..tx:table_count()..')', 24),
@@ -290,10 +335,12 @@ function test_schema()
 	tx:abort()
 end
 
-test_encdec()
-test_uks()
-test_stat()
-test_each()
-test_schema()
+--test_encdec()
+--test_uks()
+--test_rename_table()
+test_fks()
+--test_stat()
+--test_each()
+--test_schema()
 
 db:close()

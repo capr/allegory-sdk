@@ -344,7 +344,9 @@ function Tx:try_rename_table(tab, new_table_name)
 	return true
 end
 function Tx:rename_table(tab, new_table_name)
-	assert(self:try_rename_table(tab, new_table_name))
+	local ok, err = self:try_rename_table(tab, new_table_name)
+	return check('db', 'rename_table', ok, '%s -> %s: %s',
+		self:table_name(tab), new_table_name, err)
 end
 
 function Tx:drop_table(tab)

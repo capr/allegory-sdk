@@ -251,7 +251,7 @@ return function()
 		return '%.'..dec..'f%%' or '%.0f%$'
 	end)
 	function type_attrs.percent.to_text(p, f)
-		return  string_format(decfmt(f.decimals), p * 100)
+		return string_format(decfmt(f.decimals), p * 100)
 	end
 
 end
