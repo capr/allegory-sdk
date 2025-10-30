@@ -676,12 +676,27 @@ end
 local try_raw_rename_table = Tx.try_raw_rename_table
 function Tx:try_rename_table(tab, new_table_name)
 	local dbi, schema = self:dbi(tab)
+	if not dbi then return nil, schema end
+	self = self:txw()
 	local ok, err = try_raw_rename_table(self, dbi, new_table_name)
-	if not ok then return nil, err end
-	if not schema then return true end
-	local k = schema.name
-	self:del_raw(cast(u8p, k), #k)
-	self:save_table_schema(schema)
+	if not ok then
+		self:abort()
+		return nil, err
+	end
+	if schema then
+		local k1 = schema.name
+		local k2 = new_table_name
+		local ok, err = self:try_move_key_raw(
+			cast(u8p, k1), #k1,
+			cast(u8p, k2), #k2
+		)
+		if not ok then
+			self:abort()
+			return nil, err
+		end
+	end
+	self:commit()
+	return true
 end
 
 local function key_field(schema, col)

@@ -27,6 +27,8 @@ TRANSACTIONS
 	tx:closed() -> t|f
 	db:atomic(['w',], fn, ...) -> ...       run fn in transaction
 		fn(tx, ...) -> ...
+	tx:atomic(fn, ...) -> ...               run fn in sub-transaction
+		fn(tx, ...) -> ...
 
 TABLES
 
@@ -275,6 +277,10 @@ function Db:atomic(mode, f, ...)
 	local tx = mode == 'w' and self:txw() or self:tx()
 	return finish(tx, xpcall(f, traceback, tx, ...))
 end
+function Tx:atomic(f, ...)
+	local tx = self:txw()
+	return finish(tx, xpcall(f, traceback, tx, ...))
+end
 end
 
 --tables ---------------------------------------------------------------------
@@ -333,6 +339,7 @@ end
 function Tx:try_rename_table(tab, new_table_name)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
+	if self:table_exists(new_table_name) then return nil, 'exists' end
 	checkz(C.mdbx_dbi_rename(self.txn, dbi, new_table_name))
 	return true
 end
@@ -498,6 +505,21 @@ function Tx:gen_id(tab)
 	assertf(dbi, 'gen_id(): table not found: %s', tab)
 	checkz(C.mdbx_dbi_sequence(self.txn, dbi, seqbuf, 1))
 	return num(seqbuf[0])
+end
+
+function Tx:try_move_key_raw(tab, k1, k1_sz, k2, k2_sz)
+	local v, v_sz = self:get_raw(tab, k1, k1_sz)
+	if not v then return nil, v_sz end
+	--NOTE: calling put before del because del invaldates the v pointer.
+	local ok, err = self:try_insert_raw(tab, k2, k2_sz, v, v_sz)
+	if not ok and err == 'exists' then return nil, err end
+	self:must_del_raw(tab, k1, k1_sz)
+	return true
+end
+function Tx:move_key_raw(tab, ...)
+	local ret, err = self:try_move_key_raw(tab, ...)
+	if ret then return end
+	check('db', 'move_key_raw', ret, '%s: %s', table_name(self, tab), err)
 end
 
 --cursors --------------------------------------------------------------------
