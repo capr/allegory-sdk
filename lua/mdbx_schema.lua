@@ -52,9 +52,6 @@ TODO:
 	- reverse cursor
 	- mdbx_env_chk()
 	- range lookup cursor
-	- DDL:
-		- rename table, incl. layout
-		- delete table, incl. layout
 	- table migration:
 		- copy all records to tmp table, delete old table, rename tmp table.
 			- copy existing fields by name, use aka mapping to find old field.
@@ -349,6 +346,8 @@ local function compile_table_schema(schema, table_name, db_max_key_size)
 
 end
 
+local S = function() end
+
 --create encoders and decoders for a layouted schema.
 local function prepare_table_schema(schema)
 
@@ -356,23 +355,16 @@ local function prepare_table_schema(schema)
 	local val_fields = schema.val_fields
 
 	--default col lists for get, put, etc.
-	schema.cols = {}
-	schema.key_cols = {}
-	schema.val_cols = {}
-	for i,f in ipairs(schema.fields) do
-		schema.cols[i] = f.col
-		schema.cols[f.col] = i
-		if f.key_index then
-			add(schema.key_cols, f.col)
-			schema.key_cols[f.col] = #schema.key_cols
-		else
-			add(schema.val_cols, f.col)
-			schema.val_cols[f.col] = #schema.val_cols
-		end
-	end
-	schema.    cols.__s__ = cat(schema.    cols, ',')
-	schema.key_cols.__s__ = cat(schema.key_cols, ',')
-	schema.val_cols.__s__ = cat(schema.val_cols, ',')
+	schema.    cols = imap(schema.    fields, 'col')
+	schema.key_cols = imap(schema.key_fields, 'col')
+	schema.val_cols = imap(schema.val_fields, 'col')
+	for i,col in ipairs(schema.    cols) do schema.    cols[col] = i end
+	for i,col in ipairs(schema.key_cols) do schema.key_cols[col] = i end
+	for i,col in ipairs(schema.val_cols) do schema.val_cols[col] = i end
+
+	schema.    cols[S] = cat(schema.    cols, ',')
+	schema.key_cols[S] = cat(schema.key_cols, ',')
+	schema.val_cols[S] = cat(schema.val_cols, ',')
 
 	--generate direct key record decoders and encoders for u32/u64 keys
 	--stored in little endian.
@@ -569,25 +561,33 @@ function Tx:load_table_schema(table_name)
 	return schema --compiled but not prepared
 end
 
-function Tx:delete_table_schema(table_name)
-	self:del_raw('$schema', cast(u8p, table_name), #table_name)
+function Tx:try_drop_table_schema(table_name)
+	return self:try_del_raw('$schema', cast(u8p, table_name), #table_name)
 end
 
-function Tx:try_open_table(tab, mode, flags)
+function Tx:try_open_table(tab, mode, flags, paper_schema)
 	if not tab then --opening the unnamed root table
 		return try_raw_open_table(self, mode, flags)
 	end
 	local t = self.db.open_tables[tab]
 	if t then return t end
 	local table_name = tab
-	local db_schema = self.db.schema
-	local tables = db_schema and db_schema.tables
-	local paper_schema = tables and tables[table_name]
+	if not paper_schema then
+		local db_schema = self.db.schema
+		local tables = db_schema and db_schema.tables
+		paper_schema = tables and tables[table_name]
+	end
 	local stored_schema = self:load_table_schema(table_name)
 	if stored_schema and not paper_schema then
-		--old table for which paper schema was lost, use stored schema.
-		paper_schema = stored_schema
-		paper_schema.compiled = true
+		if mode == 'c' then
+			--old table with stored schema, but now we're creating one without.
+			self:try_drop_table_schema(table_name)
+			stored_schema = nil
+		else
+			--old table for which paper schema was lost, use stored schema.
+			paper_schema = stored_schema
+			paper_schema.compiled = true
+		end
 	end
 	if paper_schema then
 		if not paper_schema.compiled then
@@ -658,24 +658,24 @@ function Tx:dbi_schema(tab, mode)
 	return dbi, schema
 end
 
-local raw_drop_table = Tx.drop_table
-local function drop_table(self, tab, drop_indexes)
+local raw_try_drop_table = Tx.try_drop_table
+function Tx:try_drop_table(tab)
 	local dbi, schema, name = self:dbi(tab)
 	if not dbi then return nil, schema end
 	assert(name)
-	assert(raw_drop_table(self, dbi))
-	self:delete_table_schema(name)
-	if drop_indexes then
-		for ix_table_name, ix_schema in pairs(self.db.schema.tables) do
-			if ix_schema.is_index and ix_schema.target_table == schema then
-				assert(drop_table(self, ix_table_name))
-			end
+	assert(raw_try_drop_table(self, dbi))
+	self:try_drop_table_schema(name)
+	if schema.indexes then
+		while #schema.indexes > 0 do
+			last(schema.indexes):drop()
+		end
+	end
+	if schema.fks then
+		while #schema.fks > 0 do
+			last(schema.fks):drop()
 		end
 	end
 	return true
-end
-function Tx:drop_table(tab)
-	drop_table(self, tab, true)
 end
 
 local try_rename_table = Tx.try_rename_table
@@ -736,7 +736,7 @@ local m_cols_list = memoize(function(cols)
 	local t = collect(words(cols))
 	assert(#t > 0)
 	for i,col in ipairs(t) do t[col] = i end
-	t.__s__ = cat(t, ',')
+	t[S] = cat(t, ',')
 	return t
 end)
 local function cols_list(cols)
@@ -932,6 +932,15 @@ function Tx:try_get(tab, cols, ...)
 	end
 end
 
+function Db:on(table_name, ...)
+	local schema = self.schema.tables[table_name]
+	events.on(schema, ...)
+end
+function Db:off(table_name, ...)
+	local schema = self.schema.tables[table_name]
+	events.off(schema, ...)
+end
+
 local put_v0_buffer = buffer()
 local function try_put(self, flags, op, tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab, 'w')
@@ -942,7 +951,7 @@ local function try_put(self, flags, op, tab, cols, ...)
 	local autoinc_f = op == 'insert' and schema.autoinc_field
 	local k_sz = encode_key(self, schema, autoinc_f, k, k_buf_sz, cols, as, ...)
 	local ret, err
-	if op == 'update' or op == 'upsert' or schema.indexes then
+	if op == 'update' or op == 'upsert' or schema.fks or schema.indexes then
 		local cur = self:cursor(dbi, 'w')
 		local v0, v0_sz = cur:get_raw(k, k_sz)
 		local v_sz
@@ -969,6 +978,15 @@ local function try_put(self, flags, op, tab, cols, ...)
 			else --update all cols so no need to decode v0
 				v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, ...)
 			end
+			if schema.fks then
+				for _,fk in ipairs(schema.fks) do
+					local ok, err = fk:check(self, k, k_sz, v, v_sz)
+					if not ok then
+						cur:close()
+						return nil, err
+					end
+				end
+			end
 			cur:set_raw(v, v_sz)
 			cur:close()
 		elseif op == 'update' then --update but existing row not found
@@ -977,21 +995,34 @@ local function try_put(self, flags, op, tab, cols, ...)
 		else --put, insert, or upsert new record
 			cur:close()
 			v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, ...)
+			if schema.fks then
+				for _,fk in ipairs(schema.fks) do
+					local ok, err = fk:check(self, k, k_sz, v, v_sz)
+					if not ok then
+						return nil, err
+					end
+				end
+			end
 			local ret, err = self:try_put_raw(dbi, k, k_sz, v, v_sz, flags)
 			if not ret then return nil, err end
 		end
 		if schema.indexes then
+			local self = self:txw()
 			for _,ix in ipairs(schema.indexes) do
 				local ok, err = ix:update(self, k, k_sz, v, v_sz, v0, v0_sz)
-				if not ok then return nil, err end
+				if not ok then
+					self:abort()
+					return nil, err
+				end
 			end
+			self:commit()
 		end
-	else --put or insert with no secondary indexes to update
+	else --put or insert with no indexes to update or fks to check.
 		local v_sz = encode_val(self, schema, v, v_buf_sz, cols, as, ...)
 		local ret, err = self:try_put_raw(dbi, k, k_sz, v, v_sz, flags)
 		if not ret then return nil, err end
 	end
-	log('note', 'db', op, '%s %s', schema.name, cols.__s__)
+	log('note', 'db', op, '%s %s', schema.name, cols[S])
 	return true, autoinc_v
 end
 function Tx:try_put(tab, ...)
@@ -1038,8 +1069,8 @@ function Tx:del(tab, ...)
 	end
 	return true
 end
-function Tx:must_del(tab, ...)
-	local ok, err = self:del(tab, ...)
+function Tx:del(tab, ...)
+	local ok, err = self:try_del(tab, ...)
 	if ok then return end
 	check('db', 'del', false, '%s: %s', table_name(self, tab), err)
 end
@@ -1053,7 +1084,7 @@ function Tx:del_exact(tab, cols, ...)
 	local v, v_buf_sz = val_rec_buffer(schema.val_fields.max_rec_size)
 	local k_sz = encode_key(self, schema, nil, k, k_buf_sz, cols, as, ...)
 	local v_sz = encode_val(self, schema     , v, v_buf_sz, cols, as, ...)
-	local ok, err = self:del_raw(dbi, k, k_sz, v, v_sz)
+	local ok, err = self:try_del_raw(dbi, k, k_sz, v, v_sz)
 	if not ok then return nil, err end
 	if schema.indexes then
 		for _,idx in ipairs(schema.index) do
@@ -1230,32 +1261,31 @@ local ix1_key_rec_buffer = buffer()
 local ix2_key_rec_buffer = buffer()
 local ix_val_rec_buffer = buffer()
 
-function Tx:try_create_index(tbl_name, uk)
+function Tx:try_create_index(tbl_name, cols, ix_tbl_name)
 	local dbi, schema = self:dbi_schema(tbl_name, 'w')
 
 	--create index schema
-	local ix_tbl_name = tbl_name..'-by-'..cat(uk, '-')
+	local ix_tbl_name = ix_tbl_name or tbl_name..'-by-'..cat(cols, '-')
 	local ix_fields = {}
-	for _,col in ipairs(uk) do
+	for _,col in ipairs(cols) do
 		local f = update({}, schema.fields[col])
 		add(ix_fields, f)
 	end
 	local ix_schema = {
 		fields = ix_fields,
-		pk = uk,
+		pk = cols,
 		is_index = true,
 		target_table = schema,
 	}
 	local db_max_key_size = self.db:db_max_key_size()
 	compile_table_schema(ix_schema, ix_tbl_name, db_max_key_size)
 	prepare_table_schema(ix_schema)
-	self.db.schema.tables[ix_tbl_name] = ix_schema
 
 	local tx = self:txw()
 
 	local ix_dbi = tx:dbi(ix_tbl_name, 'c')
 
-	local cols = cols_list(cat(uk, ' '))
+	local cols = cols_list(cat(cols, ' '))
 
 	--create index table and fill it up
 	local dt = {}
@@ -1268,19 +1298,15 @@ function Tx:try_create_index(tbl_name, uk)
 		copy(xv, k, k_sz)
 		local ok, err = tx:try_insert_raw(ix_dbi, xk, xk_sz, xv, k_sz)
 		if not ok then
-			self.db.schema.tables[ix_tbl_name] = nil
 			tx:abort()
 			return nil, err
 		end
 	end
 	tx:commit()
 
-	--create index object
-	local ix = ix_schema
-	add(attr(schema, 'indexes'), ix_schema)
-
+	--create index methods
 	local dt0 = {}
-	function ix.update(ix, self, k, k_sz, v, v_sz, v0, v0_sz)
+	function ix_schema:update(self, k, k_sz, v, v_sz, v0, v0_sz)
 
 		--[[ cases to cover:
 		      record       index
@@ -1319,16 +1345,61 @@ function Tx:try_create_index(tbl_name, uk)
 		return self:try_insert_raw(ix_dbi, xk, xk_sz, k, k_sz)
 	end
 
-	function ix.del(ix, self, k, k_sz)
+	function ix_schema:del(self, k, k_sz)
 		--
 	end
 
-	function ix.drop(ix, self)
+	function ix_schema:drop(self)
 		self:drop_table(ix_dbi)
 		ix_dbi = nil
+		self.db.schema.tables[ix_tbl_name] = nil
+		return assert(remove_value(schema.indexes, ix_schema))
 	end
 
+	--add index to table schema to be auto-updated on put and del.
+	add(attr(schema, 'indexes'), ix_schema)
+
+	--add index to table catalog, even though its schema is not usable.
+	self.db.schema.tables[ix_tbl_name] = ix_schema
+
 	return true
+end
+function Tx:create_index(tbl_name, cols, ix_tbl_name)
+	assert(self:try_create_index(tbl_name, cols, ix_tbl_name))
+end
+
+function Tx:try_drop_index(ix_tbl_name)
+	local ix_schema = self.db.schema.tables[ix_tbl_name]
+	if not ix_schema then return nil, 'not_found' end
+	if not ix_schema.is_index then return nil, 'not_index' end
+	return ix_schema:drop(self)
+end
+
+function Tx:create_fk(fk)
+	local dbi, schema = self:dbi_schema(fk.ref_table)
+	add(attr(schema, 'fks'), fk)
+	--self.db:on(fk.table, 'put', function()
+	--	--
+	--end)
+	local fk_del
+	if fk.onupdate == 'cascade' then
+		function fk_del()
+
+		end
+	elseif fk.onupdate == 'set null' then
+		function fk_del()
+
+		end
+	else --assume restrict
+		function fk_del()
+
+		end
+	end
+	self.db:on(fk.ref_table, 'del', fk_del)
+end
+
+function Tx:drop_fk(fk)
+
 end
 
 function Db:sync_schema(src, opt)
@@ -1364,7 +1435,13 @@ function Db:sync_schema(src, opt)
 					if tbl.uks then
 						for uk_name, uk in pairs(tbl.uks) do
 							P('create uk: %s', uk_name)
-							assert(tx:try_create_index(tbl_name, uk))
+							tx:create_index(tbl_name, uk)
+						end
+					end
+					if tbl.fks then
+						for fk_name, fk in pairs(tbl.fks) do
+							P('create fk: %s', fk_name)
+							tx:create_fk(fk)
 						end
 					end
 				end

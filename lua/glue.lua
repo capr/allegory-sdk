@@ -72,6 +72,7 @@ ARRAYS
 	  sa:remove(v) -> v|nil        remove value in O(N+logN)
 	  sa.cmp                       cmp function for binsearch
 	reverse(t, [i], [j]) -> t      reverse array in place
+	last(t) -> v                   t[#t]
 TABLES
 	empty                          shared empty r/o table
 	count(t[, maxn]) -> n          count keys in table up to maxn=1/0
@@ -469,6 +470,10 @@ function reverse(t, i, j)
 		t[i+k-1], t[j-k] = t[j-k], t[i+k-1]
 	end
 	return t
+end
+
+function last(t)
+	return t[#t]
 end
 
 -- binary search for the smallest insert position that keeps the table sorted.

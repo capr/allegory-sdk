@@ -2,7 +2,6 @@
 
 
 require'mdbx_schema'
-require'schema_std'
 
 pr('libmdbx.so vesion: ',
 	mdbx.mdbx_version.major..'.'..
@@ -271,13 +270,15 @@ function test_fks()
 		}
 		tables.fkt = {
 			id , idpk,
-			fk1, id, fk,
-			fk2, id, child_fk,
-			fk3, id, weak_fk,
+			fk1, id, fk(fk1),
+			fk2, id, child_fk(fk2),
+			fk3, id, weak_fk(fk3),
 		}
 	end)
-	pr(schema.tables.fkt.fks)
 	local tx = db:txw()
+	for _, fk in pairs(schema.tables.fkt.fks) do
+		tx:create_fk(fk)
+	end
 	tx:insert('fk1')
 	tx:insert('fk2')
 	tx:insert('fk3')

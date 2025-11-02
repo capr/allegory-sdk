@@ -36,8 +36,8 @@ TABLES
 	tx:[try_]stat(table_name|dbi) -> MDBX_stat    get storage metrics on table
 
 	tx:[try_]rename_table (table_name|dbi)  rename table
-	tx:[must_]drop_table  (table_name|dbi)  delete table
-	tx:[must_]clear_table (table_name|dbi)  delete all records
+	tx:[try_]drop_table   (table_name|dbi)  drop table
+	tx:[try_]clear_table  (table_name|dbi)  delete all records
 
 	tx:each_table() -> iter() -> table_name
 	tx:table_count() -> n
@@ -49,7 +49,9 @@ CRUD
 	tx:[try_]put_raw     (table_name|dbi, key_data, key_size, val_data, val_size, [flags])
 	tx:[try_]insert_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'exists'
 	tx:[try_]update_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'not_found'
-	tx:[must_]del_raw    (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
+	tx:[try__]del_raw    (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
+	tx:[try_]move_key_raw(table_name|dbi, key_data, key_size, new_key_data, new_key_size)
+
 	tx:gen_id            (table_name|dbi) -> n     next sequence
 
 CURSORS
@@ -315,13 +317,13 @@ function Tx:try_open_table(tab, mode, flags)
 	if created then
 		add(attr(self, 'created_tables'), t)
 	elseif mode == 'c' then
-		self:must_clear_table(name)
+		self:clear_table(name)
 	end
 	return t, created
 end
 end
-function Tx:open_table(tab, mode, flags)
-	local t, err = self:try_open_table(tab, mode, flags)
+function Tx:open_table(tab, mode, flags, ...)
+	local t, err = self:try_open_table(tab, mode, flags, ...)
 	return check('db', 'open_table', t, '%s%s%s: %s',
 		tab, mode and ' ' or '', mode or '', err)
 end
@@ -349,7 +351,7 @@ function Tx:rename_table(tab, new_table_name)
 		self:table_name(tab), new_table_name, err)
 end
 
-function Tx:drop_table(tab)
+function Tx:try_drop_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	checkz(C.mdbx_drop(self.txn, dbi, 1))
@@ -362,26 +364,26 @@ function Tx:drop_table(tab)
 	t.dbi = nil
 	return true
 end
-function Tx:must_drop_table(tab)
+function Tx:drop_table(tab)
 	local ok, err = self:drop_table(tab)
 	if ok then return end
 	check('db', 'drop_table', false, '%s: %s', table_name(self, tab), err)
 end
 
-function Tx:clear_table(tab)
+function Tx:try_clear_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	checkz(C.mdbx_drop(self.txn, dbi, 0))
 	return true
 end
-function Tx:must_clear_table(tab)
-	local ok, err = self:clear_table(tab)
+function Tx:clear_table(tab)
+	local ok, err = self:try_clear_table(tab)
 	if ok then return end
 	check('db', 'clear_table', false, '%s: %s', table_name(self, tab), err)
 end
 
-function Tx:create_table(tbl_name)
-	self:open_table(tbl_name, 'c')
+function Tx:create_table(tbl_name, ...)
+	self:open_table(tbl_name, 'c', ...)
 end
 
 function Tx:entries(tab)
@@ -478,7 +480,7 @@ function Tx:update_raw(tab, ...)
 	check('db', 'update_raw', ret, '%s: %s', table_name(self, tab), err)
 end
 
-function Tx:del_raw(tab, key_data, key_size, val_data, val_size)
+function Tx:try_del_raw(tab, key_data, key_size, val_data, val_size)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
 	key.data = key_data
@@ -495,8 +497,8 @@ function Tx:del_raw(tab, key_data, key_size, val_data, val_size)
 	checkz(rc)
 	return true
 end
-function Tx:must_del_raw(tab, ...)
-	local ret, err = self:del_raw(tab, ...)
+function Tx:del_raw(tab, ...)
+	local ret, err = self:try_del_raw(tab, ...)
 	if ret then return end
 	check('db', 'del_raw', ret, '%s: %s', table_name(self, tab), err)
 end
@@ -515,7 +517,7 @@ function Tx:try_move_key_raw(tab, k1, k1_sz, k2, k2_sz)
 	--NOTE: calling put before del because del invaldates the v pointer.
 	local ok, err = self:try_insert_raw(tab, k2, k2_sz, v, v_sz)
 	if not ok and err == 'exists' then return nil, err end
-	self:must_del_raw(tab, k1, k1_sz)
+	self:del_raw(tab, k1, k1_sz)
 	return true
 end
 function Tx:move_key_raw(tab, ...)

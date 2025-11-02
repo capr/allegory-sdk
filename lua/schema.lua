@@ -232,7 +232,7 @@ local function check_cols(T, tbl, cols)
 		for i,fld in ipairs(tbl.fields) do
 			if fld.col == col then found = true; break end
 		end
-		assertf(found, 'unknown column in %s of `%s`: `%s`', T, tbl.name, col)
+		assertf(found, 'unknown `%s` column: `%s.%s`', T, tbl.name, col)
 	end
 	return cols
 end
@@ -273,6 +273,7 @@ local function add_fk(self, tbl, cols, ref_tbl_name, ondelete, onupdate, fld)
 	local fk = {name = k, table = tbl.name, cols = cols,
 		ref_table = ref_tbl_name, ondelete = ondelete, onupdate = onupdate or 'cascade'}
 	fks[k] = fk
+	add(fks, fk)
 	local ref_tbl =
 		ref_tbl_name == tbl.name and tbl --self-reference
 		or self.tables[ref_tbl_name]
@@ -364,7 +365,7 @@ function schema:import(src)
 			update(self.type_attrs, src.type_attrs)
 			self.loaded[src] = true
 		end
-	elseif istab(src) then --plain table: use as environsment.
+	elseif istab(src) then --plain table: use as environment.
 		update(self.env, src)
 	else
 		assert(false)
@@ -502,6 +503,13 @@ function schema:add_cols(tbl_name, t)
 		assert(#nt == 1)
 	end
 	self.tables[tbl_name].add_cols(t)
+end
+
+function schema:add_table(tbl_name, t)
+	assertf(not self.tables[tbl_name], 'table already exists: `%s`', tbl_name)
+	local tbl = parse_table(self, tbl_name, t)
+	self.tables[tbl_name] = tbl
+	return tbl
 end
 
 function schema:check_refs()

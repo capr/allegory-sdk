@@ -114,8 +114,20 @@ return function()
 	types.uint      = {int  , unsigned = true, min = 0, max = 2^32-1, mdbx_type = 'u32'}
 	types.uint52    = {int52, unsigned = true, min = 0, max = 2^52-1, mdbx_type = 'f64'}
 
+	types.i8        = types.int8
+	types.i16       = types.int16
+	types.i32       = types.int
+	types.i52       = types.int52
+	types.u8        = types.uint8
+	types.u16       = types.uint16
+	types.u32       = types.uint32
+	types.u52       = types.uint52
+
 	types.double    = {type = 'number' , align = 'right', size = 8, mysql_type = 'double', tarantool_type = 'number', mdbx_type = 'f64'}
 	types.float     = {type = 'number' , align = 'right', size = 4, mysql_type = 'float' , tarantool_type = 'number', mdbx_type = 'float' }
+
+	types.f32       = types.float
+	types.f64       = types.double
 
 	types.dec       = {type = 'decimal', mysql_type = 'decimal', tarantool_type = 'number', mdbx_type = 'f64'}
 
