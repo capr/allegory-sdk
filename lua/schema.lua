@@ -273,7 +273,6 @@ local function add_fk(self, tbl, cols, ref_tbl_name, ondelete, onupdate, fld)
 	local fk = {name = k, table = tbl.name, cols = cols,
 		ref_table = ref_tbl_name, ondelete = ondelete, onupdate = onupdate or 'cascade'}
 	fks[k] = fk
-	add(fks, fk)
 	local ref_tbl =
 		ref_tbl_name == tbl.name and tbl --self-reference
 		or self.tables[ref_tbl_name]
