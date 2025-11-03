@@ -188,10 +188,10 @@ end
 --schema processing ----------------------------------------------------------
 
 --create an optimal physical column layout based on a table schema.
-function Tx:compile_table_schema(schema)
+function Tx:layout_table_schema(schema)
 
-	if schema.compiled then return end
-	schema.compiled = true
+	if schema.layouted then return end
+	schema.layouted = true
 
 	local table_name = assert(schema.name)
 
@@ -353,10 +353,12 @@ end
 local S = function() end
 
 --create encoders and decoders for a layouted schema.
-local function prepare_table_schema(schema)
+function Tx:compile_table_schema(schema)
 
-	if schema.prepared then return end
-	schema.prepared = true
+	if schema.compiled then return end
+	schema.compiled = true
+
+	self:layout_table_schema(schema)
 
 	local key_fields = schema.key_fields
 	local val_fields = schema.val_fields
@@ -505,8 +507,8 @@ local function prepare_table_schema(schema)
 
 	end --for fields in key_fields, val_fields
 
-	if schema.is_index then
-		prepare_index_schema()
+	if schema.val_table then
+		self:compile_index_schema(schema)
 	end
 end
 
@@ -529,9 +531,7 @@ function Tx:save_table_schema(schema)
 		int_key = schema.int_key,
 		key_fields = {max_rec_size = schema.key_fields.max_rec_size},
 		val_fields = {max_rec_size = schema.val_fields.max_rec_size},
-		--index tables
-		is_index = schema.is_index,
-		target_table = schema.target_table,
+		val_table = schema.val_table, --this is an index table
 	}
 	for i=1,2 do
 		local is_key = i == 1
@@ -588,7 +588,7 @@ function Tx:load_table_schema(table_name)
 	end
 	schema.pk = imap(schema.key_fields, 'col')
 	schema.pk.desc = imap(schema.key_fields, 'descending')
-	schema.compiled = true --compiled but not prepared
+	schema.layouted = true --layouted but not compiled
 	return schema
 end
 
@@ -622,7 +622,6 @@ function Tx:try_open_table(tab, mode, flags, paper_schema)
 	if paper_schema then
 		paper_schema.name = table_name
 		self:compile_table_schema(paper_schema)
-		prepare_table_schema(paper_schema)
 	end
 	if stored_schema and paper_schema ~= stored_schema then
 		--table has stored schema, schemas must match.
@@ -732,28 +731,28 @@ local ix1_key_rec_buffer = buffer()
 local ix2_key_rec_buffer = buffer()
 local ix_val_rec_buffer = buffer()
 
-local function create_index_schema(tbl_schema, cols)
+function Tx:create_index_schema(val_schema, cols)
 	local ix_tbl_name = tbl_name..'/'..cat(cols, '-')
 	local ix_fields = {}
 	for _,col in ipairs(cols) do
-		local f = update({}, schema.fields[col])
+		local f = update({}, val_schema.fields[col])
 		add(ix_fields, f)
 	end
 	local ix_schema = {
 		name = ix_tbl_name,
 		fields = ix_fields,
 		pk = cols,
-		is_index = true,
-		target_table = schema.name,
+		val_table = assert(val_schema.name),
 	}
-	self:compile_table_schema(ix_schema)
+	self:layout_table_schema(ix_schema)
 	self.db.schema.tables[ix_tbl_name] = ix_schema
 	return ix_schema
 end
 
-local function prepare_index_schema(ix_schema)
+function Tx:compile_index_schema(ix_schema)
 
-	--local dbi, schema = self:dbi_schema(tbl_name, 'w')
+	local val_table = assert(ix_schema.val_table)
+	local val_schema = assert(self.db.schema.tables[val_table])
 
 	local cols = cols_list(cat(cols, ' '))
 	local dt = {}
@@ -764,9 +763,9 @@ local function prepare_index_schema(ix_schema)
 		local self = self:txw()
 		local ix_dbi = self:dbi(ix_tbl_name, 'c')
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
-		local xv, xv_buf_sz = ix_val_rec_buffer(schema.key_fields.max_rec_size)
-		for cur, k, k_sz, v, v_sz in self:each_raw(tbl_name) do
-			local vn = decode_val(schema, v, v_sz, dt, cols, '[]')
+		local xv, xv_buf_sz = ix_val_rec_buffer(val_schema.key_fields.max_rec_size)
+		for cur, k, k_sz, v, v_sz in self:each_raw(val_table) do
+			local vn = decode_val(val_schema, v, v_sz, dt, cols, '[]')
 			local xk_sz = encode_key(self, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
 			assert(k_sz <= xv_buf_sz, k_sz)
 			copy(xv, k, k_sz)
@@ -798,7 +797,7 @@ local function prepare_index_schema(ix_schema)
 
 		--derive index key from v
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
-		local vn = decode_val(schema, v, v_sz, dt, cols, '[]')
+		local vn = decode_val(val_schema, v, v_sz, dt, cols, '[]')
 		local xk_sz = encode_key(self, ix_schema, nil, xk, xk_buf_sz, cols, '[]', dt)
 		clear(dt)
 
@@ -806,7 +805,7 @@ local function prepare_index_schema(ix_schema)
 
 			--derive old index key from v0 to compare with the new one.
 			local xk0, xk0_buf_sz = ix2_key_rec_buffer(ix_schema.key_fields.max_rec_size)
-			local vn = decode_val(schema, v0, v0_sz, dt0, cols, '[]')
+			local vn = decode_val(val_schema, v0, v0_sz, dt0, cols, '[]')
 			local xk0_sz = encode_key(self, ix_schema, nil, xk0, xk0_buf_sz, cols, '[]', dt0)
 			clear(dt0)
 
@@ -829,23 +828,27 @@ local function prepare_index_schema(ix_schema)
 		self:drop_table(ix_dbi)
 		ix_dbi = nil
 		self.db.schema.tables[ix_tbl_name] = nil
-		return assert(remove_value(schema.indexes, ix_schema))
+		return assert(remove_value(val_schema.indexes, ix_schema))
 	end
 
 	--add index to table schema to be auto-updated on put and del.
-	add(attr(schema, 'indexes'), ix_schema)
+	add(attr(val_schema, 'indexes'), ix_schema)
 
-	return true
 end
 
-function Tx:create_index(tbl_name, cols, ix_tbl_name)
-	assert(self:try_create_index(tbl_name, cols, ix_tbl_name))
+function Tx:try_open_index(tbl_name, cols, mode)
+	local ix_tbl_name = tbl_name..'/'..cat(cols, '-')
+	self:try_open_table(ix_tbl_name, mode)
+end
+
+function Tx:create_index(tbl_name, cols)
+	assert(self:try_create_index(tbl_name, cols))
 end
 
 function Tx:try_drop_index(ix_tbl_name)
 	local ix_schema = self.db.schema.tables[ix_tbl_name]
 	if not ix_schema then return nil, 'not_found' end
-	if not ix_schema.is_index then return nil, 'not_index' end
+	if not ix_schema.val_table then return nil, 'not_index' end
 	return ix_schema:drop(self)
 end
 
@@ -1060,8 +1063,8 @@ function Tx:try_get(tab, cols, ...)
 	local cols, as = cols_list(cols)
 	local t = {}
 	local i0 = 1
-	if schema.is_index then
-		local t_dbi, t_schema = self:dbi_schema(schema.target_table)
+	if schema.val_table then
+		local t_dbi, t_schema = self:dbi_schema(schema.val_table)
 		if not t_dbi then return false, t_schema end
 		cols = cols or t_schema.val_cols
 		local k, k_sz = v, v_sz

@@ -250,7 +250,7 @@ function Tx:abort()
 		tx_ro_free(self)
 	else
 		checkz(C.mdbx_txn_abort(self.txn))
-		--dbis to created tables must be removed from db.open_tables map on abort.
+		--dbis of created tables must be removed from db.open_tables map on abort.
 		if self.created_tables then
 			for _,t in ipairs(self.created_tables) do
 				checkz(C.mdbx_dbi_close(self.db.env, t.dbi))
