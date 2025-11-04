@@ -521,7 +521,6 @@ local function save_cols(cols)
 	end
 	return t
 end
-
 function Tx:save_table_schema(schema)
 	--NOTE: only saving enough information to read the data back in absence of
 	--a paper schema, and to validate a paper schema against the used layout.
@@ -597,17 +596,21 @@ function Tx:try_drop_table_schema(table_name)
 end
 
 function Tx:try_open_table(tab, mode, flags, paper_schema)
+
 	if not tab then --opening the unnamed root table
 		return try_raw_open_table(self, mode, flags)
 	end
+
 	local t = self.db.open_tables[tab]
 	if t then return t end
+
 	local table_name = tab
 	if not paper_schema then
 		local db_schema = self.db.schema
 		local tables = db_schema and db_schema.tables
 		paper_schema = tables and tables[table_name]
 	end
+
 	local stored_schema = self:load_table_schema(table_name)
 	if stored_schema and not paper_schema then
 		if mode == 'c' then
@@ -619,44 +622,72 @@ function Tx:try_open_table(tab, mode, flags, paper_schema)
 			paper_schema = stored_schema
 		end
 	end
+
 	if paper_schema then
 		paper_schema.name = table_name
 		self:compile_table_schema(paper_schema)
 	end
-	if stored_schema and paper_schema ~= stored_schema then
+
+	if stored_schema and paper_schema and paper_schema ~= stored_schema then
 		--table has stored schema, schemas must match.
-		local errs
+		local errs = {}
+		for _,k in ipairs{
+			'dyn_offset_size', 'int_key', 'val_table',
+		} do
+			local pv =  paper_schema[k]
+			local sv = stored_schema[k]
+			if pv ~= sv then
+				add(errs, fmt(' %s mismatch: expected: %s, got: %s', k, pv, sv))
+			end
+		end
 		for i=1,2 do
 			local F = i == 1 and 'key_fields' or 'val_fields'
-			for i,pf in ipairs(paper_schema[F]) do
-				local sf = stored_schema[F][i]
+			local pfields =  paper_schema[F]
+			local sfields = stored_schema[F]
+			if #pfields ~= #sfields then
+				add(errs, fmt(' %s count differs: expected: %d, got: %d',
+					F, #pfields, #sfields))
+			end
+			for i = 1, min(#pfields, #sfields) do
+				local pf = pfields[i]
+				local sf = sfields[i]
 				for _,k in ipairs{
 					'col', 'col_pos', 'mdbx_type', 'maxlen', 'padded', 'not_null',
 					'elem_size', 'descending', 'mdbx_collation',
 					'fixed_offset', 'offset',
 				} do
 					local pv = pf[k]
-					local sv = sf and sf[k]
+					local sv = sf[k]
 					if pv ~= sv then
-						errs = errs or {}
-						add(errs, fmt(' %s[%d].%s expected: %s, got: %s, for table: %s',
-							F, i, k, pv, sv, table_name))
+						add(errs, fmt(' %s[%d].%s mismatch: expected: %s, got: %s',
+							F, i, k, pv, sv))
 					end
 				end
 			end
 		end
-		if errs then
-			error(cat(errs, '\n'))
+		if #errs > 0 then
+			error(fmt('schema mismatch for table: `%s`:\n%s',
+				table_name, cat(errs, '\n')))
 		end
 	end
+
 	flags = bor(flags or 0,
 		paper_schema and paper_schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
 	local t, created = try_raw_open_table(self, table_name, mode, flags)
 	if not t then return nil, created end
-	t.schema = paper_schema
-	if not stored_schema and paper_schema and created then
+
+	if paper_schema and created and not stored_schema then
 		self:save_table_schema(paper_schema)
 	end
+
+	if paper_schema and paper_schema.uks then
+		for _,uk in pairs(paper_schema.uks) do
+			local ix_t, err = self:try_open_index(table_name, uk, mode, paper_schema)
+			if not ix_t then return nil, err end
+		end
+	end
+
+	t.schema = paper_schema
 	return t, created
 end
 
