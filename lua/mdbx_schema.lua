@@ -510,6 +510,7 @@ function Tx:compile_table_schema(schema)
 	if schema.val_table then
 		self:compile_index_schema(schema)
 	end
+
 end
 
 local try_raw_open_table = Tx.try_open_table
@@ -595,7 +596,7 @@ function Tx:try_drop_table_schema(table_name)
 	return self:try_del_raw('$schema', cast(u8p, table_name), #table_name)
 end
 
-function Tx:try_open_table(tab, mode, flags, paper_schema)
+function Tx:try_open_table(tab, mode, flags, schema)
 
 	if not tab then --opening the unnamed root table
 		return try_raw_open_table(self, mode, flags)
@@ -605,36 +606,36 @@ function Tx:try_open_table(tab, mode, flags, paper_schema)
 	if t then return t end
 
 	local table_name = tab
-	if not paper_schema then
+	if not schema then
 		local db_schema = self.db.schema
 		local tables = db_schema and db_schema.tables
-		paper_schema = tables and tables[table_name]
+		schema = tables and tables[table_name]
 	end
 
 	local stored_schema = self:load_table_schema(table_name)
-	if stored_schema and not paper_schema then
+	if stored_schema and not schema then
 		if mode == 'c' then
 			--old table with stored schema, but now we're creating one without.
 			self:try_drop_table_schema(table_name)
 			stored_schema = nil
 		else
 			--old table for which paper schema was lost, use stored schema.
-			paper_schema = stored_schema
+			schema = stored_schema
 		end
 	end
 
-	if paper_schema then
-		paper_schema.name = table_name
-		self:compile_table_schema(paper_schema)
+	if schema then
+		schema.name = table_name
+		self:compile_table_schema(schema)
 	end
 
-	if stored_schema and paper_schema and paper_schema ~= stored_schema then
+	if stored_schema and schema and schema ~= stored_schema then
 		--table has stored schema, schemas must match.
 		local errs = {}
 		for _,k in ipairs{
 			'dyn_offset_size', 'int_key', 'val_table',
 		} do
-			local pv =  paper_schema[k]
+			local pv =  schema[k]
 			local sv = stored_schema[k]
 			if pv ~= sv then
 				add(errs, fmt(' %s mismatch: expected: %s, got: %s', k, pv, sv))
@@ -642,7 +643,7 @@ function Tx:try_open_table(tab, mode, flags, paper_schema)
 		end
 		for i=1,2 do
 			local F = i == 1 and 'key_fields' or 'val_fields'
-			local pfields =  paper_schema[F]
+			local pfields =  schema[F]
 			local sfields = stored_schema[F]
 			if #pfields ~= #sfields then
 				add(errs, fmt(' %s count differs: expected: %d, got: %d',
@@ -671,23 +672,47 @@ function Tx:try_open_table(tab, mode, flags, paper_schema)
 		end
 	end
 
+	local old_self
+	if (mode == 'w' or mode == 'c') and self.uks then
+		old_self = self
+		self = self:txw()
+	end
+
 	flags = bor(flags or 0,
-		paper_schema and paper_schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
+		schema and schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
 	local t, created = try_raw_open_table(self, table_name, mode, flags)
-	if not t then return nil, created end
-
-	if paper_schema and created and not stored_schema then
-		self:save_table_schema(paper_schema)
+	if not t then
+		if old_self then self:abort() end
+		return nil, created
 	end
 
-	if paper_schema and paper_schema.uks then
-		for _,uk in pairs(paper_schema.uks) do
-			local ix_t, err = self:try_open_index(table_name, uk, mode, paper_schema)
-			if not ix_t then return nil, err end
+	if schema then
+
+		if created and not stored_schema then
+			self:save_table_schema(schema)
 		end
+
+		if schema.uks then
+			for _,uk in pairs(schema.uks) do
+				local ix_t, err = self:try_open_index(table_name, uk, mode)
+				if not ix_t then
+					if old_self then self:abort() end
+					return nil, err
+				end
+			end
+		end
+
+		if created and schema.val_table then
+			local ok, err = schema:try_create(self)
+			if not ok then
+				if old_self then self:abort() end
+				return nil, err
+			end
+		end
+
 	end
 
-	t.schema = paper_schema
+	t.schema = schema
 	return t, created
 end
 
@@ -762,7 +787,7 @@ local ix1_key_rec_buffer = buffer()
 local ix2_key_rec_buffer = buffer()
 local ix_val_rec_buffer = buffer()
 
-function Tx:create_index_schema(val_schema, cols)
+function Tx:index_schema(val_schema, cols)
 	local ix_tbl_name = tbl_name..'/'..cat(cols, '-')
 	local ix_fields = {}
 	for _,col in ipairs(cols) do
@@ -775,8 +800,6 @@ function Tx:create_index_schema(val_schema, cols)
 		pk = cols,
 		val_table = assert(val_schema.name),
 	}
-	self:layout_table_schema(ix_schema)
-	self.db.schema.tables[ix_tbl_name] = ix_schema
 	return ix_schema
 end
 
@@ -790,7 +813,7 @@ function Tx:compile_index_schema(ix_schema)
 
 	--create index methods
 
-	function ix_schema:create(self)
+	function ix_schema:try_create(self)
 		local self = self:txw()
 		local ix_dbi = self:dbi(ix_tbl_name, 'c')
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
@@ -807,6 +830,7 @@ function Tx:compile_index_schema(ix_schema)
 			end
 		end
 		self:commit()
+		return true
 	end
 
 	local dt0 = {}
@@ -868,8 +892,11 @@ function Tx:compile_index_schema(ix_schema)
 end
 
 function Tx:try_open_index(tbl_name, cols, mode)
-	local ix_tbl_name = tbl_name..'/'..cat(cols, '-')
-	self:try_open_table(ix_tbl_name, mode)
+	local ix_schema = self:index_schema(tbl_name, cols)
+	local t, created = self:try_open_table(ix_schema.name, mode)
+	if not t then return nil, created end
+	if created then
+		tx:
 end
 
 function Tx:create_index(tbl_name, cols)
