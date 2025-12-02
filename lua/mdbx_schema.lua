@@ -173,17 +173,12 @@ local schema_col_types = {
 	utf8   = C.schema_col_type_u8,
 }
 
-local buf = buffer(); buf(256)
-local map_opt = bor(UTF8_DECOMPOSE, UTF8_CASEFOLD, UTF8_STRIPMARK)
-local function encode_ai_ci(s, len)
-	local out, out_sz = buf()
-	local out, sz = utf8_map(s, len, map_opt, out, out_sz)
-	if not out and sz > 0 then --buffer to small, reallocate and retry
-		out, out_sz = buf(sz)
-		out, sz = utf8_map(s, len, map_opt, out, out_sz)
-	end
-	return out, sz
-end
+--fw. decl.
+local cols_list
+local encode_key
+local encode_val
+local decode_key
+local decode_val
 
 --schema processing ----------------------------------------------------------
 
@@ -352,6 +347,18 @@ end
 
 local S = function() end
 
+local buf = buffer(); buf(256)
+local map_opt = bor(UTF8_DECOMPOSE, UTF8_CASEFOLD, UTF8_STRIPMARK)
+local function encode_ai_ci(s, len)
+	local out, out_sz = buf()
+	local out, sz = utf8_map(s, len, map_opt, out, out_sz)
+	if not out and sz > 0 then --buffer to small, reallocate and retry
+		out, out_sz = buf(sz)
+		out, sz = utf8_map(s, len, map_opt, out, out_sz)
+	end
+	return out, sz
+end
+
 --create encoders and decoders for a layouted schema.
 function Tx:compile_table_schema(schema)
 
@@ -507,7 +514,7 @@ function Tx:compile_table_schema(schema)
 
 	end --for fields in key_fields, val_fields
 
-	if schema.val_table then
+	if schema.is_index then
 		self:compile_index_schema(schema)
 	end
 
@@ -526,12 +533,13 @@ function Tx:save_table_schema(schema)
 	--NOTE: only saving enough information to read the data back in absence of
 	--a paper schema, and to validate a paper schema against the used layout.
 	local t = {
-		type = 1, --layout type (the only one we have, implemented here)
+		format = 1, --layout format (the only one we have, implemented here)
 		dyn_offset_size = schema.dyn_offset_size,
 		int_key = schema.int_key,
 		key_fields = {max_rec_size = schema.key_fields.max_rec_size},
 		val_fields = {max_rec_size = schema.val_fields.max_rec_size},
-		val_table = schema.val_table, --this is an index table
+		is_index = schema.is_index,
+		val_table = schema.val_table,
 	}
 	for i=1,2 do
 		local is_key = i == 1
@@ -576,8 +584,8 @@ function Tx:load_table_schema(table_name)
 	if not v then return end
 	local schema = eval(str(v, v_len))
 	--reconstruct schema from stored table schema.
-	assertf(schema.type == 1,
-		'unknown schema type for table %s: %s', table_name, schema.type)
+	assertf(schema.format == 1,
+		'unknown schema format for table %s: %s', table_name, schema.format)
 	schema.name = table_name
 	schema.fields = {}
 	for i,f in ipairs(schema.key_fields) do
@@ -633,7 +641,7 @@ function Tx:try_open_table(tab, mode, flags, schema)
 		--table has stored schema, schemas must match.
 		local errs = {}
 		for _,k in ipairs{
-			'dyn_offset_size', 'int_key', 'val_table',
+			'dyn_offset_size', 'int_key', 'is_index', 'val_table',
 		} do
 			local pv =  schema[k]
 			local sv = stored_schema[k]
@@ -672,9 +680,9 @@ function Tx:try_open_table(tab, mode, flags, schema)
 		end
 	end
 
-	local old_self
-	if (mode == 'w' or mode == 'c') and self.uks then
-		old_self = self
+	local in_sub = (mode == 'w' or mode == 'c')
+		and (self.uks or schema and schema.is_index)
+	if in_sub then
 		self = self:txw()
 	end
 
@@ -682,7 +690,7 @@ function Tx:try_open_table(tab, mode, flags, schema)
 		schema and schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
 	local t, created = try_raw_open_table(self, table_name, mode, flags)
 	if not t then
-		if old_self then self:abort() end
+		if in_sub then self:abort() end
 		return nil, created
 	end
 
@@ -696,20 +704,24 @@ function Tx:try_open_table(tab, mode, flags, schema)
 			for _,uk in pairs(schema.uks) do
 				local ix_t, err = self:try_open_index(table_name, uk, mode)
 				if not ix_t then
-					if old_self then self:abort() end
+					if in_sub then self:abort() end
 					return nil, err
 				end
 			end
 		end
 
-		if created and schema.val_table then
+		if created and schema.is_index then
 			local ok, err = schema:try_create(self)
 			if not ok then
-				if old_self then self:abort() end
+				if in_sub then self:abort() end
 				return nil, err
 			end
 		end
 
+	end
+
+	if in_sub then
+		self:commit()
 	end
 
 	t.schema = schema
@@ -787,8 +799,9 @@ local ix1_key_rec_buffer = buffer()
 local ix2_key_rec_buffer = buffer()
 local ix_val_rec_buffer = buffer()
 
-function Tx:index_schema(val_schema, cols)
-	local ix_tbl_name = tbl_name..'/'..cat(cols, '-')
+function Tx:index_schema(val_table, cols)
+	local val_schema = assert(self.db.schema.tables[val_table])
+	local ix_tbl_name = val_table..'/'..cat(cols, '-')
 	local ix_fields = {}
 	for _,col in ipairs(cols) do
 		local f = update({}, val_schema.fields[col])
@@ -798,17 +811,20 @@ function Tx:index_schema(val_schema, cols)
 		name = ix_tbl_name,
 		fields = ix_fields,
 		pk = cols,
-		val_table = assert(val_schema.name),
+		is_index = true,
+		val_table = val_table,
 	}
 	return ix_schema
 end
 
 function Tx:compile_index_schema(ix_schema)
 
+	assert(ix_schema.is_index)
+
 	local val_table = assert(ix_schema.val_table)
 	local val_schema = assert(self.db.schema.tables[val_table])
 
-	local cols = cols_list(cat(cols, ' '))
+	local cols = cols_list(cat(ix_schema.pk, ' '))
 	local dt = {}
 
 	--create index methods
@@ -893,10 +909,15 @@ end
 
 function Tx:try_open_index(tbl_name, cols, mode)
 	local ix_schema = self:index_schema(tbl_name, cols)
-	local t, created = self:try_open_table(ix_schema.name, mode)
-	if not t then return nil, created end
-	if created then
-		tx:
+	local t, created = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
+	if t then
+		self.db.schema.tables[ix_schema.name] = ix_schema
+	end
+	return t, created
+end
+
+function Tx:try_create_index(tbl_name, cols)
+	return self:try_open_index(tbl_name, cols, 'c')
 end
 
 function Tx:create_index(tbl_name, cols)
@@ -906,7 +927,7 @@ end
 function Tx:try_drop_index(ix_tbl_name)
 	local ix_schema = self.db.schema.tables[ix_tbl_name]
 	if not ix_schema then return nil, 'not_found' end
-	if not ix_schema.val_table then return nil, 'not_index' end
+	if not ix_schema.is_index then return nil, 'not_index' end
 	return ix_schema:drop(self)
 end
 
@@ -947,7 +968,7 @@ local m_cols_list = memoize(function(cols)
 	t[S] = cat(t, ',')
 	return t
 end)
-local function cols_list(cols)
+function cols_list(cols)
 	if not cols then return nil, nil end
 	if cols == '[]' then return nil, '[]' end
 	if cols == '{}' then return nil, '{}' end
@@ -978,7 +999,7 @@ local function resolve_null_val(self, schema, f)
 	return default
 end
 
-local encode_key do
+do
 local pp = new'u8*[1]'
 function encode_key(self, schema, autoinc_f, rec, rec_buf_sz, cols, as, ...)
 	if #schema.key_fields == 0 then return 0 end
@@ -1008,7 +1029,7 @@ function encode_key(self, schema, autoinc_f, rec, rec_buf_sz, cols, as, ...)
 end
 end
 
-local encode_val do
+do
 local pp = new'u8*[1]'
 function encode_val(self, schema, rec, rec_buf_sz, cols, as, ...)
 	if #schema.val_fields == 0 then return 0 end
@@ -1041,7 +1062,7 @@ local function get_raw_by_pk(self, dbi, schema, ...)
 	return self:get_raw(dbi, k, k_sz)
 end
 
-local decode_key do
+do
 local pout = new'u8*[1]'
 local pp = new'u8*[1]'
 function decode_key(schema, rec, rec_sz, t, as)
@@ -1074,7 +1095,7 @@ function decode_key(schema, rec, rec_sz, t, as)
 end
 end
 
-local decode_val do
+do
 local pout = new'u8*[1]'
 function decode_val(schema, rec, rec_sz, t, cols, as, i0)
 	i0 = i0 or 1
@@ -1121,8 +1142,9 @@ function Tx:try_get(tab, cols, ...)
 	local cols, as = cols_list(cols)
 	local t = {}
 	local i0 = 1
-	if schema.val_table then
-		local t_dbi, t_schema = self:dbi_schema(schema.val_table)
+	if schema.is_index then
+		local val_table = assert(schema.val_table)
+		local t_dbi, t_schema = self:dbi_schema(val_table)
 		if not t_dbi then return false, t_schema end
 		cols = cols or t_schema.val_cols
 		local k, k_sz = v, v_sz
@@ -1539,7 +1561,7 @@ function Db:sync_schema(src, opt)
 						if tbl.uks.add then
 							for uk_name, uk in pairs(tbl.uks.add) do
 								P('create uk: %s', uk_name)
-								assert(tx:try_create_index(tbl_name, uk))
+								tx:create_index(tbl_name, uk)
 							end
 						end
 					end
