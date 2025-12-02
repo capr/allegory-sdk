@@ -522,11 +522,12 @@ end
 
 local try_raw_open_table = Tx.try_open_table
 
-local function save_cols(cols)
-	local t = extend({}, cols)
-	if cols.desc then
-		t.desc = extend({}, cols.desc)
+local function save_index_def(ix)
+	local t = extend({}, ix)
+	if ix.desc then
+		t.desc = extend({}, ix.desc)
 	end
+	t.type = ix.type
 	return t
 end
 function Tx:save_table_schema(schema)
@@ -562,10 +563,10 @@ function Tx:save_table_schema(schema)
 			}
 		end
 	end
-	if schema.uks then
-		t.uks = {}
-		for uk_name, uk in pairs(schema.uks) do
-			t.uks[uk_name] = save_cols(uk)
+	if schema.indexes then
+		t.indexes = {}
+		for _,ix in ipairs(schema.indexes) do
+			add(t.indexes, save_index_def(ix))
 		end
 	end
 	local k = schema.name
@@ -602,6 +603,12 @@ end
 
 function Tx:try_drop_table_schema(table_name)
 	return self:try_del_raw('$schema', cast(u8p, table_name), #table_name)
+end
+
+local function sort_indexes(indexes)
+	sort(indexes, function(ix1, ix2)
+		return ix1.name < ix2.name
+	end)
 end
 
 function Tx:try_open_table(tab, mode, flags, schema)
@@ -680,8 +687,8 @@ function Tx:try_open_table(tab, mode, flags, schema)
 		end
 	end
 
-	local in_sub = (mode == 'w' or mode == 'c')
-		and (self.uks or schema and schema.is_index)
+	local in_sub = (mode == 'w' or mode == 'c') and schema
+		and schema and (schema.is_index or schema.uks or schema.ixs)
 	if in_sub then
 		self = self:txw()
 	end
@@ -700,9 +707,21 @@ function Tx:try_open_table(tab, mode, flags, schema)
 			self:save_table_schema(schema)
 		end
 
-		if schema.uks then
-			for _,uk in pairs(schema.uks) do
-				local ix_t, err = self:try_open_index(table_name, uk, mode)
+		if schema.uks or schema.ixs then
+			schema.indexes = {}
+			if schema.uks then
+				for uk_name, uk in pairs(schema.uks) do
+					add(schema.indexes, uk)
+				end
+			end
+			if schema.ixs then
+				for ix_name, ix in pairs(schema.ixs) do
+					add(schema.indexes, ix)
+				end
+			end
+			sort_indexes(schema.indexes)
+			for _,ix in ipairs(schema.indexes) do
+				local ix_t, err = self:try_open_index(table_name, ix.name, mode)
 				if not ix_t then
 					if in_sub then self:abort() end
 					return nil, err
@@ -899,19 +918,23 @@ function Tx:compile_index_schema(ix_schema)
 		self:drop_table(ix_dbi)
 		ix_dbi = nil
 		self.db.schema.tables[ix_tbl_name] = nil
-		return assert(remove_value(val_schema.indexes, ix_schema))
+		assert(remove_value(val_schema.indexes, ix_schema))
 	end
 
 	--add index to table schema to be auto-updated on put and del.
-	add(attr(val_schema, 'indexes'), ix_schema)
+	local indexes = attr(val_schema, 'indexes')
+	add(indexes, ix_schema)
+	indexes[ix_tbl_name] = ix_schema
 
 end
 
 function Tx:try_open_index(tbl_name, cols, mode)
 	local ix_schema = self:index_schema(tbl_name, cols)
+	local schema_tables = self.db.schema.tables
+	assert(not schema_tables[ix_schema.name])
 	local t, created = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
 	if t then
-		self.db.schema.tables[ix_schema.name] = ix_schema
+		schema_tables[ix_schema.name] = ix_schema
 	end
 	return t, created
 end
@@ -1285,16 +1308,16 @@ function Tx:upsert(tab, ...)
 	check('db', 'upsert', false, '%s: %s', self:table_name(tab), err)
 end
 
-function Tx:del(tab, ...)
+function Tx:try_del(tab, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return nil, schema end
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local k_sz = encode_key(self, schema, nil, k, k_buf_sz, schema.key_cols, nil, ...)
-	local ok, err = self:del_raw(dbi, k, k_sz)
+	local ok, err = self:try_del_raw(dbi, k, k_sz)
 	if not ok then return nil, err end
 	if schema.indexes then
-		for _,idx in ipairs(schema.index) do
-			idx:del(k, k_sz)
+		for _,ix in ipairs(schema.indexes) do
+			ix:del(k, k_sz)
 		end
 	end
 	return true
@@ -1317,8 +1340,8 @@ function Tx:del_exact(tab, cols, ...)
 	local ok, err = self:try_del_raw(dbi, k, k_sz, v, v_sz)
 	if not ok then return nil, err end
 	if schema.indexes then
-		for _,idx in ipairs(schema.index) do
-			idx:del(k, k_sz, v, v_sz)
+		for _,ix in ipairs(schema.index) do
+			ix:del(k, k_sz, v, v_sz)
 		end
 	end
 	return true
@@ -1536,10 +1559,10 @@ function Db:sync_schema(src, opt)
 							tx:insert(tbl_name, '[]', row)
 						end
 					end
-					if tbl.uks then
-						for uk_name, uk in pairs(tbl.uks) do
-							P('create uk: %s', uk_name)
-							tx:create_index(tbl_name, uk)
+					if tbl.indexes then
+						for ix_name, ix in pairs(tbl.indexes) do
+							P('create index: %s', ix_name)
+							tx:create_index(tbl_name, ix)
 						end
 					end
 					if tbl.fks then
@@ -1552,16 +1575,16 @@ function Db:sync_schema(src, opt)
 			end
 			if diff.tables.update then
 				for tbl_name, tbl in sortedpairs(diff.tables.update) do
-					if tbl.uks then
-						if tbl.uks.del then
-							for uk_name, uk in pairs(tbl.uks.remove) do
+					if tbl.indexes then
+						if tbl.indexes.del then
+							for ix_name, ix in pairs(tbl.indexes.remove) do
 								--
 							end
 						end
-						if tbl.uks.add then
-							for uk_name, uk in pairs(tbl.uks.add) do
-								P('create uk: %s', uk_name)
-								tx:create_index(tbl_name, uk)
+						if tbl.indexes.add then
+							for ix_name, ix in pairs(tbl.indexes.add) do
+								P('create ix: %s', ix_name)
+								tx:create_index(tbl_name, ix)
 							end
 						end
 					end

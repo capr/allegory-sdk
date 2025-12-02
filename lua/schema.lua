@@ -254,8 +254,10 @@ local function add_ix(self, T, tbl, cols, unique)
 	local t = attr(tbl, T..'s')
 	local k = _(self.ix_name_format, T, tbl.name, cat(cols, '_'))
 	assertf(not t[k], 'duplicate %s `%s`', T, k)
-	t[k] = check_cols(T, tbl, cols)
+	check_cols(T, tbl, cols)
+	t[k] = cols
 	if unique then --apply `not_null` flag to fields.
+		cols.is_unique = true
 		for _,col in ipairs(tbl.pk) do
 			local fld = tbl.fields[col]
 			fld.not_null = true
