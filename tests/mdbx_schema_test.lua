@@ -223,8 +223,10 @@ function test_uks()
 	tx:commit()
 	--remove duplicate and try again.
 	local tx = db:txw()
-	local k = 'k3\0k1\0'
-	tx:del_raw('test_uk', cast(u8p, k), #k)
+	for _, k1, k2 in tx:each'test_uk' do
+		pr(k1, k2)
+	end
+	tx:del('test_uk', 'k3', 'k1')
 	tx:create_index('test_uk', {'u1', 'u2'})
 	assert(tx:table_exists(ix_tbl))
 	tx:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u1', 'f4')
