@@ -176,17 +176,14 @@ end
 local function tx_rw_free(self)
 	self:close_cursors()
 	self.txn = nil
+	if self.parent_tx then
+		self.parent_tx.child_tx = nil
+	end
 	self.parent_tx = nil
 	if self.created_tables then
 		clear(self.created_tables)
 	end
 	push(self.db._free_rw_tx, self)
-	if self.child_txs then --child txs are aborted automatically.
-		for _,tx in ipairs(self.child_txs) do
-			tx_rw_free(tx)
-		end
-		clear(self.child_txs)
-	end
 end
 
 do
@@ -211,7 +208,7 @@ function Db:txw(parent_tx, flags)
 	tx.txn = txnp[0]
 	if parent_tx then
 		tx.parent_tx = parent_tx
-		add(attr(parent_tx, 'child_txs'), tx)
+		parent_tx.child_tx = tx
 	end
 	return tx
 end
@@ -238,6 +235,7 @@ function Tx:commit()
 		checkz(C.mdbx_txn_reset(self.txn))
 		tx_ro_free(self)
 	else
+		assert(not self.child_tx, 'commit while child transaction is open')
 		checkz(C.mdbx_txn_commit_ex(self.txn, nil))
 		tx_rw_free(self)
 	end
@@ -249,6 +247,11 @@ function Tx:abort()
 		checkz(C.mdbx_txn_reset(self.txn))
 		tx_ro_free(self)
 	else
+		--child txs are aborted automatically but we need to close any
+		--tables that they created, so we abort them explicitly recursively.
+		if self.child_tx then
+			self.child_tx:abort()
+		end
 		checkz(C.mdbx_txn_abort(self.txn))
 		--dbis of created tables must be removed from db.open_tables map on abort.
 		if self.created_tables then

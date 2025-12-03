@@ -931,7 +931,6 @@ end
 function Tx:try_open_index(tbl_name, cols, mode)
 	local ix_schema = self:index_schema(tbl_name, cols)
 	local schema_tables = self.db.schema.tables
-	assert(not schema_tables[ix_schema.name])
 	local t, created = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
 	if t then
 		schema_tables[ix_schema.name] = ix_schema
