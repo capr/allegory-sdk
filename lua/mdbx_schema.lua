@@ -617,8 +617,8 @@ function Tx:try_open_table(tab, mode, flags, schema)
 		return try_raw_open_table(self, mode, flags)
 	end
 
-	local t = self.db.open_tables[tab]
-	if t then return t end
+	local dbi = self.db.open_tables[tab]
+	if dbi then return dbi end
 
 	local table_name = tab
 	if not schema then
@@ -695,8 +695,8 @@ function Tx:try_open_table(tab, mode, flags, schema)
 
 	flags = bor(flags or 0,
 		schema and schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
-	local t, created = try_raw_open_table(self, table_name, mode, flags)
-	if not t then
+	local dbi, created = try_raw_open_table(self, table_name, mode, flags)
+	if not dbi then
 		if in_sub then self:abort() end
 		return nil, created
 	end
@@ -743,22 +743,16 @@ function Tx:try_open_table(tab, mode, flags, schema)
 		self:commit()
 	end
 
-	t.schema = schema
-	return t, created
+	return dbi, created
 end
 
+local tx_dbi = Tx.dbi
 function Tx:dbi(tab, mode)
-	local t = self.db.open_tables[tab or false]
-	if not t then
-		if mode == 'w' or mode == 'c' then
-			t = self:open_table(tab, mode)
-		else
-			local err
-			t, err = self:try_open_table(tab)
-			if not t then return nil, err end
-		end
-	end
-	return t.dbi, t.schema, t.name
+	local dbi, err = tx_dbi(self, tab, mode)
+	if not dbi then return nil, err end
+	local name = self.db.open_tables[dbi]
+	local schema = self.db.schema.tables[name]
+	return dbi, schema, name
 end
 function Tx:dbi_schema(tab, mode)
 	local dbi, schema, name = self:dbi(tab, mode)
@@ -839,6 +833,7 @@ end
 function Tx:compile_index_schema(ix_schema)
 
 	assert(ix_schema.is_index)
+	local ix_tbl_name = ix_schema.name
 
 	local val_table = assert(ix_schema.val_table)
 	local val_schema = assert(self.db.schema.tables[val_table])
@@ -931,11 +926,11 @@ end
 function Tx:try_open_index(tbl_name, cols, mode)
 	local ix_schema = self:index_schema(tbl_name, cols)
 	local schema_tables = self.db.schema.tables
-	local t, created = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
-	if t then
+	local dbi, created = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
+	if dbi then
 		schema_tables[ix_schema.name] = ix_schema
 	end
-	return t, created
+	return dbi, created
 end
 
 function Tx:try_create_index(tbl_name, cols)

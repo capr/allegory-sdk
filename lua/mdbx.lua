@@ -100,7 +100,8 @@ local Db = {}; mdbx_db = Db
 
 function Db:close()
 	checkz(C.mdbx_env_close_ex(self.env, 0))
-	self.open_tables = nil
+	self.dbis = nil
+	self.table_names = nil
 	self.env = nil
 end
 
@@ -136,7 +137,7 @@ function try_mdbx_open(file, opt)
 	local db = object(Db, {
 		file = file,
 		env = env,
-		open_tables = {}, --{dbi->t, name->t}; t: {dbi=, name=}
+		open_tables = {}, --{dbi->name, name->dbi}
 		readonly = opt.readonly,
 		_free_ro_tx = {},
 		_free_rw_tx = {},
@@ -180,9 +181,6 @@ local function tx_rw_free(self)
 		self.parent_tx.child_tx = nil
 	end
 	self.parent_tx = nil
-	if self.created_tables then
-		clear(self.created_tables)
-	end
 	push(self.db._free_rw_tx, self)
 end
 
@@ -197,19 +195,28 @@ function Db:tx(flags)
 	else
 		flags = bor(C.MDBX_RDONLY, flags or 0)
 		checkz(C.mdbx_txn_begin_ex(self.env, nil, flags, txnp, nil))
-		tx = object(Tx, {db = self, flags = flags, txn = txnp[0], readonly = true})
+		tx = object(Tx, {
+			db = self, txn = txnp[0], readonly = true,
+			open_tables = setmetatable({}, {__index = self.open_tables}),
+		})
 	end
 	return tx
 end
 function Db:txw(parent_tx, flags)
 	flags = flags or 0
 	checkz(C.mdbx_txn_begin_ex(self.env, parent_tx and parent_tx.txn, flags, txnp, nil))
-	local tx = pop(self._free_rw_tx) or object(Tx, {db = self, readonly = false})
+	local tx = pop(self._free_rw_tx) or object(Tx, {
+			db = self,
+			readonly = false,
+			open_tables = setmetatable({}, {}),
+		})
+	end
 	tx.txn = txnp[0]
 	if parent_tx then
 		tx.parent_tx = parent_tx
 		parent_tx.child_tx = tx
 	end
+	getmetatable(tx.open_tables).__index = (parent_tx or self).open_tables
 	return tx
 end
 end
@@ -241,28 +248,30 @@ function Tx:commit()
 	end
 end
 
+function Tx:close_all_dbis()
+	for dbi in pairs(self.db.open_tables) do
+		if isnum(dbi) then
+			checkz(C.mdbx_dbi_close(self.db.env, dbi))
+		end
+	end
+	clear(self.db.open_tables)
+end
+
 function Tx:abort()
 	assert(not self:closed(), 'transaction closed')
 	if self.readonly then
 		checkz(C.mdbx_txn_reset(self.txn))
 		tx_ro_free(self)
 	else
-		--child txs are aborted automatically but we need to close any
-		--tables that they created, so we abort them explicitly recursively.
+		--close child txs recursively bottom-up.
 		if self.child_tx then
 			self.child_tx:abort()
 		end
 		checkz(C.mdbx_txn_abort(self.txn))
-		--dbis of created tables must be removed from db.open_tables map on abort.
-		if self.created_tables then
-			for _,t in ipairs(self.created_tables) do
-				checkz(C.mdbx_dbi_close(self.db.env, t.dbi))
-				self.db.open_tables[t.name] = nil
-				self.db.open_tables[t.dbi] = nil
-				t.name = nil
-				t.dbi = nil
-			end
-		end
+		--dbis of tables that were created in this transactions are invalid now.
+		--close all dbis since we're not tracking dbis per transaction otherwise
+		--we'd only close the ones that actually need closing.
+		self:close_all_dbis()
 		tx_rw_free(self)
 	end
 end
@@ -293,7 +302,7 @@ end
 function Tx:table_name(tab)
 	if not tab then return '<main>' end
 	if isstr(tab) then return tab end
-	return self.db.open_tables[tab].name
+	return self.db.open_tables[tab]
 end
 local table_name = Tx.table_name
 
@@ -301,8 +310,8 @@ local table_name = Tx.table_name
 do
 local dbip = new'MDBX_dbi[1]'
 function Tx:try_open_table(tab, mode, flags)
-	local t = self.db.open_tables[tab or false]
-	if t then return t end
+	local dbi = isnum(tab) and tab or self.db.open_tables[tab or false]
+	if dbi then return dbi end
 	local name = tab
 	local create = mode == 'w' or mode == 'c'
 	flags = bor(flags or 0, create and C.MDBX_CREATE or 0)
@@ -313,16 +322,12 @@ function Tx:try_open_table(tab, mode, flags)
 	end
 	checkz(rc)
 	local dbi = dbip[0]
-	local t = {dbi = dbi, name = name}
-	local ot = self.db.open_tables
-	ot[name or false] = t
-	ot[dbi] = t
-	if created then
-		add(attr(self, 'created_tables'), t)
-	elseif mode == 'c' then
+	self.db.open_tables[name or false] = dbi
+	self.db.open_tables[dbi] = name or false
+	if mode == 'c' and not created then
 		self:clear_table(name)
 	end
-	return t, created
+	return dbi, created
 end
 end
 function Tx:open_table(tab, mode, flags, ...)
@@ -333,11 +338,9 @@ end
 
 function Tx:dbi(tab, mode)
 	if mode == 'w' or mode == 'c' then
-		return self:open_table(tab, mode).dbi
+		return self:open_table(tab, mode)
 	else
-		local t, err = self:try_open_table(tab)
-		if not t then return nil, err end
-		return t.dbi
+		return self:try_open_table(tab)
 	end
 end
 
@@ -359,12 +362,9 @@ function Tx:try_drop_table(tab)
 	if not dbi then return nil, 'not_found' end
 	checkz(C.mdbx_drop(self.txn, dbi, 1))
 	checkz(C.mdbx_dbi_close(self.db.env, dbi))
-	local ot = self.db.open_tables
-	local t = ot[dbi]
-	ot[dbi] = nil
-	ot[t.name] = nil
-	t.name = nil
-	t.dbi = nil
+	local name = self.db.open_tables[dbi]
+	self.db.open_tables[dbi] = nil
+	self.db.open_tables[name] = nil
 	return true
 end
 function Tx:drop_table(tab)
