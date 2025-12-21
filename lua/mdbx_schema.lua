@@ -192,7 +192,7 @@ function Tx:layout_table_schema(schema)
 
 	--index fields by name, typecheck, check for inconsistencies.
 	for i,f in ipairs(schema.fields) do
-		assertf(isstr(f.col) and #f.col > 0 and not f.col:find'%s',
+		assertf(isstr(f.col) and #f.col > 0 and not f.col:find'[^a-z0-9_]',
 			'invalid field name: %s.%s', table_name, f.col)
 		schema.fields[f.col] = f
 		f.col_pos = i
@@ -240,7 +240,7 @@ function Tx:layout_table_schema(schema)
 	assert(#val_fields < 2^16)
 
 	--move varsize fields at the end to minimize the size of the dyn offset table.
-	--order fields by inverse elem_size to maintain alignment.
+	--order fields by descending elem_size to maintain alignment.
 	--order by field index to get stable sorting.
 	sort(val_fields, function(f1, f2)
 		--elem_size fits in 8 bit; field index fits in 16 bit; 8+16 = 24 bits,
@@ -605,12 +605,6 @@ function Tx:try_drop_table_schema(table_name)
 	return self:try_del_raw('$schema', cast(u8p, table_name), #table_name)
 end
 
-local function sort_indexes(indexes)
-	sort(indexes, function(ix1, ix2)
-		return ix1.name < ix2.name
-	end)
-end
-
 function Tx:try_open_table(tab, mode, flags, schema)
 
 	if not tab then --opening the unnamed root table
@@ -719,7 +713,9 @@ function Tx:try_open_table(tab, mode, flags, schema)
 					add(schema.indexes, ix)
 				end
 			end
-			sort_indexes(schema.indexes)
+			sort(schema.indexes, function(ix1, ix2)
+				return ix1.name < ix2.name
+			end)
 			for _,ix in ipairs(schema.indexes) do
 				local ix_t, err = self:try_open_index(table_name, ix.name, mode)
 				if not ix_t then
@@ -910,9 +906,8 @@ function Tx:compile_index_schema(ix_schema)
 	end
 
 	function ix_schema:drop(self)
-		self:drop_table(ix_dbi)
-		ix_dbi = nil
-		self.db.schema.tables[ix_tbl_name] = nil
+		self:drop_table(self.name)
+		self.db.schema.tables[self.name] = nil
 		assert(remove_value(val_schema.indexes, ix_schema))
 	end
 
@@ -945,7 +940,9 @@ function Tx:try_drop_index(ix_tbl_name)
 	local ix_schema = self.db.schema.tables[ix_tbl_name]
 	if not ix_schema then return nil, 'not_found' end
 	if not ix_schema.is_index then return nil, 'not_index' end
-	return ix_schema:drop(self)
+	local ok, err = ix_schema:drop(self)
+	if not ok then return nil, err end
+	self:save_table_schema(ix_schema.val_table)
 end
 
 ------------------------------------------------------------------------------
