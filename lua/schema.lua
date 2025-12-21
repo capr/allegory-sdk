@@ -24,8 +24,8 @@ to make sure that the database was migrated properly.
 to create and maintain schema versions and migration scripts.
 * you don't want to care about declaration order for foreign key constraints.
 * you want to annotate table fields with extra information for use in
-data-bound widget toolkits like [widgets](WIDGETS.md), and you don't want
-to do that off-band in a separate file.
+data-bound widget toolkits, and you don't want to do that off-band
+in a separate file.
 * your app has modules or extensions and you want each module to define its
 own part of the app schema, including adding columns to common tables
 or even adding foreign keys that reference tables from other modules.

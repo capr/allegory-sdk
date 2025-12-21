@@ -612,9 +612,8 @@ directory recursively in userspace has similar issues. So never work on the
 
 Flushing does not protect against power loss on consumer hard drives because
 they usually don't have non-volatile write caches (and disabling the write
-cache is generally not possible nor feasible). Also, most Linux distros do
-not mount ext3 filesystems with the "barrier=1" option by default which means
-no power loss protection there either, even when the hardware works right.
+cache is generally not possible nor feasible). The only way to ensure
+durability after flush is to use drives with Power Loss Protection (PLP).
 
 ### File locking doesn't always work
 
