@@ -2,8 +2,7 @@
 cd "${0%build}" || exit 1
 
 cd src
-tag=`git describe --tags "$(git rev-list --tags --max-count=1)"`
-git checkout $tag
+git checkout stable
 make clean
 make MDBX_BUILD_TIMESTAMP=unknown lib
 strip libmdbx*
