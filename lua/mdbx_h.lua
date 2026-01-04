@@ -43,6 +43,17 @@ typedef uint32_t MDBX_dbi;
 typedef struct MDBX_cursor MDBX_cursor;
 typedef struct MDBX_val MDBX_val;
 
+/* NOTE: taken from internals.h because missing API to get parent and nested */
+struct MDBX_txn {
+  int32_t signature;
+  uint32_t flags;
+  size_t n_dbi;
+  size_t owner;
+
+  MDBX_txn *_parent;
+  MDBX_txn *_nested;
+};
+
 enum MDBX_constants {
 	MDBX_MAX_DBI = 32765U,
 	MDBX_MAXDATASIZE = 0x7fff0000U,

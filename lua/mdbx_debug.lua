@@ -24,7 +24,7 @@ local function ftxn(txn)
 	return 'txn:'..faddr('txn', txn)
 end
 local function fdbi(dbi)
-	return 'dbi:'..dbi..':'..dbi_names[dbi]
+	return 'dbi:'..dbi..':'..(dbi_names[dbi] or '?')
 end
 local function fcur(cur)
 	return 'cur:'..faddr('cur', cur)
@@ -57,7 +57,7 @@ function prf_after.mdbx_dbi_open(fn, rc, txn, name, flags, dbip)
 	if rc == 0 then
 		dbi_names[dbi] = name or '<main>'
 	end
-	pr(' OPEN', rc, ftxn(txn), str(name), fdbi(dbi), fflags(flags))
+	pr(' OPEN', rc, ftxn(txn), name, fdbi(dbi), fflags(flags))
 end
 function prf_after.mdbx_dbi_close(fn, rc, env, dbi)
 	pr(' CLOSE', rc, fdbi(dbi))

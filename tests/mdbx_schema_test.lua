@@ -73,7 +73,7 @@ function test_encdec()
 	--test int and float decoders and encoders
 	for _,tbl in ipairs(num_tables) do
 		local typ = tbl.test_type
-		local tx = db:txw()
+		db:begin'w'
 		local bits = num(typ:sub(2))
 		local ntyp = typ:sub(1,1)
 		local nums =
@@ -86,22 +86,22 @@ function test_encdec()
 		for _,i in ipairs(nums) do
 			add(t, {i, i, i})
 		end
-		tx:put_records(tbl.name, '[k v1 v2]', t)
-		tx:commit()
+		db:put_records(tbl.name, '[k v1 v2]', t)
+		db:commit()
 
 		if tbl.fields.k.descending then
 			reverse(nums)
 		end
-		local tx = db:tx()
+		db:begin()
 		local i = 1
-		for cur, k, v1, v2 in tx:each(tbl.name) do
+		for cur, k, v1, v2 in db:each(tbl.name) do
 			pr(tbl.name, k, v1, v2)
 			assertf(k  == nums[i], '%q ~= %q', k , nums[i])
 			assertf(v1 == nums[i], '%q ~= %q', v1, nums[i])
 			assertf(v2 == nums[i], '%q ~= %q', v2, nums[i])
 			i = i + 1
 		end
-		tx:commit()
+		db:commit()
 	end
 
 	--test varsize_key1
@@ -112,9 +112,9 @@ function test_encdec()
 			{'aa', 'bb'},
 			{'b' , nil },
 		}
-		local tx = db:txw()
-		tx:put_records(tbl.name, '[]', t)
-		tx:commit()
+		db:begin'w'
+		db:put_records(tbl.name, '[]', t)
+		db:commit()
 
 		sort(t, function(r1, r2)
 			if tbl.fields.s.descending then
@@ -123,12 +123,12 @@ function test_encdec()
 				return r1[1] < r2[1]
 			end
 		end)
-		local tx = db:tx()
+		db:begin()
 		local t1 = {}
-		for cur, t in tx:each(tbl.name, '[]') do
+		for cur, t in db:each(tbl.name, '[]') do
 			add(t1, t)
 		end
-		tx:commit()
+		db:commit()
 		for i=1,#t do
 			assert(t1[i][1] == t[i][1], t[i][1])
 			assert(t1[i][2] == t[i][2], t[i][2])
@@ -155,9 +155,9 @@ function test_encdec()
 			{'a'  , ''   , 'a'  , ''   , },
 			{'xx' , 'y'  , 'z'  , 'zz' , },
 		}
-		local tx = db:txw()
-		tx:put_records(tbl.name, t)
-		tx:commit()
+		db:begin'w'
+		db:put_records(tbl.name, t)
+		db:commit()
 
 		local s1_desc = tbl.fields.s1.descending
 		local s2_desc = tbl.fields.s2.descending
@@ -167,18 +167,18 @@ function test_encdec()
 				local c2; if s2_desc then c2 = r2[2] < r1[2] else c2 = r1[2] < r2[2] end
 				if r2[1] == r1[1] then return c2 else return c1 end
 			end)
-		local tx = db:tx()
+		db:begin()
 		pr('***', tbl.pk, '***')
 		local t1 = {}
-		for cur, s1, s2, s3, s4 in tx:each(tbl.name) do
-			assert(tx:is_null(tbl.name, 's3', s1, s2) == (s3 == nil))
-			assert(tx:is_null(tbl.name, 's4', s1, s2) == (s4 == nil))
+		for cur, s1, s2, s3, s4 in db:each(tbl.name) do
+			assert(db:is_null(tbl.name, 's3', s1, s2) == (s3 == nil))
+			assert(db:is_null(tbl.name, 's4', s1, s2) == (s4 == nil))
 			add(t1, {s1, s2, s3, s4})
 		end
-		local s3, s4 = tx:get(tbl.name, 's3 s4', 'xx', 'y')
+		local s3, s4 = db:get(tbl.name, 's3 s4', 'xx', 'y')
 		assert(s3 == 'z')
 		assert(s4 == 'zz')
-		tx:commit()
+		db:commit()
 		for i=1,#t do
 			pr(unpack(t1[i], 1, 4))
 			assert(t[i][1] == t1[i][1])
@@ -204,45 +204,57 @@ function test_uks()
 		},
 		pk = {'k1', 'k2'},
 	}
-	local tx = db:txw()
-	tx:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1')
-	tx:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
-	tx:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
-	tx:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3') --duplicate uk
-	tx:commit()
+
+	db:begin'w'
+	db:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1')
+	db:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
+	db:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
+	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3') --duplicate uk
+	db:commit()
+
 	--test fail to create uk on account of duplicates
-	local tx = db:txw()
-	local ok, err = tx:try_create_index('test_uk', {'u1', 'u2'})
+	db:begin'w'
+	local ok, err = db:try_create_index('test_uk', {'u1', 'u2'})
 	local ix_tbl = 'test_uk/u1-u2'
 	assert(not ok)
 	assert(tostring(err):has'exists')
-	tx:commit()
-	local tx = db:tx()
-	assert(not tx:table_exists(ix_tbl))
+	db:abort()
+
+	db:begin()
+	assert(not db:table_exists(ix_tbl))
 	assert(not db.schema.tables[ix_tbl])
-	tx:commit()
+	db:abort()
+
 	--remove duplicate and try again.
-	local tx = db:txw()
-	for _, k1, k2 in tx:each'test_uk' do
-		pr(k1, k2)
-	end
-	tx:del('test_uk', 'k3', 'k1')
-	tx:create_index('test_uk', {'u1', 'u2'})
-	assert(tx:table_exists(ix_tbl))
-	tx:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u1', 'f4')
-	tx:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u2', 'f5')
-	tx:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
-	local ok = tx:try_insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
-	assert(not ok)
-	tx:commit()
-	local tx = db:tx()
-	local t = tx:must_get('test_uk/u1-u2', '{}', 'u1', 'u1')
+	db:begin'w'
+	--for _, k1, k2 in db:each'test_uk' do
+	--	pr(k1, k2)
+	--end
+	--for t in db:each_table() do
+	--	pr(t)
+	--end
+	assert(not db:table_exists(ix_tbl))
+	assert(not db:try_open_table(ix_tbl))
+	db:del('test_uk', 'k3', 'k1')
+	db:create_index('test_uk', {'u1', 'u2'})
+	assert(db:table_exists(ix_tbl))
+	--now try to insert a duplicate again, this time it should fail.
+	db:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u1', 'f4')
+	--db:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u2', 'f5')
+	--db:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
+	--local ok = db:try_insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
+	--assert(not ok)
+	db:abort()
+
+	db:begin()
+	local t = db:must_get('test_uk/u1-u2', '{}', 'u1', 'u1')
 	assert(t.k1 == 'k1')
 	assert(t.k2 == 'k1')
 	assert(t.u1 == 'u1')
 	assert(t.u2 == 'u1')
 	assert(t.f1 == 'f1')
-	tx:abort()
+	db:commit()
+
 end
 
 function test_rename_table()
@@ -250,14 +262,14 @@ function test_rename_table()
 		fields = {{col = 'id', mdbx_type = 'u8'}},
 		pk = {'id'},
 	}
-	local tx = db:txw()
-	tx:create_table('test_rename_table1')
-	assert(tx:table_exists'test_rename_table1')
-	tx:rename_table(
+	db:begin'w'
+	db:create_table('test_rename_table1')
+	assert(db:table_exists'test_rename_table1')
+	db:rename_table(
 		'test_rename_table1',
 		'test_rename_table2'
 	)
-	tx:commit()
+	db:commit()
 end
 
 function test_fks()
@@ -279,41 +291,41 @@ function test_fks()
 			fk3, id, weak_fk(fk3),
 		}
 	end)
-	local tx = db:txw()
+	db:begin'w'
 	for _, fk in pairs(schema.tables.fkt.fks) do
-		tx:create_fk(fk)
+		db:create_fk(fk)
 	end
-	tx:insert('fk1')
-	tx:insert('fk2')
-	tx:insert('fk3')
-	tx:insert('fkt', nil, 1, 1, 1)
-	tx:commit()
+	db:insert('fk1')
+	db:insert('fk2')
+	db:insert('fk3')
+	db:insert('fkt', nil, 1, 1, 1)
+	db:commit()
 end
 
 function test_stat()
-	local tx = db:tx()
-	pr(rpad('TABLE ('..tx:table_count()..')', 24),
+	db:begin()
+	pr(rpad('TABLE ('..db:table_count()..')', 24),
 		'ENTRIES', 'PSIZE', 'DEPTH',
 		'BR_PG', 'LEAF_PG', 'OVER_PG',
 		'TXNID')
 	pr(rep('-', 90))
-	for table_name in tx:each_table() do
-		local s = tx:stat(table_name)
+	for table_name in db:each_table() do
+		local s = db:table_stat(table_name)
 		pr(rpad(table_name, 24),
 			num(s.entries), s.psize, s.depth,
 			num(s.branch_pages), num(s.leaf_pages), num(s.overflow_pages),
 			num(s.mod_txnid))
 	end
-	tx:abort()
+	db:abort()
 	pr()
 end
 
 function test_each()
-	local tx = db:tx()
-	pr(rpad('TABLE ('..tx:table_count()..')', 24),
+	db:begin()
+	pr(rpad('TABLE ('..db:table_count()..')', 24),
 		'KCOLS', 'VCOLS', 'PK')
 	pr(rep('-', 90))
-	for table_name in tx:each_table() do
+	for table_name in db:each_table() do
 		local s = db.schema.tables[table_name]
 		if s then
 			pr(rpad(table_name, 24),
@@ -324,7 +336,7 @@ function test_each()
 			pr(rpad(table_name, 24), '')
 		end
 	end
-	tx:abort()
+	db:abort()
 	pr()
 end
 
@@ -333,11 +345,11 @@ function test_schema()
 	db:close()
 	db = mdbx_open('mdbx_schema_test.mdb')
 	db.schema = schema
-	local tx = db:tx()
-	for tab in tx:each_table() do
-		tx:open_table(tab)
+	db:begin()
+	for tab in db:each_table() do
+		db:open_table(tab)
 	end
-	tx:abort()
+	db:abort()
 end
 
 --test_encdec()

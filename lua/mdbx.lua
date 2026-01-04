@@ -6,68 +6,105 @@
 	libmdbx is a super-fast mmap-based MVCC key-value store in 40 KLOC of C.
 	libmdbx provides ACID with serializable semantics, good for read-heavy loads.
 
-DATABASES
+UNMANAGED API
 
-	[try_]mdbx_open(file_path, [opt]) -> db open/create a database
-		opt.max_readers    4K                max read txns across all processes
+ * stateless, unsafe, 1:1 API mapping, preserves mdbx objects and terminology.
+
+ ENVS
+	mdbx_env_open(file, [opt]) -> env
+	mdbx_env_delete(file_path, [flags])
+	env:close()
+	env:max_k_sz() -> sz
+ TXNS
+	env:txn(['r'|'w'], [parent_txn], [flags]) -> txn
+	txn:commit()
+	txn:abort()
+	txn:reset()
+	txn:renew()
+ DBIS
+	txn:open(name|nil, create, [flags]) -> dbi,created | nil,err
+	env:close_dbi(dbi)
+	txn:rename(dbi, new_table_name) -> true | nil,'exists'
+	txn:drop(dbi) -> true | nil,'not_found'
+	txn:clear(dbi)
+	txn:stat(dbi) -> stat
+ CRUD
+	txn:get(dbi, k, k_sz, v, v_sz) -> v, v_sz
+	txn:put(dbi, k, k_sz, v, v_sz, [flags]) -> true
+	txn:del(dbi, k, k_sz, [v, v_sz], [flags])
+	txn:sequence(dbi, [inc=1]) -> n
+	txn:parent() -> txn|nil
+	txn:child() -> txn|nil
+	txn:env() -> env|nil
+ CURSORS
+	txn:cursor(dbi) -> cur
+	cur:close()
+	cur:bind(txn, dbi) -> cur
+	cur:unbind()
+	cur:txn() -> txn| nil
+	cur:dbi() -> dbi|nil
+	cur:get(flags) -> k, k_sz, v, v_sz | nil, 0, nil, 0
+	cur:first|last|next|prev|current() -> k, k_sz, v, v_sz | nil, 0, nil, 0
+	cur:each[_reverse]() -> iter() -> k, k_sz, v, v_sz
+	cur:find(k, k_sz, [flags]) -> v, v_sz | nil, 0
+	cur:put(k, k_sz, v, v_sz, [flags])
+	cur:set(v, v_sz)
+	cur:del(flags)
+	cur:schema() -> table_schema|nil
+
+MANAGED API
+
+ * safe (no use-after-free), uses our terminology (env -> db, dbi -> table).
+ * extendable, see mdbx_schema.lua which adds column schema to keys and values.
+ * current transaction is implicit since we can't use parallel transactions.
+ * tables can be referenced by name everywhere (no need to use dbis).
+ * tables are auto-created for write ops and auto-opened for read ops.
+ * APIs either raise or have try_*() variants that return nil,err instead.
+ * write ops and errors are logged, except raw CRUD ops.
+
+ DATABASES
+	[try_]mdbx_open(file_path, [opt]) -> db[,err],created   open/create a database
+		opt.max_readers    64                max read txns across all processes
 		opt.max_tables     4K                max named tables
-		opt.readonly       false             open in r/o mode and don't create
+		opt.readonly       false             open in r/o mode
 		opt.file_mode      0660
 		opt.flags                            see MDBX_env_flags
 	db:close()                              close db
-	db:db_max_key_size() -> n               get max key size in bytes
-
-TRANSACTIONS
-
-	db:tx([flags])  -> tx                   open r/o transaction
-	db:txw([parent_tx], [flags]) -> tx      open r/w transaction (flags is MDBX_txn_flags)
-	tx:txw([flags]) -> tx                   open r/w nested transaction
-	tx:commit()
-	tx:abort()
-	tx:closed() -> t|f
+	db:max_key_size() -> n                  get max key size in bytes
+ TRANSACTIONS
+	db:begin(['w'|'r'])                     begin transaction
+	db:commit()                             commit transaction
+	db:abort()                              abort transaction
+	db.txn                                  current txn (or nil)
 	db:atomic(['w',], fn, ...) -> ...       run fn in transaction
-		fn(tx, ...) -> ...
-	tx:atomic(fn, ...) -> ...               run fn in sub-transaction
-		fn(tx, ...) -> ...
-
-TABLES
-
-	tx:dbi(table_name|dbi, ['w']) -> dbi
-	tx:[try_]stat(table_name|dbi) -> MDBX_stat    get storage metrics on table
-
-	tx:[try_]rename_table (table_name|dbi)  rename table
-	tx:[try_]drop_table   (table_name|dbi)  drop table
-	tx:[try_]clear_table  (table_name|dbi)  delete all records
-
-	tx:each_table() -> iter() -> table_name
-	tx:table_count() -> n
-	tx:table_exists(table_name) -> t|f
-
-CRUD
-
-	tx:[must_]get_raw    (table_name|dbi, key_data, key_size) -> val_data, val_size | nil,0,err
-	tx:[try_]put_raw     (table_name|dbi, key_data, key_size, val_data, val_size, [flags])
-	tx:[try_]insert_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'exists'
-	tx:[try_]update_raw  (table_name|dbi, key_data, key_size, val_data, val_size, [flags]) -> true | nil,'not_found'
-	tx:[try__]del_raw    (table_name|dbi, key_data, key_size, [val_data], [val_size], [flags]) -> true|nil,err
-	tx:[try_]move_key_raw(table_name|dbi, key_data, key_size, new_key_data, new_key_size)
-
-	tx:gen_id            (table_name|dbi) -> n     next sequence
-
-CURSORS
-
-	tx:cursor(table_name|dbi[, 'w']) -> cur
+		fn(...) -> ...
+ TABLES
+	db:dbi(table_name|dbi, ['r'|'w'|'c']) -> dbi  open/create table
+	db:[try_]table_stat(table_name|dbi) -> MDBX_stat    get storage metrics on table
+	db:[try_]rename_table (table_name|dbi)  rename table
+	db:[try_]drop_table   (table_name|dbi)  drop table
+	db:[try_]clear_table  (table_name|dbi)  delete all records
+	db:each_table() -> iter() -> table_name
+	db:table_count() -> n
+	db:table_exists(table_name) -> t|f
+ CRUD
+	db:get_raw         (table_name|dbi, k, k_sz) -> v, v_sz | nil,0,err
+	db:try_put_raw     (table_name|dbi, k, k_sz, v, v_sz, [flags])
+	db:try_insert_raw  (table_name|dbi, k, k_sz, v, v_sz, [flags]) -> true | nil,'exists'
+	db:try_update_raw  (table_name|dbi, k, k_sz, v, v_sz, [flags]) -> true | nil,'not_found'
+	db:try_del_raw     (table_name|dbi, k, k_sz, [v], [v_sz], [flags]) -> true|nil,err
+	db:gen_id          (table_name|dbi) -> n     next sequence
+	db:try_move_key_raw(table_name|dbi, k, k_sz, new_k, new_k_sz)
+	db:each_raw(table_name[, 'w']) -> iter() -> cur, k, k_sz, v, v_sz
+ CURSORS
+	db:cursor(table_name|dbi[, 'w']) -> cur
 	cur:close()
-	cur:closed() -> t|f
-	tx:close_cursors()
-
-	cur:next_raw         () -> key,key_size, val,val_size
-	cur:current_raw      () -> key,key_size, val,val_size
-	cur:[must_]get_raw   (key_data, key_size) -> val,val_size | nil
-	cur:set_raw          (key_data, key_size, val_data, val_size)
-	cur:del              ([flags])
-
-	tx:each_raw(table_name[, 'w']) -> iter() -> cur, mdbx_key, mdbx_val
+	cur:get_raw(flags) -> k, k_sz, v, v_sz | nil, 0, nil, 0
+	cur:{first|last|next|prev|current}_raw() -> k, k_sz, v, v_sz | nil, 0, nil, 0
+	cur:each[_reverse]_raw() -> iter() -> k, k_sz, v_sz
+	cur:find_raw          (k, k_sz) -> v, v_sz | nil, 0
+	cur:set_raw           (k, k_sz, v, v_sz)
+	cur:del               ([flags])
 
 ]]
 
@@ -85,39 +122,7 @@ if config'mdbx_debug' then
 	C = mdbx
 end
 
---[[ STATELESS (UNSAFE) API --------------------------------------------------
-
-	mdbx_env_open(file, [opt]) -> env
-	mdbx_env_close(env)
-	mdbx_env_delete(file_path, [flags])
-	mdbx_env_get_maxkeysize(env) -> sz
-
-	mdbx_txn_begin(env, ['r'|'w'], [parent_txn], [flags]) -> txn
-	mdbx_txn_commit(txn)
-	mdbx_txn_abort(txn)
-	mdbx_txn_reset(txn)
-	mdbx_txn_renew(txn)
-
-	mdbx_dbi_open(txn, name|nil, create, [flags]) -> dbi, created
-	mdbx_dbi_close(env, dbi)
-	mdbx_dbi_rename(txn, dbi, new_table_name)
-	mdbx_dbi_drop(txn, dbi, [clear_only])
-	mdbx_dbi_stat(txn, dbi) -> stat
-
-	mdbx_get(txn, dbi, key_data, key_size, val_data, val_buf_size) -> val_data, val_size
-	mdbx_put(txn, dbi, key_data, key_size, val_data, val_size, [flags]) -> true
-	mdbx_del(txn, dbi, key_data, key_size, [val_data, val_size], [flags])
-	mdbx_dbi_sequence(txn, dbi, [inc=1]) -> n
-
-	mdbx_cursor_open(txn, dbi) -> cur
-	mdbx_cursor_bind(txn, cur, dbi)
-	mdbx_cursor_unbind(cur)
-	mdbx_cursor_get(cur, flags) -> k, k_sz, v, v_sz | nil, 0, nil, 0
-	mdbx_cursor_get_key(k, k_sz) -> v, v_sz
-	mdbx_cursor_set(cur, v, v_sz)
-	mdbx_cursor_del(cur, [flags])
-
-]]
+-- UNMANAGED API -------------------------------------------------------------
 
 local function try_checkz(rc)
 	if rc == 0 then return true end
@@ -145,7 +150,7 @@ local function mdbx_env_open(file, opt)
 
 	local size = 1024e4
 	checkz(C.mdbx_env_set_geometry(env, size, size, size, -1, -1, -1))
-	checkz(C.mdbx_env_set_option(env, C.MDBX_opt_max_readers, opt.max_readers or 4096))
+	checkz(C.mdbx_env_set_option(env, C.MDBX_opt_max_readers, opt.max_readers or 64))
 	checkz(C.mdbx_env_set_option(env, C.MDBX_opt_max_db, opt.max_tables or 4096))
 
 	local ok, err = try_checkz(C.mdbx_env_open(env, file,
@@ -196,11 +201,11 @@ local function mdbx_txn_abort(txn)
 	checkz(C.mdbx_txn_abort(txn))
 end
 
-local function mdbx_txn_reset(txn)
+local function mdbx_txn_reset(txn) --for r/o txn: abort but keep txn for renew
 	checkz(C.mdbx_txn_reset(txn))
 end
 
-local function mdbx_txn_renew(txn)
+local function mdbx_txn_renew(txn) --for r/o txn: begin on a reset txn
 	checkz(C.mdbx_txn_renew(txn))
 end
 
@@ -238,8 +243,8 @@ local function mdbx_dbi_rename(txn, dbi, new_table_name)
 	return true
 end
 
-local function mdbx_dbi_drop(txn, dbi, clear_only)
-	local rc = C.mdbx_drop(txn, dbi, clear_only and 0 or 1)
+local function mdbx_dbi_drop(txn, dbi, del)
+	local rc = C.mdbx_drop(txn, dbi, del)
 	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
 	checkz(rc)
 	return true
@@ -257,20 +262,20 @@ end
 local key = new'MDBX_val'
 local val = new'MDBX_val'
 
-local function mdbx_get(txn, dbi, key_data, key_size, val_data, val_size)
-	key.data = key_data
-	key.size = key_size
+local function mdbx_get(txn, dbi, k, k_sz, v, v_sz)
+	key.data = k
+	key.size = k_sz
 	local rc = C.mdbx_get(txn, dbi, key, val)
 	if rc == 0 then return val.data, num(val.size) end
 	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
 	checkz(rc) --always throws
 end
 
-local function mdbx_put(txn, dbi, key_data, key_size, val_data, val_size, flags)
-	key.data = key_data
-	key.size = key_size
-	val.data = val_data
-	val.size = val_size
+local function mdbx_put(txn, dbi, k, k_sz, v, v_sz, flags)
+	key.data = k
+	key.size = k_sz
+	val.data = v
+	val.size = v_sz
 	local rc = C.mdbx_put(txn, dbi, key, val, flags or 0)
 	if rc == C.MDBX_KEYEXIST then return nil, 'exists', val.data, num(val.size) end
 	if rc == C.MDBX_NOTFOUND then return nil, 'not_found' end
@@ -278,13 +283,13 @@ local function mdbx_put(txn, dbi, key_data, key_size, val_data, val_size, flags)
 	return true
 end
 
-local function mdbx_del(txn, dbi, key_data, key_size, val_data, val_size)
-	key.data = key_data
-	key.size = key_size
+local function mdbx_del(txn, dbi, k, k_sz, v, v_sz)
+	key.data = k
+	key.size = k_sz
 	local val = val
-	if val_data then
-		val.data = val_data
-		val.size = val_size
+	if v then
+		val.data = v
+		val.size = v_sz
 	else
 		val = nil
 	end
@@ -307,13 +312,27 @@ local function mdbx_cursor_open(txn, dbi)
 	checkz(C.mdbx_cursor_open(txn, dbi, curp))
 	return curp[0]
 end
-local function mdbx_cursor_bind(txn, cur, dbi)
-	checkz(C.mdbx_cursor_bind(self.txn, cur, dbi))
+
+local function mdbx_cursor_bind(cur, txn, dbi)
+	checkz(C.mdbx_cursor_bind(txn, cur, dbi))
+	return cur
 end
+
 local function mdbx_cursor_unbind(cur)
 	checkz(C.mdbx_cursor_unbind(cur))
 end
+
+local function mdbx_cursor_close(cur)
+	checkz(C.mdbx_cursor_close2(cur))
+end
+
+local reflect = require'reflect'
+local flag_map = {}
+for elem in reflect.typeof('MDBX_cursor_op'):values() do
+    flag_map[elem.name:sub(6):lower()] = elem.value
+end
 local function mdbx_cursor_get(cur, flags)
+	if isstr(flags) then flags = flag_map[flags] end
 	local rc = C.mdbx_cursor_get(cur, key, val, flags)
 	if rc == 0 then
 		return
@@ -325,223 +344,248 @@ local function mdbx_cursor_get(cur, flags)
 	end
 	checkz(rc) --always throws
 end
-local function mdbx_cursor_get_key(k, k_sz)
+
+local function mdbx_cursor_first(cur) return mdbx_cursor_get(cur, C.MDBX_FIRST) end
+local function mdbx_cursor_last (cur) return mdbx_cursor_get(cur, C.MDBX_LAST) end
+local function mdbx_cursor_next (cur) return mdbx_cursor_get(cur, C.MDBX_NEXT) end
+local function mdbx_cursor_prev (cur) return mdbx_cursor_get(cur, C.MDBX_PREV) end
+
+local function mdbx_cursor_each(cur)
+	mdbx_cursor_first(cur)
+	return mdbx_cursor_next, cur
+end
+
+local function mdbx_cursor_each_reverse(cur)
+	mdbx_cursor_last(cur)
+	return mdbx_cursor_prev, cur
+end
+
+local function mdbx_cursor_find(cur, k, k_sz, flags)
 	key.data = k
 	key.size = k_sz
-	local _, _, v, v_sz = mdbx_cursor_get(C.MDBX_SET_KEY)
+	local _, _, v, v_sz = mdbx_cursor_get(cur, bor(flags or 0, C.MDBX_SET_KEY))
 	return v, v_sz
 end
+
+local function mdbx_cursor_put(cur, k, k_sz, v, v_sz, flags)
+	key.data = k
+	key.size = k_sz
+	val.data = v
+	val.size = v_sz
+	checkz(C.mdbx_cursor_put(cur, key, val, flags or 0))
+end
+
 local function mdbx_cursor_set(cur, v, v_sz)
 	checkz(C.mdbx_cursor_get(cur, key, val, C.MDBX_GET_CURRENT))
 	val.data = v
 	val.size = v_sz
 	checkz(C.mdbx_cursor_put(cur, key, val, C.MDBX_CURRENT))
 end
+
 local function mdbx_cursor_del(cur, flags)
-	checkz(C.mdbx_cursor_del(cur, flags or C.MDBX_CURRENT))
+	checkz(C.mdbx_cursor_del(cur, flags))
 end
 
---stateful API ---------------------------------------------------------------
+--publish
+
+_G.mdbx_env_open   = mdbx_env_open
+_G.mdbx_env_delete = mdbx_env_delete
+
+metatype('MDBX_env', {__index = {
+	close = mdbx_env_close,
+	max_key_size = mdbx_env_get_maxkeysize,
+	txn = mdbx_txn_begin,
+	close_dbi = mdbx_dbi_close,
+}})
+
+metatype('MDBX_txn', {__index = {
+	abort  = mdbx_txn_abort,
+	commit = mdbx_txn_commit,
+	renew  = mdbx_txn_renew,
+	reset  = mdbx_txn_reset,
+	open   = mdbx_dbi_open,
+	rename = mdbx_dbi_rename,
+	drop   = function(self, dbi) return mdbx_dbi_drop(self, dbi, 1) end,
+	clear  = function(self, dbi) return mdbx_dbi_drop(self, dbi, 0) end,
+	stat   = mdbx_dbi_stat,
+	get = mdbx_get,
+	put = mdbx_put,
+	del = mdbx_del,
+	sequence = mdbx_dbi_sequence,
+	cursor = mdbx_cursor_open,
+	env    = function(self) return ptr(C.mdbx_txn_env(self)) end,
+	parent = function(self) return ptr(self._parent) end,
+	child  = function(self) return ptr(self._nested) end,
+}})
+
+metatype('MDBX_cursor', {__index = {
+	bind   = mdbx_cursor_bind,
+	unbind = mdbx_cursor_unbind,
+	close  = mdbx_cursor_close,
+	dbi    = function(self) return repl(C.mdbx_cursor_dbi(self), 0xffffffff) end,
+	txn    = function(self) return ptr(C.mdbx_cursor_txn(self)) end,
+	get    = mdbx_cursor_get,
+	first  = mdbx_cursor_first,
+	next   = mdbx_cursor_next,
+	each   = mdbx_cursor_each,
+	last   = mdbx_cursor_last,
+	prev   = mdbx_cursor_prev,
+	each_reverse = mdbx_cursor_each_reverse,
+	current= function(self) return mdbx_cursor_get(self, C.MDBX_GET_CURRENT) end,
+	find   = mdbx_cursor_find,
+	put = mdbx_cursor_put,
+	set = mdbx_cursor_set,
+	del = mdbx_cursor_del,
+}})
+
+--MANAGED API ----------------------------------------------------------------
 
 --databases
 
 local Db = {}; mdbx_db = Db
 
-local function env_wrap(env, file, opt)
+function try_mdbx_open(file, opt)
+	local create = not (opt and opt.readonly) and not exists(file)
+	local env, err = mdbx_env_open(file, opt)
+	if not env then return nil, err, create end
 	local db = object(Db, {
 		file = file,
 		env = env,
 		dbis = {}, --{dbi->name, name->dbi}
 		readonly = opt and opt.readonly,
-		_free_ro_tx = {},
-		_free_rw_tx = {},
-		_free_cur = {},
+		_ro_txn = nil,
+		--created dbis are local to the txn in which they are created until
+		--the top txn is commited, so when a txn is aborted, the dbis created
+		--in it are gone, which leaves our dbis table with invalid dbis in it.
+		--we use this flag to track when our dbis table contains local dbis.
+		_local_dbis = false,
+		_cursors = {},
+		cursors = {},
+		type = 'DB',
 	})
 	live(db, file)
-	return db
-end
-function try_mdbx_open(file, opt)
-	local env, err = mdbx_env_open(file, opt)
-	if not env then return nil, err end
-	return env_wrap(env, file, opt)
+	log(create and 'note' or '', 'db', create and 'db_create' or 'db_open', '%s', file)
+	return db, nil, create
 end
 function mdbx_open(file, opt)
-	local env, err = mdbx_env_open(file, opt)
-	if not env then check('db', 'open', false, '%s: %s', file, err) end
-	return env_wrap(env, file, opt)
+	local db, err, create = try_mdbx_open(file, opt)
+	if not db then
+		check('db', create and 'db_create' or 'db_open', false, '%s: %s', file, err)
+	end
+	return db, create
 end
 
 function Db:close()
-	mdbx_env_close(self.env)
+	self.env:close()
 	live(db, nil)
 	self.dbis = nil
 	self.env = nil
 end
 
-function Db:db_max_key_size()
-	local sz = mdbx_env_get_maxkeysize(self.env)
-	function self:db_max_key_size()
-		return sz
-	end
-	return sz
+function Db:max_key_size()
+	return self.env:max_key_size()
 end
 
---transactions ---------------------------------------------------------------
+mdbx_delete = mdbx_env_delete
 
-local Tx = {}; mdbx_tx = Tx
+--transactions
 
-function Db:tx(flags)
-	local fl = self._free_ro_tx
-	local tx = fl[#fl]
-	if tx then
-		mdbx_txn_renew(tx.txn)
-		pop(fl)
+function Db:begin(mode)
+	if mode == 'w' then
+		assert(not self.txn or self.txn ~= self._ro_txn, 'in r/o transaction')
+		self.txn = self.env:txn('w', self.txn)
 	else
-		local txn = mdbx_txn_begin(self.env, 'r', nil, flags)
-		tx = object(Tx, {
-			db = self, txn = txn, readonly = true,
-			dbis = self.dbis,
-		})
-	end
-	return tx
-end
-function Db:txw(parent_tx, flags)
-	local txn = mdbx_txn_begin(self.env, 'w', parent_tx and parent_tx.txn, flags)
-	local tx = pop(self._free_rw_tx) or object(Tx, {
-			db = self,
-			readonly = false,
-			dbis = setmetatable({}, {}),
-		})
-	tx.txn = txn
-	if parent_tx then
-		tx.parent_tx = parent_tx
-		parent_tx.child_tx = tx
-	end
-	getmetatable(tx.dbis).__index = (parent_tx or self).dbis
-	return tx
-end
-
-function Tx:txw(flags)
-	return self.db:txw(self, flags)
-end
-
-function Tx:closed()
-	return self.txn == nil
-end
-
-function Tx:close_cursors()
-	if not self.cursors then return end
-	for _,cur in ipairs(self.cursors) do
-		cur:close()
-	end
-end
-
-local function tx_ro_free(self)
-	self:close_cursors()
-	push(self.db._free_ro_tx, self)
-end
-
-local function tx_rw_free(self)
-	self:close_cursors()
-	self.txn = nil
-	if self.parent_tx then
-		self.parent_tx.child_tx = nil
-	end
-	self.parent_tx = nil
-	push(self.db._free_rw_tx, self)
-	clear(self.dbis)
-end
-
-function Tx:commit()
-	if self.readonly then
-		mdbx_txn_reset(self.txn)
-		tx_ro_free(self)
-	else
-		assert(not self.child_tx, 'commit while child transaction is open')
-		mdbx_txn_commit(self.txn)
-		--move dbis that were created in this tx to parent tx or to env if top tx.
-		--dbis created in this tx are now scoped in the parent tx.
-		--dbis dropped in this tx are now invalid in the parent tx.
-		update((self.parent_tx or self.db).dbis, self.dbis)
-		if not self.parent_tx then --close dbis that were dropped in this tx.
-			for k,v in pairs(self.dbis) do
-				if v == false then
-				 	if isnum(k) then -- k,v is dbi,name
-						mdbx_dbi_close(self.db.env, k)
-					end
-					self.dbis[k] = nil --k,v is dbi,name or name,dbi
-				end
-			end
+		assert(not self.txn, 'in transaction')
+		local txn = self._ro_txn
+		if self._ro_txn then
+			self._ro_txn:renew()
+		else
+			self._ro_txn = self.env:txn'r'
 		end
-		tx_rw_free(self)
+		self.txn = self._ro_txn
 	end
 end
 
-function Tx:abort()
-	if self.readonly then
-		mdbx_txn_reset(self.txn)
-		tx_ro_free(self)
+function Db:commit()
+	if self.txn == self._ro_txn then
+		self.txn:reset()
+		self.txn = nil
 	else
-		--close child txs recursively bottom-up.
-		if self.child_tx then
-			self.child_tx:abort()
+		local parent = self.txn:parent()
+		self.txn:commit()
+		self.txn = parent
+		if not parent then
+			self._local_dbis = false
 		end
-		mdbx_txn_abort(self.txn)
-		tx_rw_free(self)
+	end
+end
+
+function Db:abort()
+	if self.txn == self._ro_txn then
+		self.txn:reset()
+		self.txn = nil
+	else
+		local parent = self.txn:parent()
+		self.txn:abort()
+		if self._local_dbis then
+			--clear our dbis cache because some of them are invalid now.
+			--the dbis that were still valid and are now lost will be acquired
+			--again via dbi_open() which is transparent to the user.
+			clear(self.dbis)
+			self._local_dbis = false
+		end
+		self.txn = parent
 	end
 end
 
 do
-local function finish(tx, ok, ...)
+local function finish(self, ok, ...)
 	if ok then
-		tx:commit()
+		self:commit()
 		return ...
 	else
-		tx:abort()
+		self:abort()
 		error(..., 2)
 	end
 end
 function Db:atomic(mode, f, ...)
 	if isfunc(mode) then mode, f = 'r', mode end
-	local tx = mode == 'w' and self:txw() or self:tx()
-	return finish(tx, xpcall(f, traceback, tx, ...))
-end
-function Tx:atomic(f, ...)
-	local tx = self:txw()
-	return finish(tx, xpcall(f, traceback, tx, ...))
+	self:begin(mode)
+	return finish(self, xpcall(f, traceback, ...))
 end
 end
 
---tables ---------------------------------------------------------------------
+--tables
 
-function Tx:table_name(tab)
-	if not tab then return '<main>' end
-	if isstr(tab) then return tab end
-	return self.dbis[tab]
+function Db:table_name(tab)
+	return not tab and '<main>' or isstr(tab) and tab or self.dbis[tab]
 end
 
-function Tx:try_open_table(tab, mode, flags)
-	local dbi = isnum(tab) and tab or self.dbis[tab]
+function Db:try_open_table(tab, mode, flags)
+	if isnum(tab) then return tab end --tab is dbi
+	local dbi = self.dbis[tab or false]
 	if dbi then return dbi end
+	local name = tab
 	local create = mode == 'w' or mode == 'c'
-	local dbi, created = try_mdbx_dbi_open(self.txn, name, create, flags)
+	local dbi, created = self.txn:open(name, create, flags)
 	if not dbi then return nil, created end
-	--created tables are available in parent tx after commit, and in env only
-	--after top tx commit. existing tables are available in env immediately.
-	local dbis = created and self.dbis or self.db.dbis
-	dbis[name or false] = dbi
-	dbis[dbi] = name or false
+	self.dbis[name or false] = dbi
+	self.dbis[dbi] = name or false
 	if mode == 'c' and not created then
-		self:clear_table(name)
+		self:clear_table(dbi)
+	end
+	if created then
+		self._local_dbis = true
+		log('note', 'db', 't_create', '%s', name)
 	end
 	return dbi, created
 end
-function Tx:open_table(tab, mode, flags, ...)
+function Db:open_table(tab, mode, flags, ...)
 	local dbi, err = self:try_open_table(tab, mode, flags, ...)
-	return check('db', 'open_table', dbi, '%s %s: %s', tab, mode or 'r', err)
+	return check('db', 't_open', dbi, '%s %s: %s', tab, mode or 'r', err)
 end
 
-function Tx:dbi(tab, mode)
+function Db:dbi(tab, mode)
 	if mode == 'w' or mode == 'c' then
 		return self:open_table(tab, mode)
 	else
@@ -549,230 +593,206 @@ function Tx:dbi(tab, mode)
 	end
 end
 
-function Tx:try_rename_table(tab, new_table_name)
+function Db:try_rename_table(tab, new_table_name)
+	assert(tab)
+	assert(isstr(new_table_name))
 	local dbi = isnum(tab) and tab or self:dbi(tab)
-	if not dbi then return nil, 'not_found' end
-	local ok, err = mdbx_dbi_rename(self.txn, dbi, new_table_name)
-	if not ok then return nil, err end
-	local old_table_name = self.dbis[dbi]
+	local old_table_name = isnum(tab) and (self.dbis[dbi] or '?') or tab
+	if not dbi then return nil, 'not_found', old_table_name end
+	local ok, err = self.txn:rename(dbi, new_table_name)
+	if not ok then return nil, err, old_table_name end
 	self.dbis[old_table_name] = false
 	self.dbis[dbi] = new_table_name
-	return true
+	self._local_dbis = true
+	log('note', 'db', 't_rename', '%s -> %s', old_table_name, new_table_name)
+	return true, nil, old_table_name
 end
-function Tx:rename_table(tab, new_table_name)
-	local ok, err = self:try_rename_table(tab, new_table_name)
-	return check('db', 'rename_table', ok, '%s -> %s: %s',
-		self:table_name(tab), new_table_name, err)
+function Db:rename_table(tab, new_table_name)
+	local ok, err, old_table_name = self:try_rename_table(tab, new_table_name)
+	return check('db', 't_rename', ok, '%s -> %s: %s',
+		old_table_name, new_table_name, err)
 end
 
-function Tx:try_drop_table(tab)
+function Db:try_drop_table(tab)
+	assert(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
-	local ok, err = try_mdbx_dbi_drop(self.txn, dbi)
+	local ok, err = self.txn:drop(dbi)
 	local name = self.dbis[dbi]
-	self.dbis[dbi]  = false
-	self.dbis[name] = false
+	self.dbis[dbi]  = nil
+	self.dbis[name] = nil
+	log('note', 'db', 't_drop', '%s', name)
 	return true
 end
-function Tx:drop_table(tab)
+function Db:drop_table(tab)
 	local ok, err = self:try_drop_table(tab)
 	if ok then return end
-	check('db', 'drop_table', false, '%s: %s', self:table_name(tab), err)
+	check('db', 't_drop', false, '%s: %s', self:table_name(tab), err)
 end
 
-function Tx:try_clear_table(tab)
+function Db:try_clear_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
-	return mdbx_dbi_drop(self.txn, dbi, true)
+	local ok, err = self.txn:clear(dbi)
+	if not ok then return nil, err end
+	log('note', 'db', 't_clear', '%s', self:table_name(tab))
+	return ok
 end
-function Tx:clear_table(tab)
+function Db:clear_table(tab)
 	local ok, err = self:try_clear_table(tab)
 	if ok then return end
-	check('db', 'clear_table', false, '%s: %s', self:table_name(tab), err)
+	check('db', 't_clear', false, '%s: %s', self:table_name(tab), err)
 end
 
-function Tx:create_table(tbl_name, ...)
-	self:open_table(tbl_name, 'c', ...)
+function Db:create_table(tbl_name, ...)
+	return self:open_table(tbl_name, 'c', ...)
 end
 
-function Tx:entries(tab)
-	return num(self:stat(tab).entries)
-end
-
-local function next_table(self)
-	local k, k_sz = self:next_raw()
-	return k and str(k, k_sz)
-end
-function Tx:each_table()
-	local cur = self:cursor()
-	return next_table, cur
-end
-function Tx:table_count()
-	return self:entries()
-end
-function Tx:table_exists(table_name)
-	if not table_name then return true end --main table always exists.
-	if self.dbis[table_name] then return true end --exists in current tx
-	return self:get_raw(nil, cast(u8p, table_name), #table_name) ~= nil
-end
-
-function Tx:try_stat(tab)
+function Db:try_table_stat(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
-	return mdbx_dbi_stat(self.txn, dbi)
+	return self.txn:stat(dbi)
 end
-function Tx:stat(tab)
+function Db:table_stat(tab)
 	local stat, err = self:try_stat(tab)
 	if stat then return stat end
-	check('db', 'stat', false, '%s: %s', self:table_name(tab), err)
+	check('db', 't_stat', false, '%s: %s', self:table_name(tab), err)
 end
 
---table data -----------------------------------------------------------------
+function Db:table_entries(tab)
+	return num(self:table_stat(tab).entries)
+end
 
-function Tx:get_raw(tab, key_data, key_size, val_data, val_size)
+--table data
+
+function Db:get_raw(tab, k, k_sz, v, v_sz)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
-	return mdbx_get(self.txn, dbi, key_data, key_size, val_data, val_size)
+	return self.txn:get(dbi, k, k_sz, v, v_sz)
 end
-function Tx:must_get_raw(...)
+function Db:must_get_raw(...)
 	return assert(self:get_raw(...))
 end
 
-function Tx:try_put_raw(tab, key_data, key_size, val_data, val_size, flags)
+function Db:try_put_raw(tab, k, k_sz, v, v_sz, flags)
 	local dbi = isnum(tab) and tab or self:dbi(tab, 'w')
-	return mdbx_put(self.txn, dbi, key_data, key_size, val_data, val_size, flags)
+	return self.txn:put(dbi, k, k_sz, v, v_sz, flags)
 end
 
-function Tx:try_insert_raw(tab, key_data, key_size, val_data, val_size, flags)
-	return self:try_put_raw(tab, key_data, key_size, val_data, val_size,
+function Db:try_insert_raw(tab, k, k_sz, v, v_sz, flags)
+	return self:try_put_raw(tab, k, k_sz, v, v_sz,
 		bor(flags or 0, C.MDBX_NOOVERWRITE))
 end
 
-function Tx:try_update_raw(tab, key_data, key_size, val_data, val_size, flags)
-	return self:try_put_raw(tab, key_data, key_size, val_data, val_size,
+function Db:try_update_raw(tab, k, k_sz, v, v_sz, flags)
+	return self:try_put_raw(tab, k, k_sz, v, v_sz,
 		bor(flags or 0, C.MDBX_CURRENT))
 end
 
-function Tx:put_raw(tab, ...)
-	local ret, err = self:try_put_raw(tab, ...)
-	if ret then return ret end
-	check('db', 'put_raw', ret, '%s: %s', self:table_name(tab), err)
-end
-function Tx:insert_raw(tab, ...)
-	local ret, err = self:try_insert_raw(tab, ...)
-	if ret then return ret end
-	check('db', 'insert_raw', ret, '%s: %s', self:table_name(tab), err)
-end
-function Tx:update_raw(tab, ...)
-	local ret, err = self:try_update_raw(tab, ...)
-	if ret then return end
-	check('db', 'update_raw', ret, '%s: %s', self:table_name(tab), err)
-end
-
-function Tx:try_del_raw(tab, key_data, key_size, val_data, val_size)
+function Db:try_del_raw(tab, k, k_sz, v, v_sz)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
-	return mdbx_del(self.txn, dbi, key_data, key_size, val_data, val_size)
-end
-function Tx:del_raw(tab, ...)
-	local ret, err = self:try_del_raw(tab, ...)
-	if ret then return end
-	check('db', 'del_raw', ret, '%s: %s', self:table_name(tab), err)
+	return self.txn:del(dbi, k, k_sz, v, v_sz)
 end
 
-local seqbuf = u64a(1)
-function Tx:gen_id(tab)
-	local dbi = isnum(tab) and tab or self:dbi(tab)
-	assertf(dbi, 'gen_id(): table not found: %s', tab)
-	return mdbx_dbi_sequence(self.txn, dbi, seqbuf)
+function Db:gen_id(tab)
+	local dbi = isnum(tab) and tab or self:dbi(tab, 'w')
+	local seq = self.txn:sequence(dbi)
+	log('note', 'db', 'gen_id', '%s: %d', self:table_name(tab), seq)
+	return seq
 end
 
-function Tx:try_move_key_raw(tab, k1, k1_sz, k2, k2_sz)
+function Db:try_move_key_raw(tab, k1, k1_sz, k2, k2_sz)
 	local v, v_sz = self:get_raw(tab, k1, k1_sz)
 	if not v then return nil, v_sz end
 	--NOTE: calling put before del because del invaldates the v pointer.
 	local ok, err = self:try_insert_raw(tab, k2, k2_sz, v, v_sz)
 	if not ok and err == 'exists' then return nil, err end
-	self:del_raw(tab, k1, k1_sz)
+	assert(self:try_del_raw(tab, k1, k1_sz))
 	return true
 end
-function Tx:move_key_raw(tab, ...)
-	local ret, err = self:try_move_key_raw(tab, ...)
-	if ret then return end
-	check('db', 'move_key_raw', ret, '%s: %s', self:table_name(tab), err)
-end
 
---cursors --------------------------------------------------------------------
+--cursors
 
-local Cur = {}; mdbx_cur = Cur
+local Cur = {}; mdbx_cursor = Cur
 
-function Tx:cursor(tab, mode)
+--NOTE: cursors created with db:cursor() are reused, so never use a cursor
+--beyond transaction boundaries or you might end up using an unrelated cursor.
+function Db:cursor(tab, mode)
 	local dbi = isnum(tab) and tab or self:dbi(tab, mode)
 	if not dbi then return nil, 'not_found' end
-	local cur = pop(self.db._free_cur)
-	if cur then
-		mdbx_cursor_bind(self.txn, cur.mdbx_cursor, dbi)
-		cur.tx = self
-	else
-		cur = object(Cur, {tx = self})
-		cur.mdbx_cursor = mdbx_cursor_open(self.txn, dbi)
+	local cur
+	local t = self._cursors
+	for i = #t,1,-1 do --find an unbound cursor
+		local cur1 = t[i]
+		if cur1:closed() then
+			cur = cur1
+			break
+		end
 	end
-	add(attr(self, 'cursors'), cur)
+	if cur then
+		cur.c:bind(self.txn, dbi)
+	else
+		cur = object(Cur, {c = self.txn:cursor(dbi)})
+		add(self._cursors, cur)
+	end
 	return cur
 end
 
-function Cur:closed()
-	return self.tx == nil
-end
-
-function Cur:get_mdbx_cursor()
-	assert(self.tx, 'closed')
-	return self.mdbx_cursor
-end
-
 function Cur:close()
-	if self:closed() then return end
-	mdbx_cursor_unbind(self.mdbx_cursor)
-	push(self.tx.db._free_cur, self)
-	self.tx = nil
+	self.c:unbind()
 end
 
-function Cur:next_raw()
-	return mdbx_cursor_get(self:get_mdbx_cursor(), C.MDBX_NEXT)
-end
-function Cur:current_raw()
-	return mdbx_cursor_get(self:get_mdbx_cursor(), C.MDBX_GET_CURRENT)
-end
-function Cur:get_raw(k, k_sz)
-	return mdbx_cursor_get_key(self:get_mdbx_cursor(), k, k_sz)
-end
-function Cur:must_get_raw(k, k_sz)
-	local v, v_sz = mdbx_cursor_get_key(self:get_mdbx_cursor(), k, k_sz)
-	assert(v, 'not_found')
-	return v, v_sz
+function Cur:closed()
+	return not self.c:txn()
 end
 
-function Cur:set_raw(v, v_sz)
-	assert(not self:closed(), 'closed')
-	mdbx_cursor_set(self:get_mdbx_cursor(), v, v_sz)
-end
-
-function Cur:del(flags)
-	mdbx_cursor_del(self:get_mdbx_cursor())
-end
+function Cur:get_raw     (flags) return mdbx_cursor_get(self.c, flags) end
+function Cur:first_raw   () return mdbx_cursor_get(self.c, C.MDBX_FIRST) end
+function Cur:last_raw    () return mdbx_cursor_get(self.c, C.MDBX_LAST) end
+function Cur:next_raw    () return mdbx_cursor_next(self.c) end
+function Cur:prev_raw    () return mdbx_cursor_get(self.c, C.MDBX_PREV) end
+function Cur:current_raw () return mdbx_cursor_get(self.c, C.MDBX_GET_CURRENT) end
+function Cur:each_raw    () return mdbx_cursor_each(self.c) end
+function Cur:each_reverse_raw () return mdbx_cursor_each_reverse(self.c) end
+function Cur:find_raw (...) return mdbx_cursor_find(self.c, ...) end
+function Cur:put_raw  (...) return mdbx_cursor_put(self.c, ...) end
+function Cur:set_raw  (...) return mdbx_cursor_set(self.c, ...) end
+function Cur:del      (flags) return mdbx_cursor_del(self.c, flags) end
 
 local function each_raw_next(self)
-	local k, k_sz, v, v_sz = self:next_raw()
+	local k, k_sz, v, v_sz = mdbx_cursor_next(self.c)
 	if not k then
 		self:close()
 		return
 	end
 	return self, k, k_sz, v, v_sz
 end
-function Tx:each_raw(tab, mode)
+function Db:each_raw(tab, mode)
 	local cur = self:cursor(tab, mode)
 	if not cur then return noop end
 	return each_raw_next, cur
+end
+
+--table catalog
+
+do
+local function next_table(self)
+	local k, k_sz = self.c:next()
+	return k and str(k, k_sz)
+end
+function Db:each_table()
+	local cur = self:cursor()
+	return next_table, cur
+end
+end
+function Db:table_count()
+	return self:entries()
+end
+function Db:table_exists(table_name)
+	if not table_name then return true end --main table always exists.
+	if self.dbis[table_name] then return true end --opened thus exists
+	return self:get_raw(nil, cast(u8p, table_name), #table_name) ~= nil
 end
 
 -- test ----------------------------------------------------------------------
@@ -803,22 +823,60 @@ local function self_test()
 end
 
 local function test_dbi_semantics()
+
 	assert(mdbx_env_delete'testdb')
 	local env = assert(mdbx_env_open('testdb'))
-	local txn = mdbx_txn_begin(env, 'w')
-	local dbi, created = assert(mdbx_dbi_open(txn, 'test', true))
-	assert(created)
-	local txn0 = txn
-	local txn = mdbx_txn_begin(env, 'w', txn)
-	mdbx_dbi_drop(txn, dbi)
-	mdbx_txn_abort(txn)
-	--mdbx_txn_commit(txn)
-	txn = txn0
-	pr(dbi)
-	local dbi, created = assert(mdbx_dbi_open(txn, 'test', true))
-	pr(dbi)
-	assert(not created)
-	pr(mdbx_dbi_stat(txn, dbi))
+
+	local t0 = env:txn'w'
+	local t1 = env:txn('w', t0)
+	local dbi, created = assert(t1:open('test1', true))
+	assert(dbi and created)
+	env:close_dbi(dbi)
+	t1:abort()
+	t0:abort()
+	t0 = env:txn'w'
+	local dbi, created = t0:open('test1')
+	pr(t0:stat(dbi))
+	--assert(not dbi and created == 'not_found')
+	t0:abort()
+
+	local t0 = env:txn'w'
+	local dbi, created = assert(t0:open('test', true))
+	assert(dbi and created)
+	local c = t0:cursor(dbi)
+	pr('cursor txn, dbi', c:txn(), c:dbi())
+	t0:commit()
+	pr('cursor txn, dbi', c:txn(), c:dbi())
+	c:close()
+
+	local t0 = env:txn'r'
+	local dbi, created = assert(t0:open('test'))
+	assert(dbi and not created)
+	pr(dbi, t0:stat(dbi).entries)
+	t0:commit()
+
+	do
+		local t0 = env:txn'w'
+		local dbi, created = assert(t0:open('test', true))
+		assert(not created)
+		pr(dbi, t0:stat(dbi).entries)
+		t0:drop(dbi)
+		--pr(t0:stat(dbi))
+		local dbi, created = assert(t0:open('test', true))
+		assert(created)
+		pr(dbi, t0:stat(dbi).entries)
+		t0:drop(dbi)
+		t0:abort()
+	end
+
+	local t0 = env:txn'w'
+	local dbi, created = assert(t0:open('test', true))
+	assert(dbi and not created)
+	pr(dbi, t0:stat(dbi).entries)
+	--t0:commit()
+	--local t0 = env:txn'w'
+	--local dbi, created = assert(t0:open('test', true))
+	--assert(not created)
 	pr(env, txn, dbi, created)
 	--mdbx_txn_commit(txn0)
 	mdbx_env_close(env)

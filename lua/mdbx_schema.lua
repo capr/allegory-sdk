@@ -19,26 +19,26 @@
 		- keys are not nullable
 		- varsize keys are 0-terminated so they are not 8-bit clean!
 
-API, extends mdbx.lua API
+API, extends mdbx.lua MANAGED API
 
-	tx:put             (table_name|dbi, [cols], keysvals...)
-	tx:[try_]insert    (table_name|dbi, [cols], keysvals...) -> true | nil,'exists'
-	tx:[try_]update    (table_name|dbi, [cols], keysvals...) -> true | nil,'not_found'
-	tx:upsert          (table_name|dbi, [cols], keysvals...)
-	tx:put_records     (table_name|dbi, [cols, ]{keysvals1,...})
-	tx:is_null         (table_name|dbi, col, keys...) -> is_null, [reason]
-	tx:exists          (table_name|dbi, keys...) -> record_exists, table_exists
-	tx:[try_|must_]get (table_name|dbi, [val_cols], keys...) -> [ok, ]vals...
-	tx:try_get         (table_name|dbi, [val_cols], keys...) -> true, vals... | false, err
-	tx:[try_]del       (table_name|dbi, keys...) -> true | nil,err
-	tx:[try_]del_exact (table_name|dbi, [cols], keysvals...) -> true | nil,err
+	db:put             (table_name|dbi, [cols], keysvals...)
+	db:[try_]insert    (table_name|dbi, [cols], keysvals...) -> true | nil,'exists'
+	db:[try_]update    (table_name|dbi, [cols], keysvals...) -> true | nil,'not_found'
+	db:upsert          (table_name|dbi, [cols], keysvals...)
+	db:put_records     (table_name|dbi, [cols, ]{keysvals1,...})
+	db:is_null         (table_name|dbi, col, keys...) -> is_null, [reason]
+	db:exists          (table_name|dbi, keys...) -> record_exists, table_exists
+	db:[try_|must_]get (table_name|dbi, [val_cols], keys...) -> [ok, ]vals...
+	db:try_get         (table_name|dbi, [val_cols], keys...) -> true, vals... | false, err
+	db:[try_]del       (table_name|dbi, keys...) -> true | nil,err
+	db:[try_]del_exact (table_name|dbi, [cols], keysvals...) -> true | nil,err
 
 	cur:current        ([cols]) -> keysvals...
 	cur:next           ([cols]) -> keysvals...
 	cur:update         ([val_cols], vals...)
 	cur:[try_|must]get ([val_cols], keys...) -> vals...
 
-	tx:each            (tbl_name|dbi, [cols]) -> cur, keysvals...
+	db:each            (tbl_name|dbi, [cols]) -> cur, keysvals...
 
 		cols format   |  vals...              | keyvals...
 		--------------+-----------------------+------------
@@ -74,8 +74,7 @@ assert(ffi.abi'le')
 
 local mdbx = mdbx
 local Db = mdbx_db
-local Tx = mdbx_tx
-local Cur = mdbx_cur
+local Cur = mdbx_cursor
 
 cdef[[
 typedef int8_t   i8;
@@ -183,7 +182,7 @@ local decode_val
 --schema processing ----------------------------------------------------------
 
 --create an optimal physical column layout based on a table schema.
-function Tx:layout_table_schema(schema)
+function Db:layout_table_schema(schema)
 
 	if schema.layouted then return end
 	schema.layouted = true
@@ -287,7 +286,7 @@ function Tx:layout_table_schema(schema)
 		end
 
 		if is_key then
-			local db_max_key_size = self.db:db_max_key_size()
+			local db_max_key_size = self:max_key_size()
 			assertf(max_rec_size <= db_max_key_size,
 				'pk too big: %d bytes (max is %d bytes)',
 					max_rec_size, db_max_key_size)
@@ -343,6 +342,24 @@ function Tx:layout_table_schema(schema)
 
 	end
 
+	--compute a stable list of indexes associated with the table.
+	if schema.uks or schema.ixs then
+		schema.indexes = {}
+		if schema.uks then
+			for uk_name, uk in pairs(schema.uks) do
+				add(schema.indexes, uk)
+			end
+		end
+		if schema.ixs then
+			for ix_name, ix in pairs(schema.ixs) do
+				add(schema.indexes, ix)
+			end
+		end
+		sort(schema.indexes, function(ix1, ix2)
+			return ix1.name < ix2.name
+		end)
+	end
+
 end
 
 local S = function() end
@@ -360,7 +377,7 @@ local function encode_ai_ci(s, len)
 end
 
 --create encoders and decoders for a layouted schema.
-function Tx:compile_table_schema(schema)
+function Db:compile_table_schema(schema)
 
 	if schema.compiled then return end
 	schema.compiled = true
@@ -520,17 +537,14 @@ function Tx:compile_table_schema(schema)
 
 end
 
-local try_raw_open_table = Tx.try_open_table
-
 local function save_index_def(ix)
 	local t = extend({}, ix)
-	if ix.desc then
-		t.desc = extend({}, ix.desc)
-	end
+	t.desc = ix.desc and extend({}, ix.desc)
+	t.name = ix.name
 	t.type = ix.type
 	return t
 end
-function Tx:save_table_schema(schema)
+function Db:save_table_schema(schema)
 	--NOTE: only saving enough information to read the data back in absence of
 	--a paper schema, and to validate a paper schema against the used layout.
 	local t = {
@@ -564,20 +578,17 @@ function Tx:save_table_schema(schema)
 		end
 	end
 	if schema.indexes then
-		t.indexes = {}
-		for _,ix in ipairs(schema.indexes) do
-			add(t.indexes, save_index_def(ix))
-		end
+		t.indexes = imap(schema.indexes, save_index_def)
 	end
 	local k = schema.name
 	local v = pp(t, false)
-	self:put_raw('$schema',
+	assert(self:try_put_raw('$schema',
 		cast(u8p, k), #k,
 		cast(u8p, v), #v
-	)
+	))
 end
 
-function Tx:load_table_schema(table_name)
+function Db:load_table_schema(table_name)
 	if table_name == '$schema' then return end
 	if not self:table_exists'$schema' then return end
 	local k = table_name
@@ -601,167 +612,169 @@ function Tx:load_table_schema(table_name)
 	return schema
 end
 
-function Tx:try_drop_table_schema(table_name)
+function Db:try_drop_table_schema(table_name)
 	return self:try_del_raw('$schema', cast(u8p, table_name), #table_name)
 end
 
-function Tx:try_open_table(tab, mode, flags, schema)
+local function cmp_lists(pt, st, errs, ...)
+	if #pt ~= #st then
+		add(errs, fmt('%s count differs: expected: %d, got: %d', fmt(...), #pt, #st))
+	end
+	return min(#pt, #st)
+end
+local function cmp_keys(pt, st, keys, errs, ...)
+	for _,k in ipairs(keys) do
+		local pv = pt[k]
+		local sv = st[k]
+		if pv ~= sv then
+			add(errs, fmt('%s.%s mismatch: expected: %s, got: %s', fmt(...), k, pv, sv))
+		end
+	end
+end
+
+local try_open_table = Db.try_open_table
+function Db:try_open_table(tab, mode, flags, paper_schema)
 
 	if not tab then --opening the unnamed root table
-		return try_raw_open_table(self, mode, flags)
+		return try_open_table(self, mode, flags)
 	end
 
-	local dbi = self.db.open_tables[tab]
+	local dbi = self.dbis[tab]
 	if dbi then return dbi end
 
 	local table_name = tab
-	if not schema then
-		local db_schema = self.db.schema
+	if not paper_schema then
+		local db_schema = self.schema
 		local tables = db_schema and db_schema.tables
-		schema = tables and tables[table_name]
+		paper_schema = tables and tables[table_name]
 	end
 
 	local stored_schema = self:load_table_schema(table_name)
-	if stored_schema and not schema then
+	if stored_schema and not paper_schema then
 		if mode == 'c' then
 			--old table with stored schema, but now we're creating one without.
 			self:try_drop_table_schema(table_name)
 			stored_schema = nil
 		else
 			--old table for which paper schema was lost, use stored schema.
-			schema = stored_schema
+			paper_schema = stored_schema
 		end
 	end
 
-	if schema then
-		schema.name = table_name
-		self:compile_table_schema(schema)
+	if paper_schema then
+		paper_schema.name = table_name
+		self:compile_table_schema(paper_schema)
 	end
 
-	if stored_schema and schema and schema ~= stored_schema then
-		--table has stored schema, schemas must match.
+	if stored_schema and paper_schema and paper_schema ~= stored_schema then
+		--table has both stored schema and paper schema, schemas must match.
 		local errs = {}
-		for _,k in ipairs{
+
+		--compare table attributes
+		cmp_keys(paper_schema, stored_schema, {
 			'dyn_offset_size', 'int_key', 'is_index', 'val_table',
-		} do
-			local pv =  schema[k]
-			local sv = stored_schema[k]
-			if pv ~= sv then
-				add(errs, fmt(' %s mismatch: expected: %s, got: %s', k, pv, sv))
-			end
-		end
+		}, errs, '%s', table_name)
+
+		--compare key_fields and val_fields lists
 		for i=1,2 do
 			local F = i == 1 and 'key_fields' or 'val_fields'
-			local pfields =  schema[F]
+			local pfields =  paper_schema[F]
 			local sfields = stored_schema[F]
-			if #pfields ~= #sfields then
-				add(errs, fmt(' %s count differs: expected: %d, got: %d',
-					F, #pfields, #sfields))
-			end
-			for i = 1, min(#pfields, #sfields) do
+			local n = cmp_lists(pfields, sfields, errs, '%s.%s', table_name, F)
+			for i = 1, n do
 				local pf = pfields[i]
 				local sf = sfields[i]
-				for _,k in ipairs{
+				cmp_keys(pf, sf, {
 					'col', 'col_pos', 'mdbx_type', 'maxlen', 'padded', 'not_null',
 					'elem_size', 'descending', 'mdbx_collation',
 					'fixed_offset', 'offset',
-				} do
-					local pv = pf[k]
-					local sv = sf[k]
-					if pv ~= sv then
-						add(errs, fmt(' %s[%d].%s mismatch: expected: %s, got: %s',
-							F, i, k, pv, sv))
+				}, errs, '%s.%s[%d]', table_name, F, i)
+			end
+		end
+
+		--compare index lists
+		local pixs =  paper_schema.indexes or empty
+		local sixs = stored_schema.indexes or empty
+		local n = cmp_lists(pixs, sixs, errs, '%s.%s', table_name, 'indexes')
+		for i = 1, n do
+			local pix = pixs[i]
+			local six = sixs[i]
+			--compare index attributes
+			cmp_keys(pix, six, {
+				'name', 'type',
+			}, errs, '%s.%s[%d]', table_name, indexes, i)
+			--compare index fields lists and desc field lists
+			for j=1,2 do
+				local pix = j == 1 and pix or pix.desc or empty
+				local six = j == 1 and six or six.desc or empty
+				local desc_suffix = j == 1 and '' or '.desc'
+				local n = cmp_lists(pix, six, errs, '%s.%s[%d]%s',
+					table_name, 'indexes', i, desc_suffix)
+				for j = 1, n do
+					local pcol = pix[j]
+					local scol = six[j]
+					if pcol ~= scol then
+						add(errs, fmt('%s.%s[%d]%s[%d] mismatch: expected: %s, got: %s',
+							table_name, 'indexes', i, desc_suffix, j, pcol, scol))
 					end
 				end
 			end
 		end
+
 		if #errs > 0 then
-			error(fmt('schema mismatch for table: `%s`:\n%s',
-				table_name, cat(errs, '\n')))
+			error(fmt('schema mismatch for table: %s:\n\t%s',
+				table_name, cat(errs, '\n\t')))
 		end
 	end
 
-	local in_sub = (mode == 'w' or mode == 'c') and schema
-		and schema and (schema.is_index or schema.uks or schema.ixs)
-	if in_sub then
-		self = self:txw()
-	end
+	local schema = paper_schema
 
 	flags = bor(flags or 0,
 		schema and schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
-	local dbi, created = try_raw_open_table(self, table_name, mode, flags)
+	local dbi, created = try_open_table(self, table_name, mode, flags)
 	if not dbi then
-		if in_sub then self:abort() end
 		return nil, created
 	end
 
 	if schema then
-
 		if created and not stored_schema then
 			self:save_table_schema(schema)
 		end
-
-		if schema.uks or schema.ixs then
-			schema.indexes = {}
-			if schema.uks then
-				for uk_name, uk in pairs(schema.uks) do
-					add(schema.indexes, uk)
-				end
-			end
-			if schema.ixs then
-				for ix_name, ix in pairs(schema.ixs) do
-					add(schema.indexes, ix)
-				end
-			end
-			sort(schema.indexes, function(ix1, ix2)
-				return ix1.name < ix2.name
-			end)
+		if schema.indexes then
 			for _,ix in ipairs(schema.indexes) do
-				local ix_t, err = self:try_open_index(table_name, ix.name, mode)
-				if not ix_t then
-					if in_sub then self:abort() end
+				local ix_schema = self:index_schema(tbl_name, ix)
+				local dbi, err = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
+				if not dbi then
 					return nil, err
 				end
+				self.schema.tables[ix_schema.name] = ix_schema
 			end
 		end
-
-		if created and schema.is_index then
-			local ok, err = schema:try_create(self)
-			if not ok then
-				if in_sub then self:abort() end
-				return nil, err
-			end
-		end
-
-	end
-
-	if in_sub then
-		self:commit()
 	end
 
 	return dbi, created
 end
 
-local tx_dbi = Tx.dbi
-function Tx:dbi(tab, mode)
-	local dbi, err = tx_dbi(self, tab, mode)
+local db_dbi = Db.dbi
+function Db:dbi(tab, mode)
+	local dbi, err = db_dbi(self, tab, mode)
 	if not dbi then return nil, err end
-	local name = self.db.open_tables[dbi]
-	local schema = self.db.schema.tables[name]
+	local name = self.dbis[dbi]
+	local schema = self.schema.tables[name]
 	return dbi, schema, name
 end
-function Tx:dbi_schema(tab, mode)
+function Db:dbi_schema(tab, mode)
 	local dbi, schema, name = self:dbi(tab, mode)
 	if dbi then assertf(schema, 'no schema for table: %s', name) end
 	return dbi, schema
 end
 
-local raw_try_drop_table = Tx.try_drop_table
-function Tx:try_drop_table(tab)
+local try_drop_table = Db.try_drop_table
+function Db:try_drop_table(tab)
 	local dbi, schema, name = self:dbi(tab)
 	if not dbi then return nil, schema end
 	assert(name)
-	assert(raw_try_drop_table(self, dbi))
+	assert(try_drop_table(self, dbi))
 	self:try_drop_table_schema(name)
 	if schema.indexes then
 		while #schema.indexes > 0 do
@@ -776,11 +789,11 @@ function Tx:try_drop_table(tab)
 	return true
 end
 
-local try_rename_table = Tx.try_rename_table
-function Tx:try_rename_table(tab, new_table_name)
+local try_rename_table = Db.try_rename_table
+function Db:try_rename_table(tab, new_table_name)
 	local dbi, schema = self:dbi(tab)
 	if not dbi then return nil, schema end
-	self = self:txw()
+	self:begin'w'
 	local ok, err = try_rename_table(self, dbi, new_table_name)
 	if not ok then
 		self:abort()
@@ -808,8 +821,8 @@ local ix1_key_rec_buffer = buffer()
 local ix2_key_rec_buffer = buffer()
 local ix_val_rec_buffer = buffer()
 
-function Tx:index_schema(val_table, cols)
-	local val_schema = assert(self.db.schema.tables[val_table])
+function Db:index_schema(val_table, cols)
+	local val_schema = assert(self.schema.tables[val_table])
 	local ix_tbl_name = val_table..'/'..cat(cols, '-')
 	local ix_fields = {}
 	for _,col in ipairs(cols) do
@@ -826,13 +839,13 @@ function Tx:index_schema(val_table, cols)
 	return ix_schema
 end
 
-function Tx:compile_index_schema(ix_schema)
+function Db:compile_index_schema(ix_schema)
 
 	assert(ix_schema.is_index)
 	local ix_tbl_name = ix_schema.name
 
 	local val_table = assert(ix_schema.val_table)
-	local val_schema = assert(self.db.schema.tables[val_table])
+	local val_schema = assert(self.schema.tables[val_table])
 
 	local cols = cols_list(cat(ix_schema.pk, ' '))
 	local dt = {}
@@ -840,7 +853,7 @@ function Tx:compile_index_schema(ix_schema)
 	--create index methods
 
 	function ix_schema:try_create(self)
-		local self = self:txw()
+		self:begin'w'
 		local ix_dbi = self:dbi(ix_tbl_name, 'c')
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 		local xv, xv_buf_sz = ix_val_rec_buffer(val_schema.key_fields.max_rec_size)
@@ -898,7 +911,11 @@ function Tx:compile_index_schema(ix_schema)
 			self:must_del_raw(ix_dbi, xk0, xk0_sz)
 		end
 
-		return self:try_insert_raw(ix_dbi, xk, xk_sz, k, k_sz)
+		trace()
+		pr('INS1', str(xk, xk_sz))
+		local ret, err = self:try_insert_raw(ix_dbi, xk, xk_sz, k, k_sz)
+		pr('INS2')
+		return ret, err
 	end
 
 	function ix_schema:del(self, k, k_sz)
@@ -907,37 +924,26 @@ function Tx:compile_index_schema(ix_schema)
 
 	function ix_schema:drop(self)
 		self:drop_table(self.name)
-		self.db.schema.tables[self.name] = nil
+		self.schema.tables[self.name] = nil
 		assert(remove_value(val_schema.indexes, ix_schema))
 	end
 
-	--add index to table schema to be auto-updated on put and del.
-	local indexes = attr(val_schema, 'indexes')
-	add(indexes, ix_schema)
-	indexes[ix_tbl_name] = ix_schema
-
 end
 
-function Tx:try_open_index(tbl_name, cols, mode)
+function Db:try_create_index(tbl_name, cols)
 	local ix_schema = self:index_schema(tbl_name, cols)
-	local schema_tables = self.db.schema.tables
-	local dbi, created = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
-	if dbi then
-		schema_tables[ix_schema.name] = ix_schema
-	end
-	return dbi, created
+	local ok, err = ix_schema:try_create(self)
+	if not ok then return nil, err end
+	self.schema.tables[ix_schema.name] = ix_schema
+	return ix_dbi
 end
 
-function Tx:try_create_index(tbl_name, cols)
-	return self:try_open_index(tbl_name, cols, 'c')
-end
-
-function Tx:create_index(tbl_name, cols)
+function Db:create_index(tbl_name, cols)
 	assert(self:try_create_index(tbl_name, cols))
 end
 
-function Tx:try_drop_index(ix_tbl_name)
-	local ix_schema = self.db.schema.tables[ix_tbl_name]
+function Db:try_drop_index(ix_tbl_name)
+	local ix_schema = self.schema.tables[ix_tbl_name]
 	if not ix_schema then return nil, 'not_found' end
 	if not ix_schema.is_index then return nil, 'not_index' end
 	local ok, err = ix_schema:drop(self)
@@ -1131,7 +1137,7 @@ end
 
 --CRUD -----------------------------------------------------------------------
 
-function Tx:is_null(tab, col, ...) --returns is_null, [reason]
+function Db:is_null(tab, col, ...) --returns is_null, [reason]
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return true, schema end
 	local f, vi = val_field(schema, col)
@@ -1140,7 +1146,7 @@ function Tx:is_null(tab, col, ...) --returns is_null, [reason]
 	return C.schema_val_is_null(schema._st, vi-1, v, v_sz) ~= 0
 end
 
-function Tx:exists(tab, ...) --returns record_exists, table_exists
+function Db:exists(tab, ...) --returns record_exists, table_exists
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return false, false end
 	local v = get_raw_by_pk(self, dbi, schema, ...)
@@ -1148,7 +1154,7 @@ function Tx:exists(tab, ...) --returns record_exists, table_exists
 	return true, true
 end
 
-function Tx:try_get(tab, cols, ...)
+function Db:try_get(tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return false, schema end
 	local v, v_sz = get_raw_by_pk(self, dbi, schema, ...)
@@ -1197,7 +1203,7 @@ local function try_put(self, flags, op, tab, cols, ...)
 	local ret, err
 	if op == 'update' or op == 'upsert' or schema.fks or schema.indexes then
 		local cur = self:cursor(dbi, 'w')
-		local v0, v0_sz = cur:get_raw(k, k_sz)
+		local v0, v0_sz = cur:find_raw(k, k_sz)
 		local v_sz
 		if v0 then
 			if op == 'insert' then
@@ -1251,7 +1257,7 @@ local function try_put(self, flags, op, tab, cols, ...)
 			if not ret then return nil, err end
 		end
 		if schema.indexes then
-			local self = self:txw()
+			self:begin'w'
 			for _,ix in ipairs(schema.indexes) do
 				local ok, err = ix:update(self, k, k_sz, v, v_sz, v0, v0_sz)
 				if not ok then
@@ -1269,37 +1275,37 @@ local function try_put(self, flags, op, tab, cols, ...)
 	log('note', 'db', op, '%s %s', schema.name, cols[S])
 	return true, autoinc_v
 end
-function Tx:try_put(tab, ...)
+function Db:try_put(tab, ...)
 	return try_put(self, nil, 'put', tab, ...)
 end
-function Tx:put(tab, ...)
+function Db:put(tab, ...)
 	local ret, err = try_put(self, nil, 'put', tab, ...)
 	if ret then return ret end
 	check('db', 'put', ret, '%s: %s', self:table_name(tab), err)
 end
-function Tx:try_insert(tab, ...)
+function Db:try_insert(tab, ...)
 	return try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', tab, ...)
 end
-function Tx:insert(tab, ...)
+function Db:insert(tab, ...)
 	local ret, err = try_put(self, mdbx.MDBX_NOOVERWRITE, 'insert', tab, ...)
 	if ret then return ret end
 	check('db', 'insert', false, '%s: %s', self:table_name(tab), err)
 end
-function Tx:try_update(tab, ...)
+function Db:try_update(tab, ...)
 	return try_put(self, mdbx.MDBX_CURRENT, 'update', tab, ...)
 end
-function Tx:update(tab, ...)
+function Db:update(tab, ...)
 	local ret, err = try_put(self, mdbx.MDBX_CURRENT, 'update', tab, ...)
 	if ret then return ret end
 	check('db', 'update', false, '%s: %s', self:table_name(tab), err)
 end
-function Tx:upsert(tab, ...)
+function Db:upsert(tab, ...)
 	local ret, err = try_put(self, nil, 'upsert', tab, ...)
 	if ret then return ret end
 	check('db', 'upsert', false, '%s: %s', self:table_name(tab), err)
 end
 
-function Tx:try_del(tab, ...)
+function Db:try_del(tab, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return nil, schema end
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
@@ -1313,13 +1319,13 @@ function Tx:try_del(tab, ...)
 	end
 	return true
 end
-function Tx:del(tab, ...)
+function Db:del(tab, ...)
 	local ok, err = self:try_del(tab, ...)
 	if ok then return end
 	check('db', 'del', false, '%s: %s', self:table_name(tab), err)
 end
 
-function Tx:del_exact(tab, cols, ...)
+function Db:del_exact(tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab)
 	if not dbi then return nil, schema end
 	local cols, as = cols_list(cols)
@@ -1337,13 +1343,13 @@ function Tx:del_exact(tab, cols, ...)
 	end
 	return true
 end
-function Tx:must_del_exact(tab, ...)
+function Db:must_del_exact(tab, ...)
 	local ok, err = self:del_exact(tab, ...)
 	if ok then return end
 	check('db', 'del_exact', false, '%s: %s', self:table_name(tab), err)
 end
 
-function Tx:put_records(tab, cols, records)
+function Db:put_records(tab, cols, records)
 	if istab(cols) then
 		cols, records = '[]', cols
 	end
@@ -1370,20 +1376,18 @@ local function must_ok(ok, ...)
 	return ...
 end
 
-function Tx:get(...)
+function Db:get(...)
 	return skip_ok(self:try_get(...))
 end
-function Tx:must_get(...)
+function Db:must_get(...)
 	return must_ok(self:try_get(...))
 end
 
-local raw_cursor = Tx.cursor
-function Tx:cursor(tab, mode)
-	local dbi, schema = self:dbi(tab)
-	if not dbi then return nil, 'not_found' end
-	local cur = raw_cursor(self, dbi)
-	cur.schema = schema
-	cur._cols = nil
+local db_cursor = Db.cursor
+function Db:cursor(tab, mode)
+	local cur = db_cursor(self, tab, mode)
+	local table_name = self:table_name(tab)
+	cur.schema = self.schema.tables[table_name]
 	return cur
 end
 
@@ -1398,11 +1402,12 @@ local function decode_kv(schema, k, k_sz, v, v_sz, t, val_cols, as)
 	end
 end
 function Cur:_try_get(val_cols, flags)
-	local k, k_sz, v, v_sz = self:_get_raw(flags)
+	local k, k_sz, v, v_sz = self.c:get(flags)
 	if not k then return end
 	local val_cols, as = cols_list(val_cols)
-	val_cols = val_cols or self.schema.val_cols
-	return decode_kv(self.schema, k, k_sz, v, v_sz, t or {}, val_cols, as)
+	local schema = self.schema
+	val_cols = val_cols or schema.val_cols
+	return decode_kv(schema, k, k_sz, v, v_sz, t or {}, val_cols, as)
 end
 function Cur:try_current(val_cols)
 	return self:_try_get(val_cols, mdbx.MDBX_GET_CURRENT)
@@ -1417,14 +1422,15 @@ function Cur:next(val_cols)
 	return skip_ok(self:_try_get(val_cols, mdbx.MDBX_NEXT))
 end
 function Cur:try_get(val_cols, ...)
+	local schema = self.schema
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
-	local k_sz = encode_key(self, schema, nil, k, k_buf_sz, self.schema.key_cols, nil, ...)
+	local k_sz = encode_key(self, schema, nil, k, k_buf_sz, schema.key_cols, nil, ...)
 	local v, v_sz = self:get_raw(k, k_sz)
 	if not v then return end
 	local t, val_cols, as = self._t, self._val_cols, self._as
 	if not t then t, val_cols, as = {}, cols_list(val_cols) end
-	val_cols = val_cols or self.schema.val_cols
-	return decode_kv(self.schema, k, k_sz, v, v_sz, t, val_cols, as)
+	val_cols = val_cols or schema.val_cols
+	return decode_kv(schema, k, k_sz, v, v_sz, t, val_cols, as)
 end
 function Cur:get(...)
 	return skip_ok(self:try_get(...))
@@ -1451,13 +1457,13 @@ local function each_next_skip_ok(self, ok, ...)
 	return self, ...
 end
 local function each_next(self)
-	local k, k_sz, v, v_sz = self:_get_raw(mdbx.MDBX_NEXT)
+	local k, k_sz, v, v_sz = self:get_raw(mdbx.MDBX_NEXT)
 	if not k then return end
 	local t, val_cols, as = self._t, self._val_cols, self._as
 	return each_next_skip_ok(self,
 		decode_kv(self.schema, k, k_sz, v, v_sz, t or {}, val_cols, as))
 end
-function Tx:each(tbl_name, val_cols, mode, t)
+function Db:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
 	cur._each = true
 	local val_cols, as = cols_list(val_cols)
@@ -1493,7 +1499,7 @@ function Db:schema_diff()
 	return self.schema:diff(ss)
 end
 
-function Tx:create_fk(fk)
+function Db:create_fk(fk)
 	local dbi, schema = self:dbi_schema(fk.ref_table)
 	add(attr(schema, 'fks'), fk)
 	--self.db:on(fk.table, 'put', function()
@@ -1513,19 +1519,19 @@ function Tx:create_fk(fk)
 
 		end
 	end
-	self.db:on(fk.ref_table, 'del', fk_del)
+	self:on(fk.ref_table, 'del', fk_del)
 end
 
-function Tx:drop_fk(fk)
+function Db:drop_fk(fk)
 
 end
 
 function Db:sync_schema(src, opt)
-	local tx = self:txw()
-	for tbl in tx:each_table() do
-		tx:drop_table(tbl)
+	self:begin'w'
+	for tbl in self:each_table() do
+		self:drop_table(tbl)
 	end
-	tx:commit()
+	self:commit()
 	opt = opt or empty
 	local src_sc =
 		schema.isschema(src) and src
@@ -1538,28 +1544,27 @@ function Db:sync_schema(src, opt)
 	local function P(...)
 		pr(fmt(...))
 	end
-	self:atomic(dry and 'r' or 'w', function(tx)
+	self:atomic(dry and 'r' or 'w', function()
 		if diff.tables then
 			if diff.tables.add then
 				for tbl_name, tbl in sortedpairs(diff.tables.add) do
 					P('create table: %s', tbl_name)
-					tx:create_table(tbl_name)
+					self:create_table(tbl_name)
 					if tbl.rows then
 						for _,row in ipairs(tbl.rows) do
-							assert(not tx.readonly)
-							tx:insert(tbl_name, '[]', row)
+							self:insert(tbl_name, '[]', row)
 						end
 					end
 					if tbl.indexes then
 						for ix_name, ix in pairs(tbl.indexes) do
 							P('create index: %s', ix_name)
-							tx:create_index(tbl_name, ix)
+							self:create_index(tbl_name, ix)
 						end
 					end
 					if tbl.fks then
 						for fk_name, fk in pairs(tbl.fks) do
 							P('create fk: %s', fk_name)
-							tx:create_fk(fk)
+							self:create_fk(fk)
 						end
 					end
 				end
@@ -1575,7 +1580,7 @@ function Db:sync_schema(src, opt)
 						if tbl.indexes.add then
 							for ix_name, ix in pairs(tbl.indexes.add) do
 								P('create ix: %s', ix_name)
-								tx:create_index(tbl_name, ix)
+								self:create_index(tbl_name, ix)
 							end
 						end
 					end
