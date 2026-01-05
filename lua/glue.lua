@@ -66,6 +66,7 @@ ARRAYS
 	indexof(v, t, [i], [j]) -> i   scan array for value
 	cmp'KEY1[>] ...' -> f          create a cmp function for sort and binsearch
 	binsearch(v, t, [cmp], [i], [j]) -> i    bin search in sorted array
+	binsearch_insert(v, t, [cmp]) -> t       order-preserving insert in sorted array
 	sortedarray([sa]) -> sa        stay-sorted array with fast search
 	  sa:find(v) -> i|nil          find value in O(logN)
 	  sa:add(v)                    add value in O(N+logN)
@@ -507,6 +508,12 @@ function binsearch(v, t, cmp, lo, hi)
 		end
 	end
 	return lo
+end
+
+function binsearch_insert(v, t, cmp)
+	local i = binsearch(v, t, cmd) or #t + 1
+	insert(t, i, v)
+	return i
 end
 
 --array that stays sorted with search in O(logN) and add/remove in O(N+logN).
