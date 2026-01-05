@@ -1,7 +1,7 @@
 --go@ plink -t root@m1 sdk/bin/debian12/luajit sdk/tests/mdbx_schema_test.lua
 
-
 require'mdbx_schema'
+logging.debug = true
 
 pr('libmdbx.so vesion: ',
 	mdbx.mdbx_version.major..'.'..
@@ -214,40 +214,37 @@ function test_uks()
 
 	--test fail to create uk on account of duplicates
 	db:begin'w'
-	local ok, err = db:try_create_index('test_uk', {'u1', 'u2'})
+	local ok, err = db:try_create_index('test_uk', {'u1', 'u2', is_unique = true})
 	local ix_tbl = 'test_uk/u1-u2'
 	assert(not ok)
 	assert(tostring(err):has'exists')
-	db:abort()
+	db:commit()
 
 	db:begin()
 	assert(not db:table_exists(ix_tbl))
 	assert(not db.schema.tables[ix_tbl])
-	db:abort()
+	db:commit()
 
 	--remove duplicate and try again.
 	db:begin'w'
-	--for _, k1, k2 in db:each'test_uk' do
-	--	pr(k1, k2)
-	--end
-	--for t in db:each_table() do
-	--	pr(t)
-	--end
 	assert(not db:table_exists(ix_tbl))
 	assert(not db:try_open_table(ix_tbl))
 	db:del('test_uk', 'k3', 'k1')
-	db:create_index('test_uk', {'u1', 'u2'})
+	db:create_index('test_uk', {'u1', 'u2', is_unique = true})
 	assert(db:table_exists(ix_tbl))
 	--now try to insert a duplicate again, this time it should fail.
 	db:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u1', 'f4')
-	--db:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u2', 'f5')
-	--db:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
-	--local ok = db:try_insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
-	--assert(not ok)
-	db:abort()
+	db:insert('test_uk', nil, 'k4', 'k2', 'u3', 'u2', 'f5')
+	db:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
+	local ok = db:try_insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
+	assert(not ok)
+	db:commit()
 
 	db:begin()
-	local t = db:must_get('test_uk/u1-u2', '{}', 'u1', 'u1')
+	for _,u1,u2 in assert(db:each(ix_tbl)) do
+		pr(u1, u2)
+	end
+	local t = db:must_get(ix_tbl, '{}', 'u1', 'u1')
 	assert(t.k1 == 'k1')
 	assert(t.k2 == 'k1')
 	assert(t.u1 == 'u1')

@@ -226,7 +226,7 @@ function Db:layout_table_schema(schema)
 			schema.autoinc_field = f
 		end
 	end
-	assert(#key_fields > 0, 'table has no pk: %s', table_name)
+	assertf(#key_fields > 0, 'table has no pk: %s', table_name)
 
 	--build val fields array with all fields that are not in pk.
 	for i,f in ipairs(schema.fields) do
@@ -347,6 +347,7 @@ function Db:layout_table_schema(schema)
 		schema.indexes = {}
 		if schema.uks then
 			for uk_name, uk in pairs(schema.uks) do
+				assert(uk.is_unique)
 				add(schema.indexes, uk)
 			end
 		end
@@ -537,14 +538,15 @@ function Db:compile_table_schema(schema)
 
 end
 
-local function save_index_def(ix)
-	local t = extend({}, ix)
-	t.desc = ix.desc and extend({}, ix.desc)
-	t.name = ix.name
-	t.type = ix.type
-	return t
+local function save_index(ix)
+	return extend({
+		desc = ix.desc and extend({}, ix.desc),
+		name = ix.name,
+		is_unique = ix.is_unique,
+	}, ix)
 end
 function Db:save_table_schema(schema)
+	assert(schema.layouted)
 	--NOTE: only saving enough information to read the data back in absence of
 	--a paper schema, and to validate a paper schema against the used layout.
 	local t = {
@@ -578,7 +580,7 @@ function Db:save_table_schema(schema)
 		end
 	end
 	if schema.indexes then
-		t.indexes = imap(schema.indexes, save_index_def)
+		t.indexes = imap(schema.indexes, save_index)
 	end
 	local k = schema.name
 	local v = pp(t, false)
@@ -667,6 +669,7 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 	end
 
 	if stored_schema and paper_schema and paper_schema ~= stored_schema then
+
 		--table has both stored schema and paper schema, schemas must match.
 		local errs = {}
 
@@ -699,10 +702,12 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 		for i = 1, n do
 			local pix = pixs[i]
 			local six = sixs[i]
+
 			--compare index attributes
 			cmp_keys(pix, six, {
-				'name', 'type',
+				'name', 'is_unique',
 			}, errs, '%s.%s[%d]', table_name, indexes, i)
+
 			--compare index fields lists and desc field lists
 			for j=1,2 do
 				local pix = j == 1 and pix or pix.desc or empty
@@ -742,7 +747,7 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 		end
 		if schema.indexes then
 			for _,ix in ipairs(schema.indexes) do
-				local ix_schema = self:index_schema(tbl_name, ix)
+				local ix_schema = self:index_schema(table_name, ix)
 				local dbi, err = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
 				if not dbi then
 					return nil, err
@@ -826,7 +831,12 @@ function Db:index_schema(val_table, cols)
 	local ix_tbl_name = val_table..'/'..cat(cols, '-')
 	local ix_fields = {}
 	for _,col in ipairs(cols) do
-		local f = update({}, val_schema.fields[col])
+		local f = assert(val_schema.fields[col])
+		local f = {
+			col = f.col,
+			mdbx_type = f.mdbx_type,
+			maxlen = f.maxlen,
+		}
 		add(ix_fields, f)
 	end
 	local ix_schema = {
@@ -852,7 +862,17 @@ function Db:compile_index_schema(ix_schema)
 
 	--create index methods
 
-	function ix_schema:try_create(self)
+	function ix_schema.try_create(ix_schema, self)
+
+		local indexes = attr(val_schema, 'indexes')
+		local ix_i = binsearch(ix_tbl_name, indexes, function(indexes, i, name)
+			return indexes[i].name < name
+		end)
+		if ix_i and indexes[ix_i].name == ix_tbl_name then
+			return nil, 'exists'
+		end
+		ix_i = ix_i or #indexes + 1
+
 		self:begin'w'
 		local ix_dbi = self:dbi(ix_tbl_name, 'c')
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
@@ -869,11 +889,15 @@ function Db:compile_index_schema(ix_schema)
 			end
 		end
 		self:commit()
+
+		insert(indexes, ix_i, ix_schema.pk)
+		self:save_table_schema(val_schema)
+
 		return true
 	end
 
 	local dt0 = {}
-	function ix_schema:update(self, k, k_sz, v, v_sz, v0, v0_sz)
+	function ix_schema.update(ix_schema, self, k, k_sz, v, v_sz, v0, v0_sz)
 
 		local ix_dbi = self:dbi(ix_tbl_name, 'w')
 
@@ -911,31 +935,30 @@ function Db:compile_index_schema(ix_schema)
 			self:must_del_raw(ix_dbi, xk0, xk0_sz)
 		end
 
-		trace()
-		pr('INS1', str(xk, xk_sz))
 		local ret, err = self:try_insert_raw(ix_dbi, xk, xk_sz, k, k_sz)
-		pr('INS2')
 		return ret, err
 	end
 
-	function ix_schema:del(self, k, k_sz)
+	function ix_schema.del(ix_schema, self, k, k_sz)
 		--
 	end
 
-	function ix_schema:drop(self)
+	function ix_schema.drop(ix_schema, self)
 		self:drop_table(self.name)
 		self.schema.tables[self.name] = nil
 		assert(remove_value(val_schema.indexes, ix_schema))
+		self:save_table_schema(val_schema)
 	end
 
 end
 
 function Db:try_create_index(tbl_name, cols)
 	local ix_schema = self:index_schema(tbl_name, cols)
+	self:compile_table_schema(ix_schema)
 	local ok, err = ix_schema:try_create(self)
 	if not ok then return nil, err end
 	self.schema.tables[ix_schema.name] = ix_schema
-	return ix_dbi
+	return true
 end
 
 function Db:create_index(tbl_name, cols)
@@ -1385,7 +1408,8 @@ end
 
 local db_cursor = Db.cursor
 function Db:cursor(tab, mode)
-	local cur = db_cursor(self, tab, mode)
+	local cur, err = db_cursor(self, tab, mode)
+	if not cur then return nil, err end
 	local table_name = self:table_name(tab)
 	cur.schema = self.schema.tables[table_name]
 	return cur
@@ -1465,6 +1489,7 @@ local function each_next(self)
 end
 function Db:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
+	if not cur then return noop end
 	cur._each = true
 	local val_cols, as = cols_list(val_cols)
 	val_cols = val_cols or cur.schema.val_cols
