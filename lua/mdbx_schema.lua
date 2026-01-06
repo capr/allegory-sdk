@@ -49,14 +49,15 @@ API, extends mdbx.lua MANAGED API
 
 
 TODO:
-	- reverse cursor
-	- mdbx_env_chk()
+	- signal data truncation on CRUD ops
+	- allow \0 and null in key cols -- big problem: wasting half of max key size!
+		- but allows indexing on nullable cols.
 	- range lookup cursor
+	- mdbx_env_chk()
 	- table migration:
 		- copy all records to tmp table, delete old table, rename tmp table.
 			- copy existing fields by name, use aka mapping to find old field.
 				- copy using raw pointers into decoded values and encoded values.
-	-
 
 ]]
 
@@ -211,6 +212,7 @@ function Db:layout_table_schema(schema)
 	for i,col in ipairs(schema.pk) do
 		local f = assertf(schema.fields[col],
 			'pk col unknown: `%s` for table: %s', col, table_name)
+		assertf(f.not_null, 'pk col must be not_null: %s.%s', table_name, col)
 		add(key_fields, f)
 		f.key_index = #key_fields
 		if schema.pk.desc then
@@ -342,22 +344,22 @@ function Db:layout_table_schema(schema)
 
 	end
 
-	--compute a stable list of indexes associated with the table.
-	if schema.uks or schema.ixs then
-		schema.indexes = {}
-		if schema.uks then
-			for uk_name, uk in pairs(schema.uks) do
-				assert(uk.is_unique)
-				add(schema.indexes, uk)
+	--create and layout index table schemas.
+	for i=1,2 do
+		local ixs = i == 1 and schema.uks or schema.ixs
+		if ixs then
+			local ix_schemas = attr(schema, 'index_schemas')
+			for _,ix in pairs(ixs) do
+				local ix_schema = self:index_schema(table_name, ix)
+				self:layout_table_schema(ix_schema)
+				add(ix_schemas, ix_schema)
 			end
 		end
-		if schema.ixs then
-			for ix_name, ix in pairs(schema.ixs) do
-				add(schema.indexes, ix)
-			end
-		end
-		sort(schema.indexes, function(ix1, ix2)
-			return ix1.name < ix2.name
+	end
+	--make the list of index schemas stable.
+	if schema.index_schemas then
+		sort(schema.index_schemas, function(ix_schema1, ix_schema2)
+			return ix_schema1.name < ix_schema2.name
 		end)
 	end
 
@@ -555,6 +557,7 @@ function Db:save_table_schema(schema)
 		int_key = schema.int_key,
 		key_fields = {max_rec_size = schema.key_fields.max_rec_size},
 		val_fields = {max_rec_size = schema.val_fields.max_rec_size},
+		dup_keys = schema.dup_keys,
 		is_index = schema.is_index,
 		val_table = schema.val_table,
 	}
@@ -569,7 +572,7 @@ function Db:save_table_schema(schema)
 				mdbx_type = f.mdbx_type,
 				maxlen = f.maxlen,
 				padded = f.padded,
-				not_null = is_val and f.not_null or nil,
+				not_null = f.not_null,
 				--computed attributes
 				elem_size = f.elem_size, --for validating custom types in the future.
 				descending = f.descending,
@@ -579,22 +582,22 @@ function Db:save_table_schema(schema)
 			}
 		end
 	end
-	if schema.indexes then
-		t.indexes = imap(schema.indexes, save_index)
+	if schema.index_schemas then
+		t.index_tables = {}
+		for i, ix_schema in ipairs(schema.index_schemas) do
+			schema.index_tables[i] = ix_schema.name
+		end
 	end
 	local k = schema.name
 	local v = pp(t, false)
-	assert(self:try_put_raw('$schema',
-		cast(u8p, k), #k,
-		cast(u8p, v), #v
-	))
+	assert(self:try_put_raw('$schema', k, #k, v, #v))
 end
 
 function Db:load_table_schema(table_name)
 	if table_name == '$schema' then return end
 	if not self:table_exists'$schema' then return end
 	local k = table_name
-	local v, v_len = self:get_raw('$schema', cast(u8p, k), #k)
+	local v, v_len = self:get_raw('$schema', k, #k)
 	if not v then return end
 	local schema = eval(str(v, v_len))
 	--reconstruct schema from stored table schema.
@@ -611,14 +614,21 @@ function Db:load_table_schema(table_name)
 	schema.pk = imap(schema.key_fields, 'col')
 	schema.pk.desc = imap(schema.key_fields, 'descending')
 	schema.layouted = true --layouted but not compiled
+	if schema.index_tables then
+		schema.index_schemas = {}
+		for i, ix_table_name in ipairs(schema.index_tables) do
+			schema.index_schemas[i] = self:load_table_schema(ix_table_name)
+		end
+		schema.index_tables = nil
+	end
 	return schema
 end
 
 function Db:try_drop_table_schema(table_name)
-	return self:try_del_raw('$schema', cast(u8p, table_name), #table_name)
+	return self:try_del_raw('$schema', table_name, #table_name)
 end
 
-local function cmp_lists(pt, st, errs, ...)
+local function cmp_lengths(pt, st, errs, ...)
 	if #pt ~= #st then
 		add(errs, fmt('%s count differs: expected: %d, got: %d', fmt(...), #pt, #st))
 	end
@@ -630,6 +640,31 @@ local function cmp_keys(pt, st, keys, errs, ...)
 		local sv = st[k]
 		if pv ~= sv then
 			add(errs, fmt('%s.%s mismatch: expected: %s, got: %s', fmt(...), k, pv, sv))
+		end
+	end
+end
+local function cmp_schemas(paper_schema, stored_schema, table_name, errs)
+
+	--compare table attributes
+	cmp_keys(paper_schema, stored_schema, {
+		'dyn_offset_size', 'int_key', 'dup_keys', 'is_index', 'val_table',
+	}, errs, '%s', table_name)
+
+	--compare key_fields and val_fields lists
+	for i=1,2 do
+		local F = i == 1 and 'key_fields' or 'val_fields'
+		local pfields =  paper_schema[F]
+		local sfields = stored_schema[F]
+		--TODO: map fields by col and match that way and get much better errors.
+		local n = cmp_lengths(pfields, sfields, errs, '%s.%s', table_name, F)
+		for i = 1, n do
+			local pf = pfields[i]
+			local sf = sfields[i]
+			cmp_keys(pf, sf, {
+				'col', 'col_pos', 'mdbx_type', 'maxlen', 'padded', 'not_null',
+				'elem_size', 'descending', 'mdbx_collation',
+				'fixed_offset', 'offset',
+			}, errs, '%s.%s[%d]', table_name, F, i)
 		end
 	end
 end
@@ -669,63 +704,25 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 	end
 
 	if stored_schema and paper_schema and paper_schema ~= stored_schema then
-
 		--table has both stored schema and paper schema, schemas must match.
 		local errs = {}
-
-		--compare table attributes
-		cmp_keys(paper_schema, stored_schema, {
-			'dyn_offset_size', 'int_key', 'is_index', 'val_table',
-		}, errs, '%s', table_name)
-
-		--compare key_fields and val_fields lists
-		for i=1,2 do
-			local F = i == 1 and 'key_fields' or 'val_fields'
-			local pfields =  paper_schema[F]
-			local sfields = stored_schema[F]
-			local n = cmp_lists(pfields, sfields, errs, '%s.%s', table_name, F)
+		cmp_schemas(paper_schema, stored_schema, table_name, errs)
+		if #errs == 0 and (paper_schema.index_schemas or stored_schema.index_schemas) then
+			--table schemas match, compare index table lists. only compare index
+			--table names for now, index table schemas will be validated on open.
+			--TODO: map indexes by name and match that way and get much better errors.
+			local pix_schemas =  paper_schema.index_schemas or empty
+			local six_schemas = stored_schema.index_schemas or empty
+			local n = cmp_lengths(pix_schemas, six_schemas, errs, '%s.%s', table_name, 'indexes')
 			for i = 1, n do
-				local pf = pfields[i]
-				local sf = sfields[i]
-				cmp_keys(pf, sf, {
-					'col', 'col_pos', 'mdbx_type', 'maxlen', 'padded', 'not_null',
-					'elem_size', 'descending', 'mdbx_collation',
-					'fixed_offset', 'offset',
-				}, errs, '%s.%s[%d]', table_name, F, i)
-			end
-		end
-
-		--compare index lists
-		local pixs =  paper_schema.indexes or empty
-		local sixs = stored_schema.indexes or empty
-		local n = cmp_lists(pixs, sixs, errs, '%s.%s', table_name, 'indexes')
-		for i = 1, n do
-			local pix = pixs[i]
-			local six = sixs[i]
-
-			--compare index attributes
-			cmp_keys(pix, six, {
-				'name', 'is_unique',
-			}, errs, '%s.%s[%d]', table_name, indexes, i)
-
-			--compare index fields lists and desc field lists
-			for j=1,2 do
-				local pix = j == 1 and pix or pix.desc or empty
-				local six = j == 1 and six or six.desc or empty
-				local desc_suffix = j == 1 and '' or '.desc'
-				local n = cmp_lists(pix, six, errs, '%s.%s[%d]%s',
-					table_name, 'indexes', i, desc_suffix)
-				for j = 1, n do
-					local pcol = pix[j]
-					local scol = six[j]
-					if pcol ~= scol then
-						add(errs, fmt('%s.%s[%d]%s[%d] mismatch: expected: %s, got: %s',
-							table_name, 'indexes', i, desc_suffix, j, pcol, scol))
-					end
+				local pix_schema = pix_schemas[i]
+				local six_schema = six_schemas[i]
+				if pix_schema.name ~= six_schema.name then
+					add(errs, fmt('%s.index_schemas[%d] name mismatch: expected: %s, got: %s',
+						table_name, i, pix_schema.name, six_schema.name))
 				end
 			end
 		end
-
 		if #errs > 0 then
 			error(fmt('schema mismatch for table: %s:\n\t%s',
 				table_name, cat(errs, '\n\t')))
@@ -748,10 +745,7 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 		if schema.indexes then
 			for _,ix in ipairs(schema.indexes) do
 				local ix_schema = self:index_schema(table_name, ix)
-				local dbi, err = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
-				if not dbi then
-					return nil, err
-				end
+				self:open_table(ix_schema.name, mode, nil, ix_schema)
 				self.schema.tables[ix_schema.name] = ix_schema
 			end
 		end
@@ -808,8 +802,8 @@ function Db:try_rename_table(tab, new_table_name)
 		local k1 = schema.name
 		local k2 = new_table_name
 		local ok, err = self:try_move_key_raw('$schema',
-			cast(u8p, k1), #k1,
-			cast(u8p, k2), #k2
+			k1, #k1,
+			k2, #k2
 		)
 		if not ok then
 			self:abort()
@@ -831,11 +825,16 @@ function Db:index_schema(val_table, cols)
 	local ix_tbl_name = val_table..'/'..cat(cols, '-')
 	local ix_fields = {}
 	for _,col in ipairs(cols) do
-		local f = assert(val_schema.fields[col])
+		local f = assertf(val_schema.fields[col],
+			'index: %s unknown field %s.%s', ix_tbl_name, val_table, col)
+		assertf(f.not_null, 'index %s col must be non_null: %s.%s',
+			ix_tbl_name, val_table, col)
 		local f = {
 			col = f.col,
 			mdbx_type = f.mdbx_type,
 			maxlen = f.maxlen,
+			padded = f.padded,
+			not_null = f.not_null,
 		}
 		add(ix_fields, f)
 	end
@@ -843,6 +842,7 @@ function Db:index_schema(val_table, cols)
 		name = ix_tbl_name,
 		fields = ix_fields,
 		pk = cols,
+		dup_keys = not cols.is_unique or nil,
 		is_index = true,
 		val_table = val_table,
 	}

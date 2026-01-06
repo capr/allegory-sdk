@@ -5,7 +5,7 @@ typedef int pid_t;
 typedef unsigned long int real_pthread_t;
 typedef struct { real_pthread_t _; } pthread_t;
 struct MDBX_val { /* iovec with renamed fields */
-	void*  data;
+	char*  data;
 	size_t size;
 };
 
