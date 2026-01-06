@@ -227,7 +227,7 @@ FFI
 	metatype                     = ffi.metatype
 	isctype                      = ffi.istype
 	errno                        = ffi.errno
-	check_errno(v[, err]) -> v | nil, s
+	check_errno(v[, err]) -> v | nil, err
 	str(buf, len)                = ffi.string(buf, len) if buf is not null
 	ptr(p)                       = p ~= nil and p  or nil
 	ptr_serialize(p) -> n|s             store pointer address in Lua value
@@ -2322,7 +2322,7 @@ metatype = ffi.metatype
 isctype = ffi.istype
 errno  = ffi.errno
 _G.str = str
-_G[ffi.os] = true
+_G[ffi.os] = true --Windows, Linux, OSX
 win    = Windows
 
 local
@@ -2479,6 +2479,7 @@ local errno_msgs = {
 	                     --rmdir(), opendir(), rename(), unlink()
 	[  4] = 'interrupted', --EINTR, epoll_wait()
 	[  5] = 'io_error', --EIO, readlink(), read()
+	[  9] = 'bad_file', --EBADF
 	[ 13] = 'access_denied', --EACCESS, mkdir() etc.
 	[ 17] = 'already_exists', --EEXIST, open(), mkdir(), mkfifo()
 	[ 20] = 'not_found', --ENOTDIR, opendir()
@@ -2504,6 +2505,8 @@ function check_errno(ret, err)
 	if isstr(err) then return ret, err end
 	err = err or errno()
 	local s = errno_msgs[err]
+	assert(s ~= 'invalid_argument', s)
+	assert(s ~= 'bad_file', s)
 	if s then return ret, s end
 	local s = C.strerror(err)
 	local s = str(s) or 'Error '..err
@@ -2625,9 +2628,9 @@ Note that protect_io() only catches errors raised by check*(), other Lua
 errors pass through and the connection isn't closed either.
 
 TODO: Currently try_*() methods on sock and fs modules do not break on usage
-errors coming from the OS, so those errors come up as retriable I/O errors
-which is not correct. This must be fixed in fs and sock by calling assert()
-on all error codes that indicate non-transient errors.
+errors coming from the OS except for EINVAL and EBADF, so some errors might
+come up as potentially retriable which is not correct. This must be fixed
+case-by-case in fs and sock. See try_accept() for how to fix it.
 ]=]
 
 local function io_error_init(self)
