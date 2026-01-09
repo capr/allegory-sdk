@@ -78,7 +78,7 @@ local function xapp(...)
 
 	function app:run_cmd(cmd_name, cmd_run, cmd_opt, ...)
 		local exit_code
-		if cmd_name == 'run' then
+		if cmd_name == 'run' then --run server in main thread
 			exit_code = cmd_run(cmd_name, cmd_opt, ...)
 		else
 			exit_code = run(function(...)

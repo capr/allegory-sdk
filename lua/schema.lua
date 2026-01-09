@@ -616,7 +616,7 @@ local function diff_keys(self, t1, t0, keys)
 end
 
 local function diff_fields(self, f1, f0, sc0)
-	return diff_keys(self, f1, f0, sc0.relevant_field_attrs)
+	return diff_keys(self, f1, f0, assert(sc0.relevant_field_attrs))
 end
 
 local function diff_fks(self, fk1, fk0)

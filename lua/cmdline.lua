@@ -3,11 +3,18 @@
 	command-line scripts
 	Written by Cosmin Apreutesei. Public Domain.
 
-	cmdsection(name, [wrap_fn]) -> section         create a cmdline section
-	section([active, ]cmd+args, help[, descr], fn) add a command to a section
-	cmd    ([active, ]cmd+args, help[, descr], fn) add a command to the misc section
-	cmdaction(...) -> action, opt, args, run       process cmdline options
-	fn : function(opt, args...)                    cmd action handler
+API
+	cmdsection(name, [wrap_fn]) -> section            create a cmdline section
+	section([active, ]cmd+args, help[, descr], fn)    add a command to a section
+	cmd    ([active, ]cmd+args, help[, descr], fn)    add a command to the MISC section
+	cmdaction(...) -> action, opt, args, run_action   process cmdline options
+	run_action(action, opt, args...) -> [exit_code]   how to call run_action
+	fn : function(opt, args...)                       cmd action handler
+
+ENV VARS
+	DEBUG
+	VERBOSE
+	QUIET
 
 ]==]
 
