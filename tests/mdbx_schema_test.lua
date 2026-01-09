@@ -8,11 +8,10 @@ pr('libmdbx.so vesion: ',
 	mdbx.mdbx_version.minor..'.'..
 	mdbx.mdbx_version.patch,
 	str(mdbx.mdbx_version.git.commit, 6))
-pr()
 
 rm'mdbx_schema_test.mdb'
 rm'mdbx_schema_test.mdb-lck'
-local schema = schema.new()
+local schema = mdbx_schema()
 local db = mdbx_open('mdbx_schema_test.mdb')
 db.schema = schema
 
@@ -195,10 +194,10 @@ function test_uks()
 
 	schema.tables.test_uk = {
 		fields = {
-			{col = 'k1', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'k2', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'u1', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'u2', mdbx_type = 'utf8', maxlen = 10},
+			{col = 'k1', mdbx_type = 'utf8', maxlen = 10, not_null = true},
+			{col = 'k2', mdbx_type = 'utf8', maxlen = 10, not_null = true},
+			{col = 'u1', mdbx_type = 'utf8', maxlen = 10, not_null = true},
+			{col = 'u2', mdbx_type = 'utf8', maxlen = 10, not_null = true},
 			{col = 'f1', mdbx_type = 'utf8', maxlen = 10},
 			{col = 'f2', mdbx_type = 'utf8', maxlen = 10},
 		},
@@ -212,26 +211,34 @@ function test_uks()
 	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3') --duplicate uk
 	db:commit()
 
-	--test fail to create uk on account of duplicates
-	db:begin'w'
-	local ok, err = db:try_create_index('test_uk', {'u1', 'u2', is_unique = true})
 	local ix_tbl = 'test_uk/u1-u2'
-	assert(not ok)
-	assert(tostring(err):has'exists')
+	schema.tables.test_uk.uks = {
+		 [ix_tbl] = {'u1', 'u2', is_unique = true},
+	}
+	db:validate_schema()
+
+	db:begin()
+	local saved_schema = db:extract_schema()
 	db:commit()
+	assert(not pcall(function()
+		db:sync_schema(schema, {dry = false})
+	end))
 
 	db:begin()
 	assert(not db:table_exists(ix_tbl))
 	assert(not db.schema.tables[ix_tbl])
 	db:commit()
 
-	--remove duplicate and try again.
+	--remove duplicate.
 	db:begin'w'
 	assert(not db:table_exists(ix_tbl))
 	assert(not db:try_open_table(ix_tbl))
 	db:del('test_uk', 'k3', 'k1')
-	db:create_index('test_uk', {'u1', 'u2', is_unique = true})
+
+	--try to sync again, this time it should work.
+	db:sync_schema(schema, {dry = false})
 	assert(db:table_exists(ix_tbl))
+
 	--now try to insert a duplicate again, this time it should fail.
 	db:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u1', 'f4')
 	db:insert('test_uk', nil, 'k4', 'k2', 'u3', 'u2', 'f5')
@@ -242,7 +249,7 @@ function test_uks()
 
 	db:begin()
 	for _,u1,u2 in assert(db:each(ix_tbl)) do
-		pr(u1, u2)
+		--pr(u1, u2)
 	end
 	local t = db:must_get(ix_tbl, '{}', 'u1', 'u1')
 	assert(t.k1 == 'k1')
