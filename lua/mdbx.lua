@@ -112,8 +112,11 @@ require'glue'
 require'fs'
 
 require'mdbx_h'
-local isnum = isnum
 local C = ffi.load'mdbx'
+
+local
+	isnum, isstr, bor, num, assert =
+	isnum, isstr, bor, num, assert
 
 mdbx = C
 
@@ -448,7 +451,7 @@ function try_mdbx_open(file, opt)
 	local create = not (opt and opt.readonly) and not exists(file)
 	local env, err = mdbx_env_open(file, opt)
 	if not env then return nil, err, create end
-	local db = object(Db, {
+	local self = object(Db, {
 		file = file,
 		env = env,
 		dbis = {}, --{dbi->name, name->dbi}
@@ -463,9 +466,9 @@ function try_mdbx_open(file, opt)
 		cursors = {},
 		type = 'DB',
 	})
-	live(db, file)
+	live(self, file)
 	log(create and 'note' or '', 'db', create and 'db_create' or 'db_open', '%s', file)
-	return db, nil, create
+	return self, nil, create
 end
 function mdbx_open(file, opt)
 	local db, err, create = try_mdbx_open(file, opt)
@@ -477,7 +480,7 @@ end
 
 function Db:close()
 	self.env:close()
-	live(db, nil)
+	live(self, nil)
 	self.dbis = nil
 	self.env = nil
 end
@@ -492,7 +495,7 @@ mdbx_delete = mdbx_env_delete
 
 function Db:begin(mode)
 	if mode == 'w' then
-		assert(not self.txn or self.txn ~= self._ro_txn, 'in r/o transaction')
+		assert(not self.txn or self.txn ~= self._ro_txn, 'begin() in r/o transaction')
 		self.txn = self.env:txn('w', self.txn)
 	else
 		assert(not self.txn, 'in transaction')
@@ -539,6 +542,9 @@ function Db:abort()
 end
 
 do
+local
+	isfunc, xpcall, traceback =
+	isfunc, xpcall, traceback
 local function finish(self, ok, ...)
 	if ok then
 		self:commit()
@@ -561,11 +567,8 @@ function Db:table_name(tab)
 	return not tab and '<main>' or isstr(tab) and tab or self.dbis[tab]
 end
 
-function Db:try_open_table(tab, mode, flags)
-	if isnum(tab) then return tab end --tab is dbi
-	local dbi = self.dbis[tab or false]
-	if dbi then return dbi end
-	local name = tab
+function Db:try_open_table(name, mode, flags)
+	assert(not name or isstr(name))
 	local create = mode == 'w' or mode == 'c'
 	local dbi, created = self.txn:open(name, create, flags)
 	if not dbi then return nil, created end
@@ -586,6 +589,9 @@ function Db:open_table(tab, mode, flags, ...)
 end
 
 function Db:dbi(tab, mode)
+	if isnum(tab) then return tab end --tab is dbi
+	local dbi = self.dbis[tab or false]
+	if dbi then return dbi end
 	if mode == 'w' or mode == 'c' then
 		return self:open_table(tab, mode)
 	else
@@ -792,7 +798,7 @@ end
 function Db:table_exists(table_name)
 	if not table_name then return true end --main table always exists.
 	if self.dbis[table_name] then return true end --opened thus exists
-	return self:get_raw(nil, cast(u8p, table_name), #table_name) ~= nil
+	return self:get_raw(nil, cast(i8p, table_name), #table_name) ~= nil
 end
 
 -- test ----------------------------------------------------------------------
@@ -802,24 +808,25 @@ if not ... then
 local function self_test()
 	local db = mdbx_open('testdb')
 
-	local tx = db:txw()
-	tx:open_table('users', 'w')
-	tx:commit()
+	db:begin'w'
+	db:open_table('users', 'w')
+	db:commit()
 
-	local tx = db:txw()
+	db:begin'w'
 	s = _('%03x %d foo bar', 32, 3141592)
-	tx:put_raw('users', new('int[1]', 123456789), 4, cast(u8p, s), #s)
-	tx:commit()
+	local k = i32a(1, 123456789)
+	assert(db:try_put_raw('users', cast(i8p, k), sizeof(k), cast(i8p, s), #s))
+	db:commit()
 
-	local tx = db:tx()
-	for cur,k,k_sz,v,v_sz in tx:each_raw'users' do
-		printf('key: %s %s, data: %s %s\n',
-			k_sz, cast('int*', k)[0],
-			v_sz, str(v, v_sz))
+	db:begin()
+	for cur,k,k_sz,v,v_sz in db:each_raw'users' do
+		assert(cast(i32p, k)[0] == 123456789)
+		assert(str(v, v_sz) == s)
 	end
-	tx:abort()
+	db:commit()
 
 	db:close()
+	pr'ok'
 end
 
 local function test_dbi_semantics()
@@ -882,7 +889,7 @@ local function test_dbi_semantics()
 	mdbx_env_close(env)
 end
 
-test_dbi_semantics()
---self_test()
+--test_dbi_semantics()
+self_test()
 
 end

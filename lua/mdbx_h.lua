@@ -4,8 +4,9 @@ typedef unsigned int mode_t;
 typedef int pid_t;
 typedef unsigned long int real_pthread_t;
 typedef struct { real_pthread_t _; } pthread_t;
-struct MDBX_val { /* iovec with renamed fields */
-	char*  data;
+
+struct MDBX_val {
+	char* data;
 	size_t size;
 };
 
@@ -508,7 +509,7 @@ typedef enum MDBX_dbi_state {
 int mdbx_dbi_flags_ex(const MDBX_txn *txn, MDBX_dbi dbi, unsigned *flags, unsigned *state);
 int mdbx_dbi_close(MDBX_env *env, MDBX_dbi dbi);
 int mdbx_drop(MDBX_txn *txn, MDBX_dbi dbi, _Bool del);
-int mdbx_get(const MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data);
+int mdbx_get(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MDBX_val *data);
 int mdbx_get_ex(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MDBX_val *data, size_t *values_count);
 int mdbx_get_equal_or_great(const MDBX_txn *txn, MDBX_dbi dbi, MDBX_val *key, MDBX_val *data);
 int mdbx_put(MDBX_txn *txn, MDBX_dbi dbi, const MDBX_val *key, MDBX_val *data, MDBX_put_flags_t flags);
