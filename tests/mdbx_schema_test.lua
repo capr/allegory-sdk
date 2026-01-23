@@ -29,7 +29,7 @@ function test_encdec()
 				name = name,
 				test_type = typ,
 				fields = {
-					{col = 'k' , mdbx_type = typ},
+					{col = 'k' , mdbx_type = typ, not_null = true},
 					{col = 'v1', mdbx_type = typ},
 					{col = 'v2', mdbx_type = typ},
 				},
@@ -43,7 +43,7 @@ function test_encdec()
 		local tbl = {
 			name = 'varsize_key1'..':'..order,
 			fields = {
-				{col = 's', mdbx_type = 'utf8', maxlen = 100},
+				{col = 's', mdbx_type = 'utf8', maxlen = 100, not_null = true},
 				{col = 'v', mdbx_type = 'utf8', maxlen = 100},
 			},
 			pk = {'s', desc = {order == 'desc'}},
@@ -56,8 +56,8 @@ function test_encdec()
 			local tbl = {
 				name = 'varsize_key2'..':'..order..':'..order2,
 				fields = {
-					{col = 's1', mdbx_type = 'utf8', maxlen = 100},
-					{col = 's2', mdbx_type = 'utf8', maxlen = 100},
+					{col = 's1', mdbx_type = 'utf8', maxlen = 100, not_null = true},
+					{col = 's2', mdbx_type = 'utf8', maxlen = 100, not_null = true},
 					{col = 's3', mdbx_type = 'utf8', maxlen = 100},
 					{col = 's4', mdbx_type = 'utf8', maxlen = 100},
 				},
@@ -211,19 +211,19 @@ function test_uks()
 	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3') --duplicate uk
 	db:commit()
 
+	--declare an unique key index and sync schema to create it
+	--which should fail because of duplicate uk.
 	local ix_tbl = 'test_uk/u1-u2'
 	schema.tables.test_uk.uks = {
 		 [ix_tbl] = {'u1', 'u2', is_unique = true},
 	}
-	db:validate_schema()
-
+	db:layout_schema()
 	db:begin()
 	local saved_schema = db:extract_schema()
 	db:commit()
 	assert(not pcall(function()
 		db:sync_schema(schema, {dry = false})
 	end))
-
 	db:begin()
 	assert(not db:table_exists(ix_tbl))
 	assert(not db.schema.tables[ix_tbl])
@@ -240,16 +240,18 @@ function test_uks()
 	assert(db:table_exists(ix_tbl))
 
 	--now try to insert a duplicate again, this time it should fail.
+	pr(imap(db.schema.tables.test_uk.index_schemas, 'name'))
 	db:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u1', 'f4')
 	db:insert('test_uk', nil, 'k4', 'k2', 'u3', 'u2', 'f5')
 	db:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
 	local ok = db:try_insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
 	assert(not ok)
 	db:commit()
+	assert(db.schema.tables[ix_tbl])
 
 	db:begin()
-	for _,u1,u2 in assert(db:each(ix_tbl)) do
-		--pr(u1, u2)
+	for _,u1,u2,f in assert(db:each(ix_tbl)) do
+		pr(u1, u2, f)
 	end
 	local t = db:must_get(ix_tbl, '{}', 'u1', 'u1')
 	assert(t.k1 == 'k1')
@@ -259,11 +261,18 @@ function test_uks()
 	assert(t.f1 == 'f1')
 	db:commit()
 
+	--create another index, this time non-unique
+	--local ix_tbl = 'test_uk/f1-f2'
+	--db:create_index('test_uk', {'f1', 'f2'})
+	--for _,f1,f2 in assert(db:each(ix_tbl)) do
+	--	pr(u1, u2)
+	--end
+
 end
 
 function test_rename_table()
 	schema.tables.test_rename_table1 = {
-		fields = {{col = 'id', mdbx_type = 'u8'}},
+		fields = {{col = 'id', mdbx_type = 'u8', not_null = true}},
 		pk = {'id'},
 	}
 	db:begin'w'

@@ -29,9 +29,9 @@ UNMANAGED API
 	txn:clear(dbi)
 	txn:stat(dbi) -> stat
  CRUD
-	txn:get(dbi, k, k_sz, v, v_sz) -> v, v_sz
-	txn:put(dbi, k, k_sz, v, v_sz, [flags]) -> true
-	txn:del(dbi, k, k_sz, [v, v_sz], [flags])
+	txn:get(dbi, k, k_sz, v, v_sz) -> v, v_sz | nil,0
+	txn:put(dbi, k, k_sz, v, v_sz, [flags]) -> true | nil,'exists'|'not_found'
+	txn:del(dbi, k, k_sz, [v, v_sz], [flags]) -> true | nil,'not_found'
 	txn:sequence(dbi, [inc=1]) -> n
 	txn:parent() -> txn|nil
 	txn:child() -> txn|nil
@@ -50,7 +50,6 @@ UNMANAGED API
 	cur:put(k, k_sz, v, v_sz, [flags])
 	cur:set(v, v_sz)
 	cur:del(flags)
-	cur:schema() -> table_schema|nil
 
 MANAGED API
 
@@ -58,14 +57,15 @@ MANAGED API
  * extendable, see mdbx_schema.lua which adds column schema to keys and values.
  * current transaction is implicit since we can't use parallel transactions.
  * tables can be referenced by name everywhere (no need to use dbis).
- * tables are auto-created for write ops and auto-opened for read ops.
+ * tables are auto-created on write ops and auto-opened in r/o mode on read ops.
  * APIs either raise or have try_*() variants that return nil,err instead.
- * write ops and errors are logged, except raw CRUD ops.
+ * write ops and errors are logged, except raw CRUD ops which are to be used
+ to implement structured CRUD ops and have those be logged.
 
  DATABASES
 	[try_]mdbx_open(file_path, [opt]) -> db[,err],created   open/create a database
 		opt.max_readers    64                max read txns across all processes
-		opt.max_tables     4K                max named tables
+		opt.max_tables     4K                max tables that can be opened
 		opt.readonly       false             open in r/o mode
 		opt.file_mode      0660
 		opt.flags                            see MDBX_env_flags
@@ -88,7 +88,7 @@ MANAGED API
 	db:table_count() -> n
 	db:table_exists(table_name) -> t|f
  CRUD
-	db:get_raw         (table_name|dbi, k, k_sz) -> v, v_sz | nil,0,err
+	db:[must_]get_raw  (table_name|dbi, k, k_sz) -> v, v_sz | nil,0,err
 	db:try_put_raw     (table_name|dbi, k, k_sz, v, v_sz, [flags])
 	db:try_insert_raw  (table_name|dbi, k, k_sz, v, v_sz, [flags]) -> true | nil,'exists'
 	db:try_update_raw  (table_name|dbi, k, k_sz, v, v_sz, [flags]) -> true | nil,'not_found'
@@ -660,7 +660,7 @@ function Db:try_table_stat(tab)
 	return self.txn:stat(dbi)
 end
 function Db:table_stat(tab)
-	local stat, err = self:try_stat(tab)
+	local stat, err = self:try_table_stat(tab)
 	if stat then return stat end
 	check('db', 't_stat', false, '%s: %s', self:table_name(tab), err)
 end
@@ -793,7 +793,7 @@ function Db:each_table()
 end
 end
 function Db:table_count()
-	return self:entries()
+	return num(self:table_stat().entries)
 end
 function Db:table_exists(table_name)
 	if not table_name then return true end --main table always exists.
