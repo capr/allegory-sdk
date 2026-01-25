@@ -872,6 +872,9 @@ function Db:compile_index_schema(ix_schema)
 	local cols = cols_list(cat(ix_schema.pk, ' '))
 	local dt = {}
 
+	--default val_cols for index tables are the val_cols of the val_table.
+	ix_schema.val_cols = val_schema.val_cols
+
 	--create index methods
 
 	function ix_schema.try_create(ix_schema, self)
@@ -1180,20 +1183,17 @@ end
 
 local function decode_kv(self, schema, k, k_sz, v, v_sz, val_cols, as, t, i0)
 	t = t or {}
-	if val_cols then
-		val_cols, as = cols_list(val_cols)
-	end
+	local val_cols, as = cols_list(val_cols)
+	val_cols = val_cols or schema.val_cols
 	if schema.is_index then
 		local val_table = assert(schema.val_table)
 		local t_dbi, t_schema = assert(self:dbi_schema(val_table))
-		val_cols = val_cols or t_schema.val_cols
 		local k, k_sz = v, v_sz
-		v, v_sz = self:must_get_raw(t_dbi, k, k_sz)
+		v, v_sz = assert(self:get_raw(t_dbi, k, k_sz))
 		i0 = decode_key(t_schema, k, k_sz, t, as, i0)
 		schema = t_schema
 	else
-		val_cols = val_cols or schema.val_cols
-		if k then
+		if k then --if k is given it is decoded before v.
 			i0 = decode_key(schema, k, k_sz, t, as, i0)
 		end
 	end
@@ -1229,8 +1229,7 @@ function Db:try_get(tab, val_cols, ...)
 	if not dbi then return false, schema end
 	local v, v_sz = get_raw_by_pk(self, dbi, schema, ...)
 	if not v then return false, v_sz end
-	local val_cols, as = cols_list(val_cols)
-	return decode_kv(self, schema, nil, nil, v, v_sz, val_cols, as, {})
+	return decode_kv(self, schema, nil, nil, v, v_sz, val_cols)
 end
 
 local function skip_ok(ok, ...)
@@ -1443,9 +1442,14 @@ end
 
 --cursors --------------------------------------------------------------------
 
-local db_cursor = Db.cursor
-function Db:cursor(tab, mode)
-	local cur, err = db_cursor(self, tab, mode)
+local function check_cur(self, op, ok, ...)
+	if ok then return ... end
+	check('db', op, false, '%s: %s', self.schema.name, (...))
+end
+
+local db_try_cursor = Db.try_cursor
+function Db:try_cursor(tab, mode)
+	local cur, err = db_try_cursor(self, tab, mode)
 	if not cur then return nil, err end
 	local table_name = self:table_name(tab)
 	cur.schema = self.schema and self.schema.tables[table_name]
@@ -1454,32 +1458,36 @@ end
 
 function Cur:try_current(val_cols)
 	local k, k_sz, v, v_sz = self.c:get(mdbx.MDBX_GET_CURRENT)
-	return decode_kv(self.schema, k, k_sz, v, v_sz, val_cols)
+	if not k then return false end
+	return decode_kv(self.db, self.schema, k, k_sz, v, v_sz, val_cols)
 end
 function Cur:current(val_cols)
-	return check('db', 'current', self:try_current(val_cols))
+	return skip_ok(self:try_current(val_cols))
+end
+function Cur:must_current(val_cols)
+	return check_cur(self, 'c_curr', self:try_current(val_cols))
 end
 function Cur:try_next(val_cols)
-	return self:_try_get(val_cols, mdbx.MDBX_NEXT)
+	local k, k_sz, v, v_sz = self.c:get(mdbx.MDBX_NEXT)
+	if not k then return false end
+	return decode_kv(self.db, self.schema, k, k_sz, v, v_sz, val_cols)
 end
 function Cur:next(val_cols)
-	return skip_ok(self:_try_get(val_cols, mdbx.MDBX_NEXT))
+	return skip_ok(self:try_next(val_cols))
 end
 function Cur:try_get(val_cols, ...)
 	local schema = self.schema
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local k_sz = encode_key(self, schema, nil, k, k_buf_sz, schema.key_cols, nil, ...)
 	local v, v_sz = self:get_raw(k, k_sz)
-	if not v then return end
-	local val_cols, as = cols_list(val_cols)
-	val_cols = val_cols or schema.val_cols
-	return decode_kv(schema, k, k_sz, v, v_sz, t or {}, val_cols, as)
+	if not v then return false end
+	return decode_kv(self.db, self.schema, k, k_sz, v, v_sz, val_cols)
 end
 function Cur:get(...)
 	return skip_ok(self:try_get(...))
 end
 function Cur:must_get(...)
-	return must_ok(self:try_get(...))
+	return check_cur(self, 'c_get', self:try_get(...))
 end
 
 function Cur:update(val_cols, ...)

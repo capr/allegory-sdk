@@ -88,7 +88,7 @@ MANAGED API
 	db:table_count() -> n
 	db:table_exists(table_name) -> t|f
  CRUD
-	db:[must_]get_raw  (table_name|dbi, k, k_sz) -> v, v_sz | nil,0,err
+	db:get_raw         (table_name|dbi, k, k_sz) -> v, v_sz | nil,0,err
 	db:try_put_raw     (table_name|dbi, k, k_sz, v, v_sz, [flags])
 	db:try_insert_raw  (table_name|dbi, k, k_sz, v, v_sz, [flags]) -> true | nil,'exists'
 	db:try_update_raw  (table_name|dbi, k, k_sz, v, v_sz, [flags]) -> true | nil,'not_found'
@@ -671,13 +671,10 @@ end
 
 --table data
 
-function Db:get_raw(tab, k, k_sz, v, v_sz)
+function Db:try_get_raw(tab, k, k_sz, v, v_sz)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
 	return self.txn:get(dbi, k, k_sz, v, v_sz)
-end
-function Db:must_get_raw(...)
-	return assert(self:get_raw(...))
 end
 
 function Db:try_put_raw(tab, k, k_sz, v, v_sz, flags)
@@ -709,7 +706,7 @@ function Db:gen_id(tab)
 end
 
 function Db:try_move_key_raw(tab, k1, k1_sz, k2, k2_sz)
-	local v, v_sz = self:get_raw(tab, k1, k1_sz)
+	local v, v_sz = self:try_get_raw(tab, k1, k1_sz)
 	if not v then return nil, v_sz end
 	--NOTE: calling put before del because del invaldates the v pointer.
 	local ok, err = self:try_insert_raw(tab, k2, k2_sz, v, v_sz)
@@ -724,7 +721,7 @@ local Cur = {}; mdbx_cursor = Cur
 
 --NOTE: cursors created with db:cursor() are reused, so never use a cursor
 --beyond transaction boundaries or you might end up using an unrelated cursor.
-function Db:cursor(tab, mode)
+function Db:try_cursor(tab, mode)
 	local dbi = isnum(tab) and tab or self:dbi(tab, mode)
 	if not dbi then return nil, 'not_found' end
 	local cur
@@ -739,10 +736,16 @@ function Db:cursor(tab, mode)
 	if cur then
 		cur.c:bind(self.txn, dbi)
 	else
-		cur = object(Cur, {c = self.txn:cursor(dbi)})
+		cur = object(Cur, {c = self.txn:cursor(dbi), db = self})
 		add(self._cursors, cur)
 	end
 	return cur
+end
+
+function Db:cursor(tab, mode)
+	local cur, err = self:try_cursor(tab, mode)
+	if cur then return cur end
+	check('db', 'cursor', false, '%s: %s', self:table_name(tab), err)
 end
 
 function Cur:close()
