@@ -43,10 +43,9 @@ UNMANAGED API
 	cur:unbind()
 	cur:txn() -> txn| nil
 	cur:dbi() -> dbi|nil
-	cur:get(flags) -> k, k_sz, v, v_sz | nil, 0, nil, 0
 	cur:first|last|next|prev|current() -> k, k_sz, v, v_sz | nil, 0, nil, 0
 	cur:each[_reverse]() -> iter() -> k, k_sz, v, v_sz
-	cur:find(k, k_sz, [flags]) -> v, v_sz | nil, 0
+	cur:get(k, k_sz, [flags]) -> v, v_sz | nil, 0
 	cur:put(k, k_sz, v, v_sz, [flags])
 	cur:set(v, v_sz)
 	cur:del(flags)
@@ -99,12 +98,11 @@ MANAGED API
  CURSORS
 	db:cursor(table_name|dbi[, 'w']) -> cur
 	cur:close()
-	cur:get_raw(flags) -> k, k_sz, v, v_sz | nil, 0, nil, 0
 	cur:{first|last|next|prev|current}_raw() -> k, k_sz, v, v_sz | nil, 0, nil, 0
 	cur:each[_reverse]_raw() -> iter() -> k, k_sz, v_sz
-	cur:find_raw          (k, k_sz) -> v, v_sz | nil, 0
-	cur:set_raw           (k, k_sz, v, v_sz)
-	cur:del               ([flags])
+	cur:get_raw (k, k_sz) -> v, v_sz | nil, 0
+	cur:set_raw (k, k_sz, v, v_sz)
+	cur:del     ([flags])
 
 ]]
 
@@ -330,12 +328,7 @@ local function mdbx_cursor_close(cur)
 end
 
 local reflect = require'reflect'
-local flag_map = {}
-for elem in reflect.typeof('MDBX_cursor_op'):values() do
-    flag_map[elem.name:sub(6):lower()] = elem.value
-end
 local function mdbx_cursor_get(cur, flags)
-	if isstr(flags) then flags = flag_map[flags] end
 	local rc = C.mdbx_cursor_get(cur, key, val, flags)
 	if rc == 0 then
 		return
@@ -348,22 +341,33 @@ local function mdbx_cursor_get(cur, flags)
 	checkz(rc) --always throws
 end
 
-local function mdbx_cursor_first(cur) return mdbx_cursor_get(cur, C.MDBX_FIRST) end
-local function mdbx_cursor_last (cur) return mdbx_cursor_get(cur, C.MDBX_LAST) end
-local function mdbx_cursor_next (cur) return mdbx_cursor_get(cur, C.MDBX_NEXT) end
-local function mdbx_cursor_prev (cur) return mdbx_cursor_get(cur, C.MDBX_PREV) end
+local function mdbx_cursor_first   (cur) return mdbx_cursor_get(cur, C.MDBX_FIRST) end
+local function mdbx_cursor_last    (cur) return mdbx_cursor_get(cur, C.MDBX_LAST) end
+local function mdbx_cursor_next    (cur) return mdbx_cursor_get(cur, C.MDBX_NEXT) end
+local function mdbx_cursor_prev    (cur) return mdbx_cursor_get(cur, C.MDBX_PREV) end
+local function mdbx_cursor_current (cur) return mdbx_cursor_get(cur, C.MDBX_GET_CURRENT) end
 
+local function mdbx_cursor_each_next(cur, k0)
+	if k0 == 'start' then
+		return mdbx_cursor_first(cur)
+	end
+	return mdbx_cursor_next(cur)
+end
 local function mdbx_cursor_each(cur)
-	mdbx_cursor_first(cur)
-	return mdbx_cursor_next, cur
+	return mdbx_cursor_each_next, cur, 'start'
 end
 
+local function mdbx_cursor_each_prev(cur, k0)
+	if k0 == 'start' then
+		return mdbx_cursor_last(cur)
+	end
+	return mdbx_cursor_prev(cur)
+end
 local function mdbx_cursor_each_reverse(cur)
-	mdbx_cursor_last(cur)
-	return mdbx_cursor_prev, cur
+	return mdbx_cursor_each_prev, cur, 'start'
 end
 
-local function mdbx_cursor_find(cur, k, k_sz, flags)
+local function mdbx_cursor_get_set_key(cur, k, k_sz, flags)
 	key.data = k
 	key.size = k_sz
 	local _, _, v, v_sz = mdbx_cursor_get(cur, bor(flags or 0, C.MDBX_SET_KEY))
@@ -427,15 +431,14 @@ metatype('MDBX_cursor', {__index = {
 	close  = mdbx_cursor_close,
 	dbi    = function(self) return repl(C.mdbx_cursor_dbi(self), 0xffffffff) end,
 	txn    = function(self) return ptr(C.mdbx_cursor_txn(self)) end,
-	get    = mdbx_cursor_get,
 	first  = mdbx_cursor_first,
 	next   = mdbx_cursor_next,
-	each   = mdbx_cursor_each,
 	last   = mdbx_cursor_last,
 	prev   = mdbx_cursor_prev,
-	each_reverse = mdbx_cursor_each_reverse,
-	current= function(self) return mdbx_cursor_get(self, C.MDBX_GET_CURRENT) end,
-	find   = mdbx_cursor_find,
+	current= mdbx_cursor_current,
+	each_raw = mdbx_cursor_each,
+	each_reverse_raw = mdbx_cursor_each_reverse,
+	get = mdbx_cursor_get_set_key,
 	put = mdbx_cursor_put,
 	set = mdbx_cursor_set,
 	del = mdbx_cursor_del,
@@ -455,6 +458,7 @@ function try_mdbx_open(file, opt)
 		file = file,
 		env = env,
 		dbis = {}, --{dbi->name, name->dbi}
+		dbi_schemas = {}, --{dbi->schema}, see mdbx_schema.lua
 		readonly = opt and opt.readonly,
 		_ro_txn = nil,
 		--created dbis are local to the txn in which they are created until
@@ -482,6 +486,7 @@ function Db:close()
 	self.env:close()
 	live(self, nil)
 	self.dbis = nil
+	self.dbi_schemas = nil
 	self.env = nil
 end
 
@@ -535,6 +540,7 @@ function Db:abort()
 			--the dbis that were still valid and are now lost will be acquired
 			--again via dbi_open() which is transparent to the user.
 			clear(self.dbis)
+			clear(self.dbi_schemas)
 			self._local_dbis = false
 		end
 		self.txn = parent
@@ -584,8 +590,9 @@ function Db:try_open_table(name, mode, flags)
 	return dbi, created
 end
 function Db:open_table(tab, mode, flags, ...)
-	local dbi, err = self:try_open_table(tab, mode, flags, ...)
-	return check('db', 't_open', dbi, '%s %s: %s', tab, mode or 'r', err)
+	local dbi, created = self:try_open_table(tab, mode, flags, ...)
+	if dbi then return dbi, created end
+	check('db', 't_open', false, '%s %s: %s', tab, mode or 'r', err)
 end
 
 function Db:dbi(tab, mode)
@@ -603,7 +610,7 @@ function Db:try_rename_table(tab, new_table_name)
 	assert(tab)
 	assert(isstr(new_table_name))
 	local dbi = isnum(tab) and tab or self:dbi(tab)
-	local old_table_name = isnum(tab) and (self.dbis[dbi] or '?') or tab
+	local old_table_name = isnum(tab) and (dbi and self.dbis[dbi] or '?') or tab
 	if not dbi then return nil, 'not_found', old_table_name end
 	local ok, err = self.txn:rename(dbi, new_table_name)
 	if not ok then return nil, err, old_table_name end
@@ -627,6 +634,7 @@ function Db:try_drop_table(tab)
 	local name = self.dbis[dbi]
 	self.dbis[dbi]  = nil
 	self.dbis[name] = nil
+	self.dbi_schemas[dbi] = nil
 	log('note', 'db', 't_drop', '%s', name)
 	return true
 end
@@ -671,7 +679,7 @@ end
 
 --table data
 
-function Db:try_get_raw(tab, k, k_sz, v, v_sz)
+function Db:get_raw(tab, k, k_sz, v, v_sz)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'table_not_found' end
 	return self.txn:get(dbi, k, k_sz, v, v_sz)
@@ -706,7 +714,7 @@ function Db:gen_id(tab)
 end
 
 function Db:try_move_key_raw(tab, k1, k1_sz, k2, k2_sz)
-	local v, v_sz = self:try_get_raw(tab, k1, k1_sz)
+	local v, v_sz = self:get_raw(tab, k1, k1_sz)
 	if not v then return nil, v_sz end
 	--NOTE: calling put before del because del invaldates the v pointer.
 	local ok, err = self:try_insert_raw(tab, k2, k2_sz, v, v_sz)
@@ -756,15 +764,14 @@ function Cur:closed()
 	return not self.c:txn()
 end
 
-function Cur:get_raw     (flags) return mdbx_cursor_get(self.c, flags) end
 function Cur:first_raw   () return mdbx_cursor_get(self.c, C.MDBX_FIRST) end
 function Cur:last_raw    () return mdbx_cursor_get(self.c, C.MDBX_LAST) end
-function Cur:next_raw    () return mdbx_cursor_next(self.c) end
+function Cur:next_raw    () return mdbx_cursor_get(self.c, C.MDBX_NEXT) end
 function Cur:prev_raw    () return mdbx_cursor_get(self.c, C.MDBX_PREV) end
 function Cur:current_raw () return mdbx_cursor_get(self.c, C.MDBX_GET_CURRENT) end
-function Cur:each_raw    () return mdbx_cursor_each(self.c) end
-function Cur:each_reverse_raw () return mdbx_cursor_each_reverse(self.c) end
-function Cur:find_raw (...) return mdbx_cursor_find(self.c, ...) end
+function Cur:each_raw         () return mdbx_cursor_each         (self.c) end
+function Cur:each_reverse_raw () return mdbx_cursor_each_reverse (self.c) end
+function Cur:get_raw  (...) return mdbx_cursor_get_set_key(self.c, ...) end
 function Cur:put_raw  (...) return mdbx_cursor_put(self.c, ...) end
 function Cur:set_raw  (...) return mdbx_cursor_set(self.c, ...) end
 function Cur:del      (flags) return mdbx_cursor_del(self.c, flags) end

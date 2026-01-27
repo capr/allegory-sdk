@@ -30,17 +30,17 @@ API, extends mdbx.lua MANAGED API
 	db:[try_]put_records(table_name|dbi, [cols, ]{keysvals1,...})
 	db:is_null         (table_name|dbi, col, keys...) -> is_null, [reason]
 	db:exists          (table_name|dbi, keys...) -> record_exists, table_exists
-	db:[try_|must_]get (table_name|dbi, [val_cols], keys...) -> [ok, ]vals...
-	db:try_get         (table_name|dbi, [val_cols], keys...) -> true, vals... | false, err
+	db:[must_]get      (table_name|dbi, [val_cols], keys...) -> vals...
+	db:try_get         (table_name|dbi, [val_cols], keys...) -> true, vals... | false
 	db:[try_]del       (table_name|dbi, keys...) -> true | nil,err
 	db:[try_]del_exact (table_name|dbi, [cols], keysvals...) -> true | nil,err
 
-	cur:current        ([cols]) -> keysvals...
-	cur:next           ([cols]) -> keysvals...
-	cur:update         ([val_cols], vals...)
-	cur:[try_|must]get ([val_cols], keys...) -> vals...
+	cur:{first|last|next|prev|current}([cols]) -> keysvals...
+	cur:[must_]get ([val_cols], keys...) -> vals...
+	cur:try_get    ([val_cols], keys...) -> true, vals... | false
+	cur:update     ([val_cols], vals...)
 
-	db:each            (tbl_name|dbi, [cols]) -> cur, keysvals...
+	db:try_each    (tbl_name|dbi, [cols]) -> cur, keysvals...
 
 		cols format   |  vals...              | keyvals...
 		--------------+-----------------------+------------
@@ -652,37 +652,12 @@ local function cmp_keys(pt, st, keys, errs, ...)
 		end
 	end
 end
-local function cmp_schemas(paper_schema, stored_schema, table_name, errs)
-
-	--compare table attributes
-	cmp_keys(paper_schema, stored_schema, {
-		'dyn_offset_size', 'int_key', 'dup_keys', 'is_index', 'val_table',
-	}, errs, '%s', table_name)
-
-	--compare key_fields and val_fields lists
-	for i=1,2 do
-		local F = i == 1 and 'key_fields' or 'val_fields'
-		local pfields =  paper_schema[F]
-		local sfields = stored_schema[F]
-		--TODO: map fields by col and match that way and get much better errors.
-		local n = cmp_lengths(pfields, sfields, errs, '%s.%s', table_name, F)
-		for i = 1, n do
-			local pf = pfields[i]
-			local sf = sfields[i]
-			cmp_keys(pf, sf, {
-				'col', 'col_pos', 'mdbx_type', 'maxlen', 'padded', 'not_null',
-				'elem_size', 'descending', 'mdbx_collation',
-				'fixed_offset', 'offset',
-			}, errs, '%s.%s[%d]', table_name, F, i)
-		end
-	end
-end
 
 local try_open_table = Db.try_open_table
 function Db:try_open_table(tab, mode, flags, paper_schema)
 
 	if not tab then --opening the unnamed root table
-		return try_open_table(self, mode, flags)
+		return try_open_table(self, nil, mode, flags)
 	end
 
 	local dbi = self.dbis[tab]
@@ -709,9 +684,33 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 	end
 
 	if stored_schema and paper_schema and paper_schema ~= stored_schema then
+
 		--table has both stored schema and paper schema, schemas must match.
 		local errs = {}
-		cmp_schemas(paper_schema, stored_schema, table_name, errs)
+
+		--compare table attributes
+		cmp_keys(paper_schema, stored_schema, {
+			'dyn_offset_size', 'int_key', 'dup_keys', 'is_index', 'val_table',
+		}, errs, '%s', table_name)
+
+		--compare key_fields and val_fields lists
+		for i=1,2 do
+			local F = i == 1 and 'key_fields' or 'val_fields'
+			local pfields =  paper_schema[F]
+			local sfields = stored_schema[F]
+			--TODO: map fields by col and match that way and get much better errors.
+			local n = cmp_lengths(pfields, sfields, errs, '%s.%s', table_name, F)
+			for i = 1, n do
+				local pf = pfields[i]
+				local sf = sfields[i]
+				cmp_keys(pf, sf, {
+					'col', 'col_pos', 'mdbx_type', 'maxlen', 'padded', 'not_null',
+					'elem_size', 'descending', 'mdbx_collation',
+					'fixed_offset', 'offset',
+				}, errs, '%s.%s[%d]', table_name, F, i)
+			end
+		end
+
 		if #errs == 0 and (paper_schema.index_schemas or stored_schema.index_schemas) then
 			--table schemas match, compare index table lists. only compare index
 			--table names for now, index table schemas will be validated on open.
@@ -728,6 +727,7 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 				end
 			end
 		end
+
 		if #errs > 0 then
 			return nil, fmt('schema mismatch for table: %s:\n\t%s',
 				table_name, cat(errs, '\n\t'))
@@ -751,15 +751,13 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 		if created and not stored_schema then
 			self:save_table_schema(schema)
 		end
+		self.dbi_schemas[dbi] = schema
 		if schema.index_schemas then
 			for _,ix_schema in ipairs(schema.index_schemas) do
-				local dbi, err, errs = self:try_open_table(ix_schema.name, mode)
+				local dbi, err, errs = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
 				if not dbi then
 					if sub_tx then self:abort() end
 					return nil, err, errs
-				end
-				if self.schema then
-					self.schema.tables[ix_schema.name] = ix_schema
 				end
 			end
 		end
@@ -774,8 +772,8 @@ function Db:dbi(tab, mode)
 	if isnum(tab) then return tab end --tab is dbi
 	local name = tab
 	local dbi = self.dbis[name or false]
-	local schema = self.schema and self.schema.tables[name]
 	if not dbi then
+		local schema = self.schema and self.schema.tables[name]
 		local err
 		if mode == 'w' or mode == 'c' then
 			dbi, err = self:open_table(name, mode, nil, schema)
@@ -1181,13 +1179,14 @@ local function get_raw_by_pk(self, dbi, schema, ...)
 	return self:get_raw(dbi, k, k_sz)
 end
 
-local function decode_kv(self, schema, k, k_sz, v, v_sz, val_cols, as, t, i0)
-	t = t or {}
+local function decode_kv(self, schema, k, k_sz, v, v_sz, val_cols)
+	local t = {}
 	local val_cols, as = cols_list(val_cols)
 	val_cols = val_cols or schema.val_cols
 	if schema.is_index then
 		local val_table = assert(schema.val_table)
-		local t_dbi, t_schema = assert(self:dbi_schema(val_table))
+		local t_dbi     = assert(self.dbis[val_table])
+		local t_schema  = assert(self.dbi_schemas[t_dbi])
 		local k, k_sz = v, v_sz
 		v, v_sz = assert(self:get_raw(t_dbi, k, k_sz))
 		i0 = decode_key(t_schema, k, k_sz, t, as, i0)
@@ -1270,7 +1269,7 @@ local function try_put(self, flags, op, tab, cols, ...)
 	local ret, err
 	if op == 'update' or op == 'upsert' or schema.fks or schema.index_schemas then
 		local cur = self:cursor(dbi, 'w')
-		local v0, v0_sz = cur:find_raw(k, k_sz)
+		local v0, v0_sz = cur:get_raw(k, k_sz)
 		local v_sz
 		if v0 then
 			if op == 'insert' then
@@ -1456,32 +1455,31 @@ function Db:try_cursor(tab, mode)
 	return cur
 end
 
-function Cur:try_current(val_cols)
-	local k, k_sz, v, v_sz = self.c:get(mdbx.MDBX_GET_CURRENT)
-	if not k then return false end
-	return decode_kv(self.db, self.schema, k, k_sz, v, v_sz, val_cols)
+for _,OP in ipairs{'first', 'last', 'next', 'prev', 'current'} do
+	local op_raw = Cur[OP..'_raw']
+	local function try_op(self, val_cols)
+		local k, k_sz, v, v_sz = op_raw(self)
+		if not k then return false end
+		return decode_kv(self.db, self.schema, k, k_sz, v, v_sz, val_cols)
+	end
+	local function do_op(self, val_cols)
+		return skip_ok(try_op(self, val_cols))
+	end
+	local function must_op(self, val_cols)
+		return check_cur(self, OP, try_op(self, val_cols))
+	end
+	Cur['try_'..OP] = try_op
+	Cur[OP] = do_op
+	Cur['must_'..OP] = must_op
 end
-function Cur:current(val_cols)
-	return skip_ok(self:try_current(val_cols))
-end
-function Cur:must_current(val_cols)
-	return check_cur(self, 'c_curr', self:try_current(val_cols))
-end
-function Cur:try_next(val_cols)
-	local k, k_sz, v, v_sz = self.c:get(mdbx.MDBX_NEXT)
-	if not k then return false end
-	return decode_kv(self.db, self.schema, k, k_sz, v, v_sz, val_cols)
-end
-function Cur:next(val_cols)
-	return skip_ok(self:try_next(val_cols))
-end
+
 function Cur:try_get(val_cols, ...)
 	local schema = self.schema
 	local k, k_buf_sz = key_rec_buffer(schema.key_fields.max_rec_size)
 	local k_sz = encode_key(self, schema, nil, k, k_buf_sz, schema.key_cols, nil, ...)
 	local v, v_sz = self:get_raw(k, k_sz)
 	if not v then return false end
-	return decode_kv(self.db, self.schema, k, k_sz, v, v_sz, val_cols)
+	return decode_kv(self.db, schema, nil, nil, v, v_sz, val_cols)
 end
 function Cur:get(...)
 	return skip_ok(self:try_get(...))
@@ -1503,25 +1501,35 @@ function Cur:update(val_cols, ...)
 	self:set_raw(v, v_sz)
 end
 
-local function skip_ok(self, ok, ...)
-	if not ok then return end
-	return self, ...
+local function cur_each_try_next(cur, k0)
+	if k0 == 'start' then
+		return cur:try_first()
+	end
+	return cur:try_next()
 end
-local function each_next(self)
-	local k, k_sz, v, v_sz = self:get_raw(mdbx.MDBX_NEXT)
-	if not k then return end
-	local t, val_cols, as = self._t, self._val_cols, self._as
-	return skip_ok(self, decode_kv(self.schema, k, k_sz, v, v_sz, t or {}, val_cols, as))
+function Db:try_each(tbl_name, val_cols, mode, t)
+	local cur = self:try_cursor(tbl_name, mode)
+	if not cur then return noop end
+	return cur_each_try_next, cur, 'start'
 end
 function Db:each(tbl_name, val_cols, mode, t)
 	local cur = self:cursor(tbl_name, mode)
 	if not cur then return noop end
-	local val_cols, as = cols_list(val_cols)
-	val_cols = val_cols or cur.schema.val_cols
-	cur._val_cols, cur._as = val_cols, as
-	cur._t = t or (not cur._as and {} or nil)
-	return each_next, cur
+	return cur_each_try_next, cur, 'start'
 end
+
+local function cur_each_try_prev(cur, k0)
+	if k0 == 'start' then
+		return cur:try_last()
+	end
+	return cur:try_prev()
+end
+function Db:try_each_reverse(tbl_name, val_cols, mode, t)
+	local cur = self:try_cursor(tbl_name, mode)
+	if not cur then return noop end
+	return cur_each_try_prev, cur, 'start'
+end
+
 
 --schema sync'ing ------------------------------------------------------------
 
