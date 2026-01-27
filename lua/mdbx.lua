@@ -458,14 +458,9 @@ function try_mdbx_open(file, opt)
 		file = file,
 		env = env,
 		dbis = {}, --{dbi->name, name->dbi}
-		dbi_schemas = {}, --{dbi->schema}, see mdbx_schema.lua
+		dbim = {}, --{dbi->schema}, see mdbx_schema.lua
 		readonly = opt and opt.readonly,
 		_ro_txn = nil,
-		--created dbis are local to the txn in which they are created until
-		--the top txn is commited, so when a txn is aborted, the dbis created
-		--in it are gone, which leaves our dbis table with invalid dbis in it.
-		--we use this flag to track when our dbis table contains local dbis.
-		_local_dbis = false,
 		_cursors = {},
 		cursors = {},
 		type = 'DB',
@@ -486,7 +481,7 @@ function Db:close()
 	self.env:close()
 	live(self, nil)
 	self.dbis = nil
-	self.dbi_schemas = nil
+	self.dbim = nil
 	self.env = nil
 end
 
@@ -496,13 +491,53 @@ end
 
 mdbx_delete = mdbx_env_delete
 
+--[[
+Managing dbi->table_name and dbi->table_schma maps with nested r/w transactions:
+
+Created dbis are local to the txn in which they are created until
+the top txn is commited, and when a txn is aborted, the dbis created
+in it are gone. to track this, we make txn-local dbis/dbim tables
+when a txn creates a table for the first time, otherwise we use the
+dbis/dbim tables inherited from the parent txn or from the db.
+]]
+local dbis_freelist = {}
+local dbim_freelist = {}
+
+local function txn_dbis(self, must_be_local)
+	local dbis = self.dbis
+	local dbim = self.dbim
+	if must_be_local and dbim.txn ~= self.txn then
+		local parent_dbis = dbis
+		local parent_dbim = dbim
+		local dbis = pop(dbis_freelist)
+		local dbim = pop(dbim_freelist)
+		if not dbis then
+			dbis = {}
+			dbim = {}
+			setmetatable(dbis, dbis)
+			setmetatable(dbim, dbim)
+		end
+		dbis.__index = parent_dbis
+		dbim.__index = parent_dbim
+		dbim.txn = self.txn
+		self.dbis = dbis
+		self.dbim = dbim
+	end
+	return dbis, dbim
+end
+
+local function txn_dbis_commit(self)
+	--TODO: promote created dbis
+end
+
+local function txn_dbis_abort(self)
+
+end
+
 --transactions
 
 function Db:begin(mode)
-	if mode == 'w' then
-		assert(not self.txn or self.txn ~= self._ro_txn, 'begin() in r/o transaction')
-		self.txn = self.env:txn('w', self.txn)
-	else
+	if not mode or mode == 'r' then
 		assert(not self.txn, 'in transaction')
 		local txn = self._ro_txn
 		if self._ro_txn then
@@ -511,6 +546,11 @@ function Db:begin(mode)
 			self._ro_txn = self.env:txn'r'
 		end
 		self.txn = self._ro_txn
+	elseif mode == 'w' then
+		assert(not self.txn or self.txn ~= self._ro_txn, 'begin() in r/o transaction')
+		self.txn = self.env:txn('w', self.txn)
+	else
+		assert(false)
 	end
 end
 
@@ -521,10 +561,8 @@ function Db:commit()
 	else
 		local parent = self.txn:parent()
 		self.txn:commit()
+		txn_dbis_commit(self)
 		self.txn = parent
-		if not parent then
-			self._local_dbis = false
-		end
 	end
 end
 
@@ -535,14 +573,7 @@ function Db:abort()
 	else
 		local parent = self.txn:parent()
 		self.txn:abort()
-		if self._local_dbis then
-			--clear our dbis cache because some of them are invalid now.
-			--the dbis that were still valid and are now lost will be acquired
-			--again via dbi_open() which is transparent to the user.
-			clear(self.dbis)
-			clear(self.dbi_schemas)
-			self._local_dbis = false
-		end
+		txn_dbis_abort(self)
 		self.txn = parent
 	end
 end
@@ -578,13 +609,14 @@ function Db:try_open_table(name, mode, flags)
 	local create = mode == 'w' or mode == 'c'
 	local dbi, created = self.txn:open(name, create, flags)
 	if not dbi then return nil, created end
-	self.dbis[name or false] = dbi
-	self.dbis[dbi] = name or false
+	--created dbis are local to the txn so we must create local dbis/dbim maps.
+	local dbis = txn_dbis(self, created)
+	dbis[name or false] = dbi
+	dbis[dbi] = name or false
 	if mode == 'c' and not created then
 		self:clear_table(dbi)
 	end
 	if created then
-		self._local_dbis = true
 		log('note', 'db', 't_create', '%s', name)
 	end
 	return dbi, created
@@ -614,9 +646,9 @@ function Db:try_rename_table(tab, new_table_name)
 	if not dbi then return nil, 'not_found', old_table_name end
 	local ok, err = self.txn:rename(dbi, new_table_name)
 	if not ok then return nil, err, old_table_name end
-	self.dbis[old_table_name] = false
-	self.dbis[dbi] = new_table_name
-	self._local_dbis = true
+	local dbis = txn_dbis(self, true)
+	dbis[old_table_name] = false
+	dbis[dbi] = new_table_name
 	log('note', 'db', 't_rename', '%s -> %s', old_table_name, new_table_name)
 	return true, nil, old_table_name
 end
@@ -631,10 +663,11 @@ function Db:try_drop_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	local ok, err = self.txn:drop(dbi)
-	local name = self.dbis[dbi]
-	self.dbis[dbi]  = nil
-	self.dbis[name] = nil
-	self.dbi_schemas[dbi] = nil
+	local dbis, dbim = txn_dbis(self, true)
+	local name = dbis[dbi]
+	dbis[dbi]  = nil
+	dbis[name] = nil
+	dbim[dbi] = nil
 	log('note', 'db', 't_drop', '%s', name)
 	return true
 end
