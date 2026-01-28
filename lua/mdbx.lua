@@ -494,13 +494,19 @@ end
 mdbx_delete = mdbx_env_delete
 
 --[[
-Managing dbi->table_name and dbi->table_schma maps with nested r/w transactions:
-
-Created dbis are local to the txn in which they are created until the top txn
-is commited, and when a txn is aborted, the dbis created in it are gone.
-To track this, we make txn-local dbis/dbim tables when a txn creates a table
-for the first time, otherwise we use the dbis/dbim tables inherited from
-the parent txn or from the db.
+In mdbx all ops are transactional including table create/rename/drop. DBIs
+however are global with the exception of DBIs of created tables which are
+local to the txn that created them and are automatically discarded on abort
+and promoted to the parent txn on commit and become global on top txn commit.
+Since we don't want to work with DBIs in Lua but only with table names we need
+to keep a table_name->dbi mapping for opened tables. We _could_ not do this
+and open tables every time to get the DBI but 1) we also need to keep a
+dbi->schema mapping, and 2) mdbx_open does some array scans which can become
+O(n^2) on repeat ops.
+So we keep the mapping in Lua and we match DBI lifetime semantics by using
+txn-local dbis/dbim tables when tables are created or renamed which we promote
+them on commit and discard on abort. Dropped dbis are invalidated globally and
+we match that by removing them from both txn-level and env-level dbis/dbim.
 ]]
 local dbis_freelist = {}
 local dbim_freelist = {}
@@ -508,7 +514,7 @@ local dbim_freelist = {}
 local function local_dbis(self)
 	local dbis = self.dbis
 	local dbim = self.dbim
-	if dbim.txn ~= self.txn then
+	if dbim.txn ~= self.txn then --not local, create
 		local parent_dbis = dbis
 		local parent_dbim = dbim
 		local dbis = pop(dbis_freelist)
@@ -528,7 +534,7 @@ local function local_dbis(self)
 	return dbis, dbim
 end
 
-local function local_dbis_forget(self, commited)
+local function local_dbis_discard(self, commited)
 	if self.dbim.txn ~= self.txn then
 		local dbis = self.dbis
 		local dbim = self.dbim
@@ -574,7 +580,7 @@ function Db:commit()
 	else
 		local parent = self.txn:parent()
 		self.txn:commit()
-		local_dbis_forget(self, true)
+		local_dbis_discard(self, true)
 		self.txn = parent
 	end
 end
@@ -586,7 +592,7 @@ function Db:abort()
 	else
 		local parent = self.txn:parent()
 		self.txn:abort()
-		local_dbis_forget(self)
+		local_dbis_discard(self)
 		self.txn = parent
 	end
 end
@@ -680,7 +686,7 @@ function Db:try_drop_table(tab)
 	self.dbis[dbi]  = nil
 	self.dbis[name] = nil
 	self.dbim[dbi] = nil
-	--dropped dbis are removed from env's dbis too and are not recovered on abort.
+	--dropped dbis are discarded globally by mdbx.
 	self.env_dbis[dbi]  = nil
 	self.env_dbis[name] = nil
 	self.env_dbim[dbi] = nil

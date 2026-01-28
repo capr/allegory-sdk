@@ -351,7 +351,7 @@ function Db:layout_table_schema(schema)
 	for i=1,2 do
 		local ixs = i == 1 and schema.uks or schema.ixs
 		if ixs then
-			local ix_schemas = {}
+			local ix_schemas = {} --{schema1,...}
 			schema.index_schemas = ix_schemas
 			for _,ix in pairs(ixs) do
 				local ix_schema = self:index_schema(table_name, ix)
@@ -624,9 +624,9 @@ function Db:load_table_schema(table_name)
 	schema.layouted = true --layouted but not compiled
 	if schema.index_tables then
 		schema.index_schemas = {}
-		for i, ix_table_name in ipairs(schema.index_tables) do
-			schema.index_schemas[i] = assertf(self:load_table_schema(ix_table_name),
-					'schema missing for table: %s ', ix_table_name)
+		for i, ix_name in ipairs(schema.index_tables) do
+			schema.index_schemas[i] = assertf(self:load_table_schema(ix_name),
+					'schema missing for table: %s ', ix_name)
 		end
 		schema.index_tables = nil
 	end
@@ -653,11 +653,11 @@ local function cmp_keys(pt, st, keys, errs, ...)
 	end
 end
 
-local try_open_table = Db.try_open_table
+local try_open_table_raw = Db.try_open_table
 function Db:try_open_table(tab, mode, flags, paper_schema)
 
 	if not tab then --opening the unnamed root table
-		return try_open_table(self, nil, mode, flags)
+		return try_open_table_raw(self, nil, mode, flags)
 	end
 
 	local dbi = self.dbis[tab]
@@ -741,7 +741,7 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 
 	flags = bor(flags or 0,
 		schema and schema.int_key and mdbx.MDBX_INTEGERKEY or 0)
-	local dbi, created = try_open_table(self, table_name, mode, flags)
+	local dbi, created = try_open_table_raw(self, table_name, mode, flags)
 	if not dbi then
 		if sub_tx then self:abort() end
 		return nil, created
@@ -751,7 +751,7 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 		if created and not stored_schema then
 			self:save_table_schema(schema)
 		end
-		self.dbi_schemas[dbi] = schema
+		self.dbim[dbi] = schema
 		if schema.index_schemas then
 			for _,ix_schema in ipairs(schema.index_schemas) do
 				local dbi, err, errs = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
@@ -797,6 +797,7 @@ function Db:try_drop_table(tab)
 	local dbi, schema, name = self:dbi(tab)
 	if not dbi then return nil, schema end
 	assert(name)
+	assert(not (schema and schema.is_index))
 	assert(try_drop_table(self, dbi))
 	self:try_drop_table_schema(name)
 	if schema and schema.index_schemas then
@@ -1186,7 +1187,7 @@ local function decode_kv(self, schema, k, k_sz, v, v_sz, val_cols)
 	if schema.is_index then
 		local val_table = assert(schema.val_table)
 		local t_dbi     = assert(self.dbis[val_table])
-		local t_schema  = assert(self.dbi_schemas[t_dbi])
+		local t_schema  = assert(self.dbim[t_dbi])
 		local k, k_sz = v, v_sz
 		v, v_sz = assert(self:get_raw(t_dbi, k, k_sz))
 		i0 = decode_key(t_schema, k, k_sz, t, as, i0)
@@ -1565,6 +1566,7 @@ end
 
 function Db:schema_diff()
 	local ss = self:extract_schema()
+	self.schema:layout_schema()
 	return self.schema:diff(ss)
 end
 
