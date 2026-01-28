@@ -250,11 +250,15 @@ local function add_pk(self, tbl, cols)
 	end
 end
 
-local function add_ix(self, T, tbl, cols, unique)
-	local t = attr(tbl, T..'s')
-	local k = _(self.ix_name_format, T, tbl.name, cat(cols, '_'))
-	assertf(not t[k], 'duplicate %s `%s`', T, k)
-	check_cols(T, tbl, cols)
+function schema:format_ix_name(tbl_name, cols, unique)
+	return _(self.ix_name_format, unique and 'uk' or 'ix', tbl_name, cat(cols, '_'))
+end
+
+local function add_ix(self, tbl, cols, unique)
+	local t = attr(tbl, 'ixs')
+	local k = self:format_ix_name(tbl.name, cols, unique)
+	assertf(not t[k], 'duplicate index `%s`', k)
+	check_cols('index', tbl, cols)
 	t[k] = cols
 	if unique then --apply `not_null` flag to fields.
 		cols.is_unique = true
@@ -412,23 +416,23 @@ function schema:add_weak_fk(tbl, cols, ref_tbl)
 	self:add_fk(tbl, cols, ref_tbl, 'set null')
 end
 
-local function ix_func(T, unique)
+local function ix_func(unique)
 	return function(arg1, ...)
 		if isschema(arg1) then --used as flag: make an index on current field.
 			local self, tbl, fld = arg1, ...
-			add_ix(self, T, tbl, {fld.col, desc = {false}}, unique)
-			fld[T] = true
+			add_ix(self, tbl, {fld.col, desc = {false}}, unique)
+			fld.ix = true
 		else --called by user, return a flag generator.
 			local cols = pack(arg1, ...)
 			return function(self, tbl, fld)
 				local cols = parse_ix_cols(fld, unpack(cols))
-				add_ix(self, T, tbl, cols, unique)
+				add_ix(self, tbl, cols, unique)
 			end
 		end
 	end
 end
-schema.env.uk = ix_func('uk', true)
-schema.env.ix = ix_func('ix')
+schema.env.uk = ix_func(true)
+schema.env.ix = ix_func()
 
 schema.flags = {} --not used
 schema.types = {} --not used
@@ -664,7 +668,6 @@ local function diff_tables(self, t1, t0, sc0)
 	local d = {}
 	d.fields   = diff_maps(self, t1.fields  , t0.fields  , diff_fields   , map_fields, sc0, true)
 	local pk   = diff_maps(self, {pk=t1.pk} , {pk=t0.pk} , diff_ixs      , nil, sc0, true)
-	d.uks      = diff_maps(self, t1.uks     , t0.uks     , diff_ixs      , nil, sc0, true)
 	d.ixs      = diff_maps(self, t1.ixs     , t0.ixs     , diff_ixs      , nil, sc0, true)
 	d.fks      = diff_maps(self, t1.fks     , t0.fks     , diff_fks      , nil, sc0, sc0.supports_fks     )
 	d.checks   = diff_maps(self, t1.checks  , t0.checks  , diff_checks   , nil, sc0, sc0.supports_checks  )
@@ -745,11 +748,6 @@ function diff:pp(opt)
 				P_fld(fld, pki and _('%sK%d', desc and 'p' or 'P', pki))
 			end
 			print('    -------')
-			if tbl.uks then
-				for uk_name, uk in sortedpairs(tbl.uks) do
-					P('    UK   %s', ix_cols(uk))
-				end
-			end
 			if tbl.ixs then
 				for ix_name, ix in sortedpairs(tbl.ixs) do
 					P('    IX   %s', ix_cols(ix))
@@ -814,16 +812,6 @@ function diff:pp(opt)
 			end
 			if d.add_pk then
 					P('   +PK   %s', ix_cols(d.add_pk))
-			end
-			if d.uks and d.uks.remove then
-				for uk_name, uk in sortedpairs(d.uks.remove) do
-					P('   -UK   %s', ix_cols(uk))
-				end
-			end
-			if d.uks and d.uks.add then
-				for uk_name, uk in sortedpairs(d.uks.add) do
-					P('   +UK   %s', ix_cols(uk))
-				end
 			end
 			if d.ixs and d.ixs.remove then
 				for ix_name, ix in sortedpairs(d.ixs.remove) do

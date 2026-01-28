@@ -349,16 +349,14 @@ function Db:layout_table_schema(schema)
 	end
 
 	--create and layout index table schemas.
-	for i=1,2 do
-		local ixs = i == 1 and schema.uks or schema.ixs
-		if ixs then
-			local ix_schemas = {} --{schema1,...}
-			schema.index_schemas = ix_schemas
-			for _,ix in pairs(ixs) do
-				local ix_schema = self:index_schema(schema, ix)
-				self:layout_table_schema(ix_schema)
-				add(ix_schemas, ix_schema)
-			end
+	local ixs = schema.ixs
+	if ixs then
+		local ix_schemas = {} --{schema1,...}
+		schema.index_schemas = ix_schemas
+		for _,ix in pairs(ixs) do
+			local ix_schema = self:index_schema(schema, ix)
+			self:layout_table_schema(ix_schema)
+			add(ix_schemas, ix_schema)
 		end
 	end
 	--make the list of index schemas stable.
@@ -595,7 +593,6 @@ function Db:save_table_schema(schema)
 			t.index_tables[i] = ix_schema.name
 		end
 	end
-	t.uks = save_ixs(schema.uks)
 	t.ixs = save_ixs(schema.ixs)
 	local k = schema.name
 	local v = pp(t, false)
@@ -898,7 +895,6 @@ function Db:compile_index_schema(ix_schema)
 		self:drop_table(ix_schema.name)
 		assert(remove_value(val_schema.index_schemas, ix_schema))
 		self:save_table_schema(val_schema)
-		self.schema.tables[ix_schema.name] = nil
 	end
 
 	local dt0 = {}
@@ -1242,15 +1238,6 @@ function Db:must_get(...)
 	return must_ok(self:try_get(...))
 end
 
-function Db:on(table_name, ...)
-	local schema = self.schema.tables[table_name]
-	events.on(schema, ...)
-end
-function Db:off(table_name, ...)
-	local schema = self.schema.tables[table_name]
-	events.off(schema, ...)
-end
-
 local put_v0_buffer = buffer()
 local function try_put(self, flags, op, tab, cols, ...)
 	local dbi, schema = self:dbi_schema(tab, 'w')
@@ -1536,6 +1523,11 @@ S.relevant_field_attrs = {
 	maxlen=1,
 	padded=1,
 }
+
+function S:format_ix_name(T, tbl_name, cols, unique)
+	return _('%s/%s', tbl_name, cat(cols, '-'))
+end
+
 function mdbx_schema()
 	return schema.new(update({}, S))
 end
@@ -1629,15 +1621,16 @@ function Db:sync_schema(src, opt)
 			end
 			if diff.tables.update then
 				for tbl_name, tbl in sortedpairs(diff.tables.update) do
-					if tbl.uks then
-						if tbl.uks.del then
-							for ix_name, ix in pairs(tbl.indexes.remove) do
+					local ixs = tbl.ixs
+					if ixs then
+						if ixs.del then
+							for ix_name, ix in pairs(ixs.remove) do
 								--
 							end
 						end
-						if tbl.uks.add then
-							for ix_name, ix in pairs(tbl.uks.add) do
-								P('create uk: %s', ix_name)
+						if ixs.add then
+							for ix_name, ix in pairs(ixs.add) do
+								P('create index: %s', ix_name)
 								self:create_index(tbl_name, ix)
 							end
 						end

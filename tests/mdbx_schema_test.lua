@@ -214,7 +214,7 @@ function test_uks()
 	--declare an unique key index and sync schema to create it
 	--which should fail because of duplicate uk.
 	local ix_tbl = 'test_uk/u1-u2'
-	schema.tables.test_uk.uks = {
+	schema.tables.test_uk.ixs = {
 		 [ix_tbl] = {'u1', 'u2', is_unique = true},
 	}
 	db:layout_schema()
