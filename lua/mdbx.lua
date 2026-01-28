@@ -457,14 +457,16 @@ function try_mdbx_open(file, opt)
 	local self = object(Db, {
 		file = file,
 		env = env,
-		dbis = {}, --{dbi->name, name->dbi}
-		dbim = {}, --{dbi->schema}, see mdbx_schema.lua
+		env_dbis = {}, --{dbi->name, name->dbi}
+		env_dbim = {}, --{dbi->schema}, see mdbx_schema.lua
 		readonly = opt and opt.readonly,
 		_ro_txn = nil,
 		_cursors = {},
 		cursors = {},
 		type = 'DB',
 	})
+	self.dbis = self.env_dbis
+	self.dbim = self.env_dbim
 	live(self, file)
 	log(create and 'note' or '', 'db', create and 'db_create' or 'db_open', '%s', file)
 	return self, nil, create
@@ -494,19 +496,19 @@ mdbx_delete = mdbx_env_delete
 --[[
 Managing dbi->table_name and dbi->table_schma maps with nested r/w transactions:
 
-Created dbis are local to the txn in which they are created until
-the top txn is commited, and when a txn is aborted, the dbis created
-in it are gone. to track this, we make txn-local dbis/dbim tables
-when a txn creates a table for the first time, otherwise we use the
-dbis/dbim tables inherited from the parent txn or from the db.
+Created dbis are local to the txn in which they are created until the top txn
+is commited, and when a txn is aborted, the dbis created in it are gone.
+To track this, we make txn-local dbis/dbim tables when a txn creates a table
+for the first time, otherwise we use the dbis/dbim tables inherited from
+the parent txn or from the db.
 ]]
 local dbis_freelist = {}
 local dbim_freelist = {}
 
-local function txn_dbis(self, must_be_local)
+local function local_dbis(self)
 	local dbis = self.dbis
 	local dbim = self.dbim
-	if must_be_local and dbim.txn ~= self.txn then
+	if dbim.txn ~= self.txn then
 		local parent_dbis = dbis
 		local parent_dbim = dbim
 		local dbis = pop(dbis_freelist)
@@ -526,12 +528,23 @@ local function txn_dbis(self, must_be_local)
 	return dbis, dbim
 end
 
-local function txn_dbis_commit(self)
-	--TODO: promote created dbis
-end
-
-local function txn_dbis_abort(self)
-
+local function local_dbis_forget(self, commited)
+	if self.dbim.txn ~= self.txn then
+		local dbis = self.dbis
+		local dbim = self.dbim
+		local parent_dbis = dbis.__index
+		local parent_dbim = dbim.__index
+		push(dbis_freelist, dbis)
+		push(dbim_freelist, dbim)
+		if commited then --promote created dbis to parent txn
+			update(parent_dbis, dbis)
+			update(parent_dbim, dbim)
+		end
+		self.dbis = parent_dbis
+		self.dbim = parent_dbim
+		clear(dbis)
+		clear(dbim)
+	end
 end
 
 --transactions
@@ -561,7 +574,7 @@ function Db:commit()
 	else
 		local parent = self.txn:parent()
 		self.txn:commit()
-		txn_dbis_commit(self)
+		local_dbis_forget(self, true)
 		self.txn = parent
 	end
 end
@@ -573,7 +586,7 @@ function Db:abort()
 	else
 		local parent = self.txn:parent()
 		self.txn:abort()
-		txn_dbis_abort(self)
+		local_dbis_forget(self)
 		self.txn = parent
 	end
 end
@@ -610,7 +623,7 @@ function Db:try_open_table(name, mode, flags)
 	local dbi, created = self.txn:open(name, create, flags)
 	if not dbi then return nil, created end
 	--created dbis are local to the txn so we must create local dbis/dbim maps.
-	local dbis = txn_dbis(self, created)
+	local dbis = created and local_dbis(self) or self.env_dbis
 	dbis[name or false] = dbi
 	dbis[dbi] = name or false
 	if mode == 'c' and not created then
@@ -646,7 +659,7 @@ function Db:try_rename_table(tab, new_table_name)
 	if not dbi then return nil, 'not_found', old_table_name end
 	local ok, err = self.txn:rename(dbi, new_table_name)
 	if not ok then return nil, err, old_table_name end
-	local dbis = txn_dbis(self, true)
+	local dbis = local_dbis(self)
 	dbis[old_table_name] = false
 	dbis[dbi] = new_table_name
 	log('note', 'db', 't_rename', '%s -> %s', old_table_name, new_table_name)
@@ -663,11 +676,14 @@ function Db:try_drop_table(tab)
 	local dbi = isnum(tab) and tab or self:dbi(tab)
 	if not dbi then return nil, 'not_found' end
 	local ok, err = self.txn:drop(dbi)
-	local dbis, dbim = txn_dbis(self, true)
-	local name = dbis[dbi]
-	dbis[dbi]  = nil
-	dbis[name] = nil
-	dbim[dbi] = nil
+	local name = assert(self.dbis[dbi])
+	self.dbis[dbi]  = nil
+	self.dbis[name] = nil
+	self.dbim[dbi] = nil
+	--dropped dbis are removed from env's dbis too and are not recovered on abort.
+	self.env_dbis[dbi]  = nil
+	self.env_dbis[name] = nil
+	self.env_dbim[dbi] = nil
 	log('note', 'db', 't_drop', '%s', name)
 	return true
 end
