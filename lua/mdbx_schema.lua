@@ -316,14 +316,15 @@ function Db:layout_table_schema(schema)
 			elseif max_rec_size + dot_len * 4 < 2^31 then
 				dyn_offset_size = 4
 			else
-				assertf(false, 'value record too big for table: %s', table_name)
+				assertf(false, 'value record too big for table %s: %.0f bytes',
+					table_name, max_rec_size)
 			end
 			schema.dyn_offset_size = dyn_offset_size
 			max_rec_size = max_rec_size + dot_len * dyn_offset_size
 		end
 
 		assertf(max_rec_size < 2^31,
-			'record too big: %.0f bytes (max is 2GB-1) for table: %s',
+			'record too big for table %s: %.0f bytes (max is 2GB-1)',
 			max_rec_size, table_name)
 
 		fields.max_rec_size = max_rec_size
@@ -354,7 +355,7 @@ function Db:layout_table_schema(schema)
 			local ix_schemas = {} --{schema1,...}
 			schema.index_schemas = ix_schemas
 			for _,ix in pairs(ixs) do
-				local ix_schema = self:index_schema(table_name, ix)
+				local ix_schema = self:index_schema(schema, ix)
 				self:layout_table_schema(ix_schema)
 				add(ix_schemas, ix_schema)
 			end
@@ -831,15 +832,14 @@ local ix1_key_rec_buffer = buffer()
 local ix2_key_rec_buffer = buffer()
 local ix_val_rec_buffer = buffer()
 
-function Db:index_schema(val_table, cols)
-	local val_schema = assert(self.schema.tables[val_table])
-	local ix_tbl_name = val_table..'/'..cat(cols, '-')
+function Db:index_schema(val_schema, cols)
+	local ix_name = val_schema.name..'/'..cat(cols, '-')
 	local ix_fields = {}
 	for _,col in ipairs(cols) do
 		local f = assertf(val_schema.fields[col],
-			'index: %s unknown field %s.%s', ix_tbl_name, val_table, col)
+			'index: %s unknown field %s.%s', ix_name, val_schema.name, col)
 		assertf(f.not_null, 'index %s col must be non_null: %s.%s',
-			ix_tbl_name, val_table, col)
+			ix_name, val_schema.name, col)
 		local f = {
 			col = f.col,
 			mdbx_type = f.mdbx_type,
@@ -850,12 +850,12 @@ function Db:index_schema(val_table, cols)
 		add(ix_fields, f)
 	end
 	local ix_schema = {
-		name = ix_tbl_name,
+		name = ix_name,
 		fields = ix_fields,
 		pk = cols,
 		dup_keys = not cols.is_unique or nil,
 		is_index = true,
-		val_table = val_table,
+		val_table = val_schema.name,
 	}
 	return ix_schema
 end
@@ -863,7 +863,7 @@ end
 function Db:compile_index_schema(ix_schema)
 
 	assert(ix_schema.is_index)
-	local ix_tbl_name = ix_schema.name
+	local ix_name = ix_schema.name
 
 	local val_table = assert(ix_schema.val_table)
 	local val_schema = assert(self.schema.tables[val_table])
@@ -877,18 +877,6 @@ function Db:compile_index_schema(ix_schema)
 	--create index methods
 
 	function ix_schema.try_create(ix_schema, self)
-
-		local index_schemas = attr(val_schema, 'index_schemas')
-		local ix_i = binsearch(ix_schema.name, index_schemas, function(index_schemas, i, name)
-			return index_schemas[i].name < name
-		end)
-		if ix_i and index_schemas[ix_i].name == ix_schema.name then
-			return nil, 'exists'
-		end
-		ix_i = ix_i or #index_schemas + 1
-
-		self:begin'w'
-
 		local ix_dbi = self:create_table(ix_schema.name, nil, ix_schema)
 		local xk, xk_buf_sz = ix1_key_rec_buffer(ix_schema.key_fields.max_rec_size)
 		local xv, xv_buf_sz = ix_val_rec_buffer(val_schema.key_fields.max_rec_size)
@@ -903,16 +891,6 @@ function Db:compile_index_schema(ix_schema)
 				return nil, 'duplicate_key'
 			end
 		end
-
-		insert(index_schemas, ix_i, ix_schema)
-		self:save_table_schema(val_schema)
-
-		self:commit()
-
-		if self.schema then
-			self.schema.tables[ix_schema.name] = ix_schema
-		end
-
 		return true
 	end
 
@@ -926,7 +904,7 @@ function Db:compile_index_schema(ix_schema)
 	local dt0 = {}
 	function ix_schema.update(ix_schema, self, k, k_sz, v, v_sz, v0, v0_sz)
 
-		local ix_dbi = self:dbi(ix_tbl_name, 'w')
+		local ix_dbi = self:dbi(ix_name, 'w')
 
 		--[[ cases to cover:
 		      record       index
@@ -972,29 +950,44 @@ function Db:compile_index_schema(ix_schema)
 
 end
 
-function Db:try_create_index(tbl_name, cols)
-	local ix_schema = self:index_schema(tbl_name, cols)
+function Db:try_create_index(val_tbl_name, cols)
+	local val_dbi, val_schema = self:dbi(val_tbl_name)
+	local ix_schema = self:index_schema(val_schema, cols)
 	self:compile_table_schema(ix_schema)
-	return ix_schema:try_create(self)
-end
-
-function Db:create_index(tbl_name, cols)
-	local ix_schema = self:index_schema(tbl_name, cols)
-	self:compile_table_schema(ix_schema)
+	self:begin'w'
 	local ok, err = ix_schema:try_create(self)
-	return check('db', 'i_create', ok, '%s: %s', ix_schema.name, err)
+	if not ok then
+		self:abort()
+		return nil, err
+	end
+	local index_schemas = attr(val_schema, 'index_schemas')
+	local ix_i = binsearch(ix_schema.name, index_schemas, function(index_schemas, i, name)
+		return index_schemas[i].name < name
+	end)
+	if ix_i and index_schemas[ix_i].name == ix_schema.name then
+		return nil, 'exists'
+	end
+	ix_i = ix_i or #index_schemas + 1
+
+	insert(index_schemas, ix_i, ix_schema)
+	self:save_table_schema(val_schema)
 end
 
-function Db:try_drop_index(ix_tbl_name)
-	local ix_schema = self.schema.tables[ix_tbl_name]
+function Db:create_index(val_tbl_name, cols)
+	local ok, err = self:try_create_index(val_tbl_name, cols)
+	return check('db', 'i_create', ok, '%s: %s', ix_name, err)
+end
+
+function Db:try_drop_index(ix_name)
+	local ix_schema = self.schema.tables[ix_name]
 	if not ix_schema then return nil, 'not_found' end
 	assert(ix_schema.is_index)
 	return ix_schema:drop(self)
 end
 
-function Db:drop_index(ix_tbl_name)
-	local ok, err = self:try_drop_index(ix_tbl_name)
-	return check('db', 'i_drop', ok, '%s: %s', ix_schema.name, err)
+function Db:drop_index(ix_name)
+	local ok, err = self:try_drop_index(ix_name)
+	return check('db', 'i_drop', ok, '%s: %s', ix_name, err)
 end
 
 ------------------------------------------------------------------------------
