@@ -197,6 +197,8 @@ function Db:layout_table_schema(schema)
 	for i,f in ipairs(schema.fields) do
 		assertf(isstr(f.col) and #f.col > 0 and not f.col:find'[^a-z0-9_]',
 			'invalid field name: %s.%s', table_name, f.col)
+		assertf(not schema.fields[f.col],
+			'duplicate field name: %s.%s', table_name, f.col)
 		schema.fields[f.col] = f
 		f.col_pos = i
 		local elem_ct = col_ct[f.mdbx_type] or f.mdbx_type
@@ -349,23 +351,14 @@ function Db:layout_table_schema(schema)
 	end
 
 	--create and layout index table schemas.
-	local ixs = schema.ixs
-	if ixs then
-		local ix_schemas = {} --{schema1,...}
-		schema.index_schemas = ix_schemas
-		for _,ix in pairs(ixs) do
+	if schema.ixs then
+		schema.ix_schemas = {} --{schema1,...}
+		for ix_name, ix in sortedpairs(schema.ixs) do
 			local ix_schema = self:index_schema(schema, ix)
 			self:layout_table_schema(ix_schema)
-			add(ix_schemas, ix_schema)
+			add(schema.ix_schemas, ix_schema)
 		end
 	end
-	--make the list of index schemas stable.
-	if schema.index_schemas then
-		sort(schema.index_schemas, function(ix_schema1, ix_schema2)
-			return ix_schema1.name < ix_schema2.name
-		end)
-	end
-
 end
 
 local S = function() end
@@ -543,15 +536,6 @@ function Db:compile_table_schema(schema)
 
 end
 
-local function save_ixs(ixs)
-	return ixs and map(ixs, function(ix_name, ix)
-		return extend({
-			is_unique = ix.is_unique,
-			desc = ix.desc and imap(ix.desc),
-		}, ix)
-	end)
-end
-
 function Db:save_table_schema(schema)
 	assert(schema.layouted)
 	--NOTE: only saving enough information to read the data back in absence of
@@ -587,13 +571,15 @@ function Db:save_table_schema(schema)
 			}
 		end
 	end
-	if schema.index_schemas then
-		t.index_tables = {}
-		for i, ix_schema in ipairs(schema.index_schemas) do
-			t.index_tables[i] = ix_schema.name
+	if schema.ixs then
+		t.ixs = {}
+		for ix_name, ix in pairs(schema.ixs) do
+			t.ixs[ix_name] = extend({
+				is_unique = ix.is_unique,
+				desc = ix.desc and imap(ix.desc),
+			}, ix)
 		end
 	end
-	t.ixs = save_ixs(schema.ixs)
 	local k = schema.name
 	local v = pp(t, false)
 	assert(self:try_put_raw('$schema', cast(voidp, k), #k, cast(u8p, v), #v))
@@ -613,20 +599,24 @@ function Db:load_table_schema(table_name)
 	schema.fields = {}
 	for i,f in ipairs(schema.key_fields) do
 		schema.fields[f.col_pos] = f
+		schema.fields[f.col] = f
+		f.key_index = i
 	end
 	for i,f in ipairs(schema.val_fields) do
 		schema.fields[f.col_pos] = f
+		schema.fields[f.col] = f
+		f.val_index = i
 	end
 	schema.pk = imap(schema.key_fields, 'col')
 	schema.pk.desc = imap(schema.key_fields, 'descending')
 	schema.layouted = true --layouted but not compiled
-	if schema.index_tables then
-		schema.index_schemas = {}
-		for i, ix_name in ipairs(schema.index_tables) do
-			schema.index_schemas[i] = assertf(self:load_table_schema(ix_name),
+	if schema.ixs then
+		schema.ix_schemas = {}
+		for ix_name in sortedpairs(schema.ixs) do
+			local ix_schema = assertf(self:load_table_schema(ix_name),
 					'schema missing for table: %s ', ix_name)
+			add(schema.ix_schemas, ix_schema)
 		end
-		schema.index_tables = nil
 	end
 	return schema
 end
@@ -635,18 +625,24 @@ function Db:try_drop_table_schema(table_name)
 	return self:try_del_raw('$schema', table_name, #table_name)
 end
 
-local function cmp_lengths(pt, st, errs, ...)
-	if #pt ~= #st then
-		add(errs, fmt('%s count differs: expected: %d, got: %d', fmt(...), #pt, #st))
-	end
-	return min(#pt, #st)
-end
 local function cmp_keys(pt, st, keys, errs, ...)
 	for _,k in ipairs(keys) do
 		local pv = pt[k]
 		local sv = st[k]
 		if pv ~= sv then
 			add(errs, fmt('%s.%s mismatch: expected: %s, got: %s', fmt(...), k, pv, sv))
+		end
+	end
+end
+local function cmp_map_str_keys(pt, st, errs, ...)
+	for k,v in pairs(pt) do
+		if isstr(k) and st[k] == nil then
+			add(errs, fmt('%s.%s is missing', fmt(...), k)
+		end
+	end
+	for k,v in pairs(st) do
+		if isstr(k) and pt[k] == nil then
+			add(errs, fmt('%s.%s is unknown', fmt(...), k)
 		end
 	end
 end
@@ -691,38 +687,31 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 			'dyn_offset_size', 'int_key', 'dup_keys', 'is_index', 'val_table',
 		}, errs, '%s', table_name)
 
-		--compare key_fields and val_fields lists
-		for i=1,2 do
-			local F = i == 1 and 'key_fields' or 'val_fields'
-			local pfields =  paper_schema[F]
-			local sfields = stored_schema[F]
-			--TODO: map fields by col and match that way and get much better errors.
-			local n = cmp_lengths(pfields, sfields, errs, '%s.%s', table_name, F)
-			for i = 1, n do
-				local pf = pfields[i]
-				local sf = sfields[i]
+		--compare field lists
+		local pfields =  paper_schema.fields
+		local sfields = stored_schema.fields
+		cmp_map_str_keys(pfields, sfields, errs, '%s.%s', table_name, 'fields')
+		for k, pf in pairs(pfields) do
+			local sf = isstr(k) and sfields[k]
+			if sf then
 				cmp_keys(pf, sf, {
+					'key_index', 'val_index',
 					'col', 'col_pos', 'mdbx_type', 'maxlen', 'padded', 'not_null',
 					'elem_size', 'descending', 'mdbx_collation',
 					'fixed_offset', 'offset',
-				}, errs, '%s.%s[%d]', table_name, F, i)
+				}, errs, '%s.%s.%s', table_name, F, k)
 			end
 		end
 
-		if #errs == 0 and (paper_schema.index_schemas or stored_schema.index_schemas) then
-			--table schemas match, compare index table lists. only compare index
-			--table names for now, index table schemas will be validated on open.
-			--TODO: map indexes by name and match that way and get much better errors.
-			local pix_schemas =  paper_schema.index_schemas or empty
-			local six_schemas = stored_schema.index_schemas or empty
-			local n = cmp_lengths(pix_schemas, six_schemas, errs, '%s.%s', table_name, 'index_schemas')
-			for i = 1, n do
-				local pix_schema = pix_schemas[i]
-				local six_schema = six_schemas[i]
-				if pix_schema.name ~= six_schema.name then
-					add(errs, fmt('%s.index_schemas[%d] name mismatch: expected: %s, got: %s',
-						table_name, i, pix_schema.name, six_schema.name))
-				end
+		--compare index lists
+		if #errs == 0 then
+			local pixs = paper_schema.ixs
+			local sixs = stored_schema.ixs
+			if pixs or sixs then
+				cmp_map_str_keys(
+					pixs or empty,
+					sixs or empty,
+					errs, '%s.%s', table_name, 'ixs')
 			end
 		end
 
@@ -734,7 +723,7 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 
 	local schema = paper_schema
 
-	local sub_tx = schema and schema.index_schemas and (more or 'r') ~= 'r'
+	local sub_tx = schema and schema.ix_schemas and (more or 'r') ~= 'r'
 	if sub_tx then self:begin'w' end
 
 	flags = bor(flags or 0,
@@ -750,8 +739,8 @@ function Db:try_open_table(tab, mode, flags, paper_schema)
 			self:save_table_schema(schema)
 		end
 		self.dbim[dbi] = schema
-		if schema.index_schemas then
-			for _,ix_schema in ipairs(schema.index_schemas) do
+		if schema.ix_schemas then
+			for _,ix_schema in ipairs(schema.ix_schemas) do
 				local dbi, err, errs = self:try_open_table(ix_schema.name, mode, nil, ix_schema)
 				if not dbi then
 					if sub_tx then self:abort() end
@@ -798,8 +787,8 @@ function Db:try_drop_table(tab)
 	assert(not (schema and schema.is_index))
 	assert(try_drop_table(self, dbi))
 	self:try_drop_table_schema(name)
-	if schema and schema.index_schemas then
-		for _,ix_schema in ipairs(schema.index_schemas) do
+	if schema and schema.ix_schemas then
+		for _,ix_schema in ipairs(schema.ix_schemas) do
 			self:try_drop_table(ix_schema.name)
 		end
 	end
@@ -893,7 +882,7 @@ function Db:compile_index_schema(ix_schema)
 
 	function ix_schema.drop(ix_schema, self)
 		self:drop_table(ix_schema.name)
-		assert(remove_value(val_schema.index_schemas, ix_schema))
+		assert(remove_value(val_schema.ix_schemas, ix_schema))
 		self:save_table_schema(val_schema)
 	end
 
@@ -956,16 +945,16 @@ function Db:try_create_index(val_tbl_name, cols)
 		self:abort()
 		return nil, err
 	end
-	local index_schemas = attr(val_schema, 'index_schemas')
-	local ix_i = binsearch(ix_schema.name, index_schemas, function(index_schemas, i, name)
-		return index_schemas[i].name < name
+	local ix_schemas = attr(val_schema, 'ix_schemas')
+	local ix_i = binsearch(ix_schema.name, ix_schemas, function(ix_schemas, i, name)
+		return ix_schemas[i].name < name
 	end)
-	if ix_i and index_schemas[ix_i].name == ix_schema.name then
+	if ix_i and ix_schemas[ix_i].name == ix_schema.name then
 		return nil, 'exists'
 	end
-	ix_i = ix_i or #index_schemas + 1
+	ix_i = ix_i or #ix_schemas + 1
 
-	insert(index_schemas, ix_i, ix_schema)
+	insert(ix_schemas, ix_i, ix_schema)
 	self:save_table_schema(val_schema)
 end
 
@@ -1248,7 +1237,7 @@ local function try_put(self, flags, op, tab, cols, ...)
 	local autoinc_f = op == 'insert' and schema.autoinc_field
 	local k_sz = encode_key(self, schema, autoinc_f, k, k_buf_sz, cols, as, ...)
 	local ret, err
-	if op == 'update' or op == 'upsert' or schema.fks or schema.index_schemas then
+	if op == 'update' or op == 'upsert' or schema.fks or schema.ix_schemas then
 		local cur = self:cursor(dbi, 'w')
 		local v0, v0_sz = cur:get_raw(k, k_sz)
 		local v_sz
@@ -1303,9 +1292,9 @@ local function try_put(self, flags, op, tab, cols, ...)
 			local ret, err = self:try_put_raw(dbi, cast(voidp, k), k_sz, v, v_sz, flags)
 			if not ret then return nil, err end
 		end
-		if schema.index_schemas then
+		if schema.ix_schemas then
 			self:begin'w'
-			for _, ix_schema in ipairs(schema.index_schemas) do
+			for _, ix_schema in ipairs(schema.ix_schemas) do
 				local ok, err = ix_schema:update(self, k, k_sz, v, v_sz, v0, v0_sz)
 				if not ok then
 					self:abort()
@@ -1359,8 +1348,8 @@ function Db:try_del(tab, ...)
 	local k_sz = encode_key(self, schema, nil, k, k_buf_sz, schema.key_cols, nil, ...)
 	local ok, err = self:try_del_raw(dbi, k, k_sz)
 	if not ok then return nil, err end
-	if schema.index_schemas then
-		for _,ix_schema in ipairs(schema.index_schemas) do
+	if schema.ix_schemas then
+		for _,ix_schema in ipairs(schema.ix_schemas) do
 			ix_schema:del(k, k_sz)
 		end
 	end
@@ -1383,8 +1372,8 @@ function Db:del_exact(tab, cols, ...)
 	local v_sz = encode_val(self, schema     , v, v_buf_sz, cols, as, ...)
 	local ok, err = self:try_del_raw(dbi, k, k_sz, v, v_sz)
 	if not ok then return nil, err end
-	if schema.index_schemas then
-		for _,ix_schema in ipairs(schema.index_schemas) do
+	if schema.ix_schemas then
+		for _,ix_schema in ipairs(schema.ix_schemas) do
 			ix_schema:del(k, k_sz, v, v_sz)
 		end
 	end
