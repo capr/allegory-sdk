@@ -623,8 +623,9 @@ function Db:table_name(tab)
 	return not tab and '<main>' or isstr(tab) and tab or self.dbis[tab]
 end
 
-function Db:try_open_table(name, mode, flags)
+function Db:try_open_table(name, mode, schema, flags)
 	assert(not name or isstr(name))
+	assert(not self.dbis[name or false])
 	local create = mode == 'w' or mode == 'c'
 	local dbi, created = self.txn:open(name, create, flags)
 	if not dbi then return nil, created end
@@ -640,20 +641,29 @@ function Db:try_open_table(name, mode, flags)
 	end
 	return dbi, created
 end
-function Db:open_table(tab, mode, flags, ...)
-	local dbi, created = self:try_open_table(tab, mode, flags, ...)
-	if dbi then return dbi, created end
-	check('db', 't_open', false, '%s %s: %s', tab, mode or 'r', err)
+function Db:open_table(tab, mode, schema, flags, ...)
+	local dbi, created, schema = self:try_open_table(tab, mode, schema, flags, ...)
+	if dbi then return dbi, created, schema end
+	check('db', 't_open', false, '%s %s: %s', tab, mode or 'r', created)
 end
 
 function Db:dbi(tab, mode)
 	if isnum(tab) then return tab end --tab is dbi
 	local dbi = self.dbis[tab or false]
-	if dbi then return dbi end
+	if dbi then
+		return dbi, self.dbim[dbi], tab
+	end
+	local schema = self.schema and self.schema.tables[tab]
+	local created
 	if mode == 'w' or mode == 'c' then
-		return self:open_table(tab, mode)
+		dbi, created, schema = self:open_table(tab, mode, schema)
 	else
-		return self:try_open_table(tab)
+		dbi, created, schema = self:try_open_table(tab, mode, schema)
+	end
+	if not dbi then
+		return nil, created
+	else
+		return dbi, schema, tab
 	end
 end
 
