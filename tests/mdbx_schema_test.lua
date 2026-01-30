@@ -13,9 +13,10 @@ rm'mdbx_schema_test.mdb'
 rm'mdbx_schema_test.mdb-lck'
 local schema = mdbx_schema()
 local db = mdbx_open('mdbx_schema_test.mdb')
-db.schema = schema
 
 function test_encdec()
+
+	db:begin'w'
 
 	local types = 'u8 u16 u32 u64 i8 i16 i32 i64 f32 f64'
 	local num_tables = {}
@@ -36,7 +37,7 @@ function test_encdec()
 				pk = {'k', desc = {order == 'desc'}},
 			}
 			add(num_tables, tbl)
-			schema.tables[tbl.name] = tbl
+			db:create_table(tbl.name, tbl)
 		end
 
 		--varsize key and val at fixed offset with utf8 enc/dec.
@@ -49,7 +50,7 @@ function test_encdec()
 			pk = {'s', desc = {order == 'desc'}},
 		}
 		add(varsize_key1_tables, tbl)
-		schema.tables[tbl.name] = tbl
+		db:create_table(tbl.name, tbl)
 
 		--varsize key and val at dyn offset.
 		for order2 in words'asc desc' do
@@ -64,7 +65,7 @@ function test_encdec()
 				pk = {'s1', 's2', desc = {order == 'desc', order2 == 'desc'}},
 			}
 			add(varsize_key2_tables, tbl)
-			schema.tables[tbl.name] = tbl
+			db:create_table(tbl.name, tbl)
 		end
 
 	end
@@ -72,7 +73,6 @@ function test_encdec()
 	--test int and float decoders and encoders
 	for _,tbl in ipairs(num_tables) do
 		local typ = tbl.test_type
-		db:begin'w'
 		local bits = num(typ:sub(2))
 		local ntyp = typ:sub(1,1)
 		local nums =
@@ -86,12 +86,10 @@ function test_encdec()
 			add(t, {i, i, i})
 		end
 		db:put_records(tbl.name, '[k v1 v2]', t)
-		db:commit()
 
 		if tbl.fields.k.descending then
 			reverse(nums)
 		end
-		db:begin()
 		local i = 1
 		for cur, k, v1, v2 in db:each(tbl.name) do
 			pr(tbl.name, k, v1, v2)
@@ -100,7 +98,6 @@ function test_encdec()
 			assertf(v2 == nums[i], '%q ~= %q', v2, nums[i])
 			i = i + 1
 		end
-		db:commit()
 	end
 
 	--test varsize_key1
@@ -111,9 +108,7 @@ function test_encdec()
 			{'aa', 'bb'},
 			{'b' , nil },
 		}
-		db:begin'w'
 		db:put_records(tbl.name, '[]', t)
-		db:commit()
 
 		sort(t, function(r1, r2)
 			if tbl.fields.s.descending then
@@ -122,12 +117,10 @@ function test_encdec()
 				return r1[1] < r2[1]
 			end
 		end)
-		db:begin()
 		local t1 = {}
 		for cur, t in db:each(tbl.name, '[]') do
 			add(t1, t)
 		end
-		db:commit()
 		for i=1,#t do
 			assert(t1[i][1] == t[i][1], t[i][1])
 			assert(t1[i][2] == t[i][2], t[i][2])
@@ -154,9 +147,7 @@ function test_encdec()
 			{'a'  , ''   , 'a'  , ''   , },
 			{'xx' , 'y'  , 'z'  , 'zz' , },
 		}
-		db:begin'w'
 		db:put_records(tbl.name, t)
-		db:commit()
 
 		local s1_desc = tbl.fields.s1.descending
 		local s2_desc = tbl.fields.s2.descending
@@ -166,7 +157,6 @@ function test_encdec()
 				local c2; if s2_desc then c2 = r2[2] < r1[2] else c2 = r1[2] < r2[2] end
 				if r2[1] == r1[1] then return c2 else return c1 end
 			end)
-		db:begin()
 		pr('***', tbl.pk, '***')
 		local t1 = {}
 		for cur, s1, s2, s3, s4 in db:each(tbl.name) do
@@ -177,7 +167,6 @@ function test_encdec()
 		local s3, s4 = db:get(tbl.name, 's3 s4', 'xx', 'y')
 		assert(s3 == 'z')
 		assert(s4 == 'zz')
-		db:commit()
 		for i=1,#t do
 			pr(unpack(t1[i], 1, 4))
 			assert(t[i][1] == t1[i][1])
@@ -188,11 +177,13 @@ function test_encdec()
 		pr()
 	end
 
+	db:commit()
 end
 
 function test_uks()
 
-	schema.tables.test_uk = {
+	local tbl = {
+		name = 'test_uk',
 		fields = {
 			{col = 'k1', mdbx_type = 'utf8', maxlen = 10, not_null = true},
 			{col = 'k2', mdbx_type = 'utf8', maxlen = 10, not_null = true},
@@ -205,6 +196,7 @@ function test_uks()
 	}
 
 	db:begin'w'
+	db:create_table(tbl.name, tbl)
 	db:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1')
 	db:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
 	db:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
@@ -213,22 +205,9 @@ function test_uks()
 
 	--declare an unique key index and sync schema to create it
 	--which should fail because of duplicate uk.
-	local ix_tbl = 'test_uk/u1-u2'
-	schema.tables.test_uk.ixs = {
-		 [ix_tbl] = {'u1', 'u2', is_unique = true},
-	}
-	db:layout_schema()
-	db:begin()
-	local saved_schema = db:extract_schema()
-	db:commit()
-	assert(not pcall(function()
-		db:sync_schema(schema, {dry = false})
-	end))
-	db:begin()
-	assert(not db:table_exists(ix_tbl))
-	assert(not db.schema.tables[ix_tbl])
-	db:commit()
-
+	local ix = {'u1', 'u2', is_unique = true}
+	local ok, err = db:try_add_index('test_uk', ix)
+	assert(not ok)
 	--remove duplicate.
 	db:begin'w'
 	assert(not db:table_exists(ix_tbl))
@@ -365,8 +344,8 @@ function test_schema()
 	db:abort()
 end
 
---test_encdec()
-test_uks()
+test_encdec()
+--test_uks()
 --test_rename_table()
 --test_fks()
 --test_stat()
