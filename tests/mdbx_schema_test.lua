@@ -182,6 +182,8 @@ end
 
 function test_uks()
 
+	db:begin'w'
+
 	local tbl = {
 		name = 'test_uk',
 		fields = {
@@ -195,40 +197,30 @@ function test_uks()
 		pk = {'k1', 'k2'},
 	}
 
-	db:begin'w'
 	db:create_table(tbl.name, tbl)
 	db:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1')
 	db:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
 	db:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
 	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3') --duplicate uk
-	db:commit()
 
-	--declare an unique key index and sync schema to create it
-	--which should fail because of duplicate uk.
+	--create unique key and try to add it and see it fail because of duplicates.
 	local ix = {'u1', 'u2', is_unique = true}
-	local ok, err = db:try_add_index('test_uk', ix)
+	local ok, err, ix_tbl = db:try_add_index('test_uk', ix)
 	assert(not ok)
-	--remove duplicate.
-	db:begin'w'
+	assert(err == 'duplicate_key')
 	assert(not db:table_exists(ix_tbl))
 	assert(not db:try_open_table(ix_tbl))
+	--remove duplicate.
 	db:del('test_uk', 'k3', 'k1')
 
 	--try to sync again, this time it should work.
-	db:sync_schema(schema, {dry = false})
+	db:add_index('test_uk', ix)
 	assert(db:table_exists(ix_tbl))
 
 	--now try to insert a duplicate again, this time it should fail.
-	pr(imap(db.schema.tables.test_uk.index_schemas, 'name'))
-	db:insert('test_uk', nil, 'k3', 'k2', 'u3', 'u1', 'f4')
-	db:insert('test_uk', nil, 'k4', 'k2', 'u3', 'u2', 'f5')
-	db:insert('test_uk', nil, 'k4', 'k1', 'u4', 'u1', 'f6')
-	local ok = db:try_insert('test_uk', nil, 'k5', 'k1', 'u4', 'u1', 'f7')
+	local ok = db:try_insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f4')
 	assert(not ok)
-	db:commit()
-	assert(db.schema.tables[ix_tbl])
 
-	db:begin()
 	for _,u1,u2,f in assert(db:each(ix_tbl)) do
 		pr(u1, u2, f)
 	end
@@ -238,7 +230,11 @@ function test_uks()
 	assert(t.u1 == 'u1')
 	assert(t.u2 == 'u1')
 	assert(t.f1 == 'f1')
-	db:commit()
+
+	--remove the index.
+	db:drop_index(ix_tbl)
+	--now insert a duplicate again, this time it should work.
+	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f4')
 
 	--create another index, this time non-unique
 	--local ix_tbl = 'test_uk/f1-f2'
@@ -247,6 +243,7 @@ function test_uks()
 	--	pr(u1, u2)
 	--end
 
+	db:commit()
 end
 
 function test_rename_table()
@@ -344,8 +341,8 @@ function test_schema()
 	db:abort()
 end
 
-test_encdec()
---test_uks()
+--test_encdec()
+test_uks()
 --test_rename_table()
 --test_fks()
 --test_stat()

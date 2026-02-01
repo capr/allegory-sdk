@@ -457,8 +457,8 @@ function try_mdbx_open(file, opt)
 	local self = object(Db, {
 		file = file,
 		env = env,
-		env_dbis = {}, --{dbi->name, name->dbi}
-		env_dbim = {}, --{dbi->schema}, see mdbx_schema.lua
+		env_dbis = setmetatable({}, {}), --{dbi->name, name->dbi}
+		env_dbim = setmetatable({}, {}), --{dbi->schema}, see mdbx_schema.lua
 		readonly = opt and opt.readonly,
 		_ro_txn = nil,
 		_cursors = {},
@@ -501,12 +501,12 @@ and promoted to the parent txn on commit and become global on top txn commit.
 Since we don't want to work with DBIs in Lua but only with table names we need
 to keep a table_name->dbi mapping for opened tables. We _could_ not do this
 and open tables every time to get the DBI but 1) we also need to keep a
-dbi->schema mapping, and 2) mdbx_open does some array scans which can become
+dbi->schema mapping, and 2) mdbx_open does some array scans which become
 O(n^2) on repeat ops.
-So we keep the mapping in Lua and we match DBI lifetime semantics by using
-txn-local dbis/dbim tables when tables are created or renamed which we promote
-them on commit and discard on abort. Dropped dbis are invalidated globally and
-we match that by removing them from both txn-level and env-level dbis/dbim.
+So we keep the mapping in Lua and we match DBI lifetime semantics by creating
+txn-local dbis/dbim tables when tables are created or renamed. Dropped DBIs
+are invalidated globally and we match that by removing them from both
+txn-level and env-level dbis/dbim.
 ]]
 local dbis_freelist = {}
 local dbim_freelist = {}
@@ -514,42 +514,39 @@ local dbim_freelist = {}
 local function local_dbis(self)
 	local dbis = self.dbis
 	local dbim = self.dbim
-	if dbim.txn ~= self.txn then --not local, create
+	local txn = assert(self.txn)
+	if getmetatable(dbis).txn ~= txn then --not local, create
 		local parent_dbis = dbis
 		local parent_dbim = dbim
-		local dbis = pop(dbis_freelist)
-		local dbim = pop(dbim_freelist)
-		if not dbis then
-			dbis = {}
-			dbim = {}
-			setmetatable(dbis, dbis)
-			setmetatable(dbim, dbim)
-		end
-		dbis.__index = parent_dbis
-		dbim.__index = parent_dbim
-		dbim.txn = self.txn
+		dbis = pop(dbis_freelist) or setmetatable({}, {})
+		dbim = pop(dbim_freelist) or setmetatable({}, {})
+		getmetatable(dbis).__index = parent_dbis
+		getmetatable(dbim).__index = parent_dbim
+		getmetatable(dbis).txn = txn
 		self.dbis = dbis
 		self.dbim = dbim
 	end
-	return dbis, dbim
+	return dbis
 end
 
 local function local_dbis_discard(self, commited)
-	if self.dbim.txn ~= self.txn then
+	if getmetatable(self.dbis).txn == self.txn then --local, (promote and) discard
 		local dbis = self.dbis
 		local dbim = self.dbim
-		local parent_dbis = dbis.__index
-		local parent_dbim = dbim.__index
-		push(dbis_freelist, dbis)
-		push(dbim_freelist, dbim)
+		local parent_dbis = getmetatable(dbis).__index
+		local parent_dbim = getmetatable(dbim).__index
 		if commited then --promote created dbis to parent txn
 			update(parent_dbis, dbis)
 			update(parent_dbim, dbim)
 		end
-		self.dbis = parent_dbis
-		self.dbim = parent_dbim
 		clear(dbis)
 		clear(dbim)
+		clear(getmetatable(dbis))
+		clear(getmetatable(dbim))
+		push(dbis_freelist, dbis)
+		push(dbim_freelist, dbim)
+		self.dbis = parent_dbis
+		self.dbim = parent_dbim
 	end
 end
 
@@ -665,6 +662,12 @@ function Db:dbi(tab, mode)
 	else
 		return dbi, schema, tab
 	end
+end
+
+function Db:dbi_schema(tab, mode)
+	local dbi, schema, name = self:dbi(tab, mode)
+	if dbi then assertf(schema, 'no schema for table: %s', name) end
+	return dbi, schema
 end
 
 function Db:try_rename_table(tab, new_table_name)
@@ -873,7 +876,7 @@ end
 function Db:table_exists(table_name)
 	if not table_name then return true end --main table always exists.
 	if self.dbis[table_name] then return true end --opened thus exists
-	return self:get_raw(nil, cast(i8p, table_name), #table_name) ~= nil
+	return self:get_raw(nil, table_name, #table_name) ~= nil
 end
 
 -- test ----------------------------------------------------------------------
@@ -890,7 +893,7 @@ local function self_test()
 	db:begin'w'
 	s = _('%03x %d foo bar', 32, 3141592)
 	local k = i32a(1, 123456789)
-	assert(db:try_put_raw('users', cast(i8p, k), sizeof(k), cast(i8p, s), #s))
+	assert(db:try_put_raw('users', k, sizeof(k), s, #s))
 	db:commit()
 
 	db:begin()

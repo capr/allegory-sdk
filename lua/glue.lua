@@ -66,7 +66,7 @@ ARRAYS
 	indexof(v, t, [i], [j]) -> i   scan array for value
 	cmp'KEY1[>] ...' -> f          create a cmp function for sort and binsearch
 	binsearch(v, t, [cmp], [i], [j]) -> i    bin search in sorted array
-	binsearch_insert(v, t, [cmp]) -> t       order-preserving insert in sorted array
+	binsearch_insert(t, v, [cmp]) -> t       order-preserving insert in sorted array
 	sortedarray([sa]) -> sa        stay-sorted array with fast search
 	  sa:find(v) -> i|nil          find value in O(logN)
 	  sa:add(v)                    add value in O(N+logN)
@@ -510,7 +510,7 @@ function binsearch(v, t, cmp, lo, hi)
 	return lo
 end
 
-function binsearch_insert(v, t, cmp)
+function binsearch_insert(t, v, cmp)
 	local i = binsearch(v, t, cmd) or #t + 1
 	insert(t, i, v)
 	return i
@@ -2376,6 +2376,8 @@ typedef  int64_t i64;
 typedef uint64_t u64;
 typedef  float   f32;
 typedef double   f64;
+
+typedef uint8_t  bool8;
 ]]
 
 cdef[[

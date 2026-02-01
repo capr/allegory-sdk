@@ -6,7 +6,7 @@ typedef unsigned long int real_pthread_t;
 typedef struct { real_pthread_t _; } pthread_t;
 
 struct MDBX_val {
-	char* data;
+	const uint8_t* data;
 	size_t size;
 };
 
