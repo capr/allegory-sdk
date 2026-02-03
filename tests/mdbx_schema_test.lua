@@ -191,17 +191,17 @@ function test_uks()
 			{col = 'k2', mdbx_type = 'utf8', maxlen = 10, not_null = true},
 			{col = 'u1', mdbx_type = 'utf8', maxlen = 10, not_null = true},
 			{col = 'u2', mdbx_type = 'utf8', maxlen = 10, not_null = true},
-			{col = 'f1', mdbx_type = 'utf8', maxlen = 10},
-			{col = 'f2', mdbx_type = 'utf8', maxlen = 10},
+			{col = 'f1', mdbx_type = 'utf8', maxlen = 10, not_null = true},
+			{col = 'f2', mdbx_type = 'utf8', maxlen = 10, not_null = true},
 		},
 		pk = {'k1', 'k2'},
 	}
 
 	db:create_table(tbl.name, tbl)
-	db:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1')
-	db:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f2')
-	db:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f3')
-	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f3') --duplicate uk
+	db:insert('test_uk', nil, 'k1', 'k1', 'u1', 'u1', 'f1', 'f2')
+	db:insert('test_uk', nil, 'k1', 'k2', 'u1', 'u2', 'f1', 'f2')
+	db:insert('test_uk', nil, 'k2', 'k1', 'u2', 'u1', 'f2', 'f1')
+	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f2', 'f1') --duplicate uk
 
 	--create unique key and try to add it and see it fail because of duplicates.
 	local ix = {'u1', 'u2', is_unique = true}
@@ -218,7 +218,7 @@ function test_uks()
 	assert(db:table_exists(ix_tbl))
 
 	--now try to insert a duplicate again, this time it should fail.
-	local ok = db:try_insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f4')
+	local ok = db:try_insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f4', 'f4')
 	assert(not ok)
 
 	for _,u1,u2,f in assert(db:each(ix_tbl)) do
@@ -230,18 +230,20 @@ function test_uks()
 	assert(t.u1 == 'u1')
 	assert(t.u2 == 'u1')
 	assert(t.f1 == 'f1')
+	assert(t.f2 == 'f2')
 
 	--remove the index.
 	db:drop_index(ix_tbl)
 	--now insert a duplicate again, this time it should work.
-	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f4')
+	db:insert('test_uk', nil, 'k3', 'k1', 'u2', 'u1', 'f4', 'f4')
 
 	--create another index, this time non-unique
-	--local ix_tbl = 'test_uk/f1-f2'
-	--db:create_index('test_uk', {'f1', 'f2'})
-	--for _,f1,f2 in assert(db:each(ix_tbl)) do
-	--	pr(u1, u2)
-	--end
+	local ix = {'f1', 'f2'}
+	local ok, err, ix_tbl = db:try_add_index('test_uk', ix)
+	for cur, f1, f2 in db:each(ix_tbl) do
+		pr(f1, f2)
+	end
+	assert(ok)
 
 	db:commit()
 end

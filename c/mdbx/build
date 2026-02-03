@@ -3,7 +3,34 @@ cd "${0%build}" || exit 1
 
 cd src
 git checkout stable
-make clean
-make MDBX_BUILD_TIMESTAMP=unknown lib
-strip libmdbx*
-mv libmdbx.{so,a} ../../../bin/debian12/
+
+C="
+-fvisibility=hidden
+-ffunction-sections
+-fno-semantic-interposition
+-Wl,-O1
+-Wl,--gc-sections
+-Wl,--allow-multiple-definition
+"
+[[ $DEBUG ]] && C="
+
+"
+
+SO=../../../bin/debian12${DEBUG:+-debug}/libmdbx.so
+gcc -shared -o $SO mdbx.c \
+	${DEBUG:+-g -O0}
+	${DEBUG:+-DMDBX_DEBUG=2} \
+	-DLIBMDBX_EXPORTS=1 \
+	-DMDBX_BUILD_SHARED_LIBRARY=1 \
+	-DMDBX_BUILD_CXX=NO \
+	-DMDBX_BUILD_FLAGS=\"\" \
+	-DMDBX_BUILD_METADATA=\"\" \
+	-fPIC -pthread \
+	-Wl,-z,relro \
+	-Wall -Werror -Wextra -Wpedantic \
+	-Wno-error=attributes \
+	-Wno-unused-command-line-argument \
+	-Wno-tautological-compare \
+	$C
+
+[[ $DEBUG ]] || strip $SO
