@@ -137,8 +137,8 @@ wwwfile['_all.html.cat'] = function()
 end
 
 local fontfiles = {}
-function fontfile(file)
-	for file in file:gmatch'[^%s]+' do
+function fontfile(files)
+	for file in files:gmatch'[^%s]+' do
 		add(fontfiles, file)
 	end
 end
@@ -207,10 +207,22 @@ local function csslist(cataction, mode)
 end
 
 local function preloadlist()
-	for i,file in ipairs(fontfiles) do
+	for i,s in ipairs(fontfiles) do
+		local name, file = s:match'(.-)=(.*)'
+		if not name then file = s end
 		local file_ext = file:match'%.([^%.]+)$'
+		local url = href('/'..file)
 		out(format('\t<link rel="preload" href="%s" as="font" type="font/%s" crossorigin>\n',
-			href('/'..file), file_ext))
+			url, file_ext))
+		if name then
+			css(_([[
+@font-face {
+	font-family: "%s";
+	src: url(%s) format(%s);
+	font-display: block;
+}
+]], name, url, file_ext))
+		end
 	end
 end
 
@@ -268,7 +280,8 @@ function spa_action()
 	t.title_suffix = config('page_title_suffix', ' - '..host())
 	t.favicon_href = call(config'favicon_href')
 	t.client_action = config('client_action', true)
-	t.all_js  = record(jslist , 'all.js' , config('js_mode' , 'separate'), 'glue-global glue-extend 3d-global')
+	t.all_js  = record(jslist , 'all.js' , config('js_mode' , 'separate'),
+		config('script_attrs', 'glue-global glue-extend 3d-global'))
 	t.all_css = record(csslist, 'all.css', config('css_mode', 'separate'))
 	t.preload = record(preloadlist)
 	local buf = stringbuffer()

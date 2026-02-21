@@ -55,8 +55,16 @@ ui.js
 ui_validation.js
 ui_nav.js
 ui_grid.js
+ui_code_edit.js
+lezer.js
 adapter.js
 webrtc.js
+]]
+
+fontfile[[
+far=icons/fa-regular-400.woff2
+fas=icons/fa-solid-900.woff2
+mono=fonts/jetbrains-mono-nl-regular.woff2
 ]]
 
 local function xapp(...)
