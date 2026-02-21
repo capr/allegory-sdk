@@ -22,7 +22,7 @@ SCHEMA
 
 CONFIG
 
-	engine                       'sql'|'fs'
+	auth_storage                 'sql'|'fs'
 
 	secret                       <required>  secret to encrypt sessions and passwords
 	session_cookie_name          'session'   name of the session cookie
@@ -151,7 +151,7 @@ local function fullname(firstname, lastname)
 end
 
 local function use_sql()
-	return config('auth_engine', 'fs') == 'sql'
+	return config('auth_storage', 'fs') == 'sql'
 end
 
 --schema ---------------------------------------------------------------------
