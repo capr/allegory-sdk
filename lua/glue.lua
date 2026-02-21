@@ -198,7 +198,7 @@ MODULES
 LUA ALLOCATION
 	freelist([create], [destroy]) -> alloc,free   freelist allocation pattern
 INTERPRETER
-	[p]eval(s) -> ...            = loadstring('return '..s)
+	[try_]eval(s) -> ...         = loadstring('return '..s)
 BITS
 	bit                          = require'bit'
 	bnot                         = bit.bnot
