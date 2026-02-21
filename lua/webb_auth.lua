@@ -22,6 +22,8 @@ SCHEMA
 
 CONFIG
 
+	engine                       'sql'|'fs'
+
 	secret                       <required>  secret to encrypt sessions and passwords
 	session_cookie_name          'session'   name of the session cookie
 	session_cookie_secure_flag   true        set Secure flag to cookie
@@ -146,6 +148,10 @@ require'bcrypt'
 
 local function fullname(firstname, lastname)
 	return (catany('', firstname, lastname) or ''):trim()
+end
+
+local function use_sql()
+	return config('auth_engine', 'fs') == 'sql'
 end
 
 --schema ---------------------------------------------------------------------
@@ -317,10 +323,15 @@ local function load_session()
 		local now = time()
 		local usr, expires = session_cache_get(sid, now)
 		if not usr then
-			usr, expires = first_row_vals([[
-				select usr, expires
-				from sess where token = ? and expires > ?
-				]], sid, now)
+			if use_sql() then
+				usr, expires = first_row_vals([[
+					select usr, expires
+					from sess where token = ? and expires > ?
+					]], sid, now)
+			else
+				local t = eval(load(varpath('sess', sid)))
+				usr, expires = t.usr, t.expires
+			end
 			if not usr then return end
 			session_cache_update(sid, usr, expires)
 		end
@@ -339,27 +350,45 @@ local function save_session(sess)
 	local secure_flag = config('session_cookie_secure_flag', true)
 	local session_cookie_name = config('session_cookie_name', 'session')
 	sess.expires = sess.expires or time() + 2 * 365 * 24 * 3600 --2 years
+	if secure_flag and not scheme'https' then
+		log('ERROR', 'auth', 'save-sess',
+			'saving session cookie over http with Secure flag')
+	end
 	if sess.usr then --login
 		if not sess.id then
 			sess.id = tohex(random_string(16))
-			query([[
-				insert into sess
-					(token, expires, usr)
-				values
-					(?, ?, ?)
-				]],
-				sess.id,
-				sess.expires,
-				sess.usr
-			)
+			if use_sql() then
+				query([[
+					insert into sess
+						(token, expires, usr)
+					values
+						(?, ?, ?)
+					]],
+					sess.id,
+					sess.expires,
+					sess.usr
+				)
+			else
+				save(varpath('sess', sess.id), pp({
+					expires = sess.expires,
+					usr = sess.usr,
+				}))
+			end
 		else
-			query([[
-				update sess set
-					usr = ?,
-					expires = ?
-				where
-					token = ?
-				]], sess.usr, sess.expires, sess.id)
+			if use_sql() then
+				query([[
+					update sess set
+						usr = ?,
+						expires = ?
+					where
+						token = ?
+					]], sess.usr, sess.expires, sess.id)
+			else
+				save(varpath('sess', sess.id), pp({
+					expires = sess.expires,
+					usr = sess.usr,
+				}))
+			end
 		end
 		session_cache_update(sess.id, sess.usr, sess.expires)
 		local sig = secret_hash(sess.id)
@@ -376,7 +405,11 @@ local function save_session(sess)
 			},
 		})
 	elseif sess.id then --logout
-		query('delete from sess where token = ?', sess.id)
+		if use_sql() then
+			query('delete from sess where token = ?', sess.id)
+		else
+			rmfile(varpath('sess', sess.id))
+		end
 		session_cache_update(sess.id)
 		sess.id = nil
 		setheader('set-cookie', {
@@ -425,31 +458,41 @@ end
 local weak_vals_mt = {__mode = 'v'}
 
 local userinfo = memoize(function(usr)
-	local t = usr and first_row([[
-		select
-			usr,
-			tenant,
-			anonymous,
-			email,
-			emailvalid,
-			if(pass is not null, 1, 0) as haspass,
-			roles,
-			name,
-			phone,
-			phonevalid,
-			#if multilang()
-			lang,
-			country,
-			#endif
-			theme,
-			atime,
-			ctime,
-			mtime
-		from
-			usr
-		where
-			active = 1 and usr = ?
-		]], usr)
+	local t
+	if usr then
+		if use_sql() then
+			t = first_row([[
+				select
+					usr,
+					tenant,
+					anonymous,
+					email,
+					emailvalid,
+					if(pass is not null, 1, 0) as haspass,
+					roles,
+					name,
+					phone,
+					phonevalid,
+					#if multilang()
+					lang,
+					country,
+					#endif
+					theme,
+					atime,
+					ctime,
+					mtime
+				from
+					usr
+				where
+					active = 1 and usr = ?
+				]], usr)
+		else
+			t = eval(load(varpath('usr', usr)))
+			t.usr = usr
+			t.haspass = t.pass and 1 or 0
+			if not t.active then t = nil end
+		end
+	end
 	if not t then
 		return {roles = {}}
 	end
@@ -477,28 +520,45 @@ end
 local function create_user()
 	allow(config('allow_create_user', true))
 	wait(0.1) --make flooding up the table a bit slower
-	atomic(function(tx)
-		local tenant = check500(tx:get('tenant-by-host', 'tenant', host()),
+	local usr
+	if use_sql() then
+		atomic(function()
+			local tenant = check500(first_row([[
+				select tenant from tenant where host = ?
+			]], host()), 'no tenant for host %s', host())
+
+			usr = query([[
+				insert into usr set
+					tenant = :tenant,
+					clientip = :clientip,
+					#if multilang()
+					lang = :lang,
+					#endif
+					atime = now(),
+					ctime = now(),
+					mtime = now()
+			]], {
+				tenant = tenant,
+				clientip = client_ip(),
+				lang = lang(),
+			}).insert_id
+
+			session().usr = usr
+		end)
+	else
+		local tenant = check500(exists(varpath('tenant', host())),
 			'no tenant for host %s', host())
 
-		local usr = query([[
-			insert into usr set
-				tenant = :tenant,
-				clientip = :clientip,
-				#if multilang()
-				lang = :lang,
-				#endif
-				atime = now(),
-				ctime = now(),
-				mtime = now()
-		]], {
+		usr = gen_id('usr')
+		save(varpath('usr', usr), pp({
 			tenant = tenant,
 			clientip = client_ip(),
-			lang = lang(),
-		}).insert_id
-
+			lang = multilang() and lang(),
+			active = true,
+			anonymous = true,
+		}))
 		session().usr = usr
-	end)
+	end
 
 	return usr
 end
