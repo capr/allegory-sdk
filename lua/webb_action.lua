@@ -177,6 +177,12 @@ local mime_type_filters = {
 
 --routing logic --------------------------------------------------------------
 
+local file_ext_max_age_seconds = {
+	js = 60,
+	css = 60,
+	woff2 = 3600,
+}
+
 local file_handlers = {
 	cat = function(file, ...)
 		outcatlist(file, ...)
@@ -232,6 +238,10 @@ local function action_handler(action, ...)
 			end
 		end
 		if handler then
+			local max_age = file_ext_max_age_seconds[file_ext]
+			if max_age then
+				setheader('cache-control', _('max-age=%d', max_age))
+			end
 			ext = file_ext
 		end
 	end

@@ -41,7 +41,7 @@ OPEN FILE ATTRIBUTES
 	f:attr([attr]) -> val|t                       get/set attribute(s) of open file
 	f:size() -> n                                 get file size
 DIRECTORY LISTING
-	ls(dir, [opt]) -> d, next                     directory contents iterator
+	ls(dir, [opt]) -> d, name, next               directory contents iterator
 	  d:next() -> name, d                         call the iterator explicitly
 	  d:[try_]close()                             close iterator
 	  d:closed() -> true|false                    check if iterator is closed
@@ -1327,6 +1327,10 @@ function dir.attr(dir, ...)
 			return val
 		end
 	end
+end
+
+function dir.size(dir)
+	return dir:attr'size'
 end
 
 function dir.is(dir, type, deref)

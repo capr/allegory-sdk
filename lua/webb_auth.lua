@@ -24,9 +24,7 @@ CONFIG
 
 	auth_storage                 'sql'|'fs'
 
-	secret                       <required>  secret to encrypt sessions and passwords
-	session_cookie_name          'session'   name of the session cookie
-	session_cookie_secure_flag   true        set Secure flag to cookie
+	secret                       auto-gen    secret to encrypt sessions and passwords
 	auto_create_user             true        auto-create anonymous users
 	allow_create_user            true        allow create new users on auth
 
@@ -141,6 +139,7 @@ anonymous then that user is also deleted afterwards.
 
 ]==]
 
+require'webb'
 require'glue'
 require'schema'
 require'blake3'
@@ -269,9 +268,16 @@ end
 --config ---------------------------------------------------------------------
 
 local webb_secret = memoize(function()
-	local s = assert(config'secret', 'secret not configured')
-	assert(#s >= 32, 'secret too short')
-	return s
+	local secret = config'secret'
+	if not secret then
+		secret = try_load(varpath'secret')
+		if not secret then
+			secret = tohex(random_string(16))
+			save(varpath'secret', secret)
+		end
+	end
+	assert(#secret >= 32, 'secret too short')
+	return secret
 end)
 
 local function secret_hash(s)
@@ -313,8 +319,7 @@ end
 
 local function load_session()
 	local cookies = headers('cookie'); if not cookies then return end
-	local session_cookie_name = config('session_cookie_name', 'session')
-	local s = cookies[session_cookie_name]; if not s then return end
+	local s = cookies.session; if not s then return end
 	local ver, s = s:match'^(%d)|(.*)$'; if not ver then return end
 	ver = tonumber(ver); if not ver then return end
 	if ver == 1 then
@@ -329,8 +334,11 @@ local function load_session()
 					from sess where token = ? and expires > ?
 					]], sid, now)
 			else
-				local t = eval(load(varpath('sess', sid)))
-				usr, expires = t.usr, t.expires
+				local s = try_load(varpath('sess', sid))
+				if s then
+					local t = eval(s)
+					usr, expires = t.usr, t.expires
+				end
 			end
 			if not usr then return end
 			session_cache_update(sid, usr, expires)
@@ -347,12 +355,12 @@ local function session_usr()
 end
 
 local function save_session(sess)
-	local secure_flag = config('session_cookie_secure_flag', true)
-	local session_cookie_name = config('session_cookie_name', 'session')
+	local secure_flag = scheme'https'
 	sess.expires = sess.expires or time() + 2 * 365 * 24 * 3600 --2 years
 	if secure_flag and not scheme'https' then
-		log('ERROR', 'auth', 'save-sess',
-			'saving session cookie over http with Secure flag')
+		assert(false, 'Cookie with Secure flag over plain http will not get stored!')
+		log('ERROR', 'auth', 'save-session',
+			'Cookie with Secure flag over plain http will not get stored!')
 	end
 	if sess.usr then --login
 		if not sess.id then
@@ -393,14 +401,14 @@ local function save_session(sess)
 		session_cache_update(sess.id, sess.usr, sess.expires)
 		local sig = secret_hash(sess.id)
 		setheader('set-cookie', {
-			[session_cookie_name] = {
+			session = {
 				value = '1|'..sess.id..'|'..sig,
 				attrs = {
 					Path = '/',
 					Expires = sess.expires,
 					Secure = secure_flag or nil, --prevent MITM
 					HttpOnly = true, --prevent JS access
-					SameSite = 'strict', --prevent BREACH (but also img tracking)
+					SameSite = secure_flag and 'strict' or 'lax',  --prevent BREACH (but also img tracking)
 				},
 			},
 		})
@@ -413,7 +421,7 @@ local function save_session(sess)
 		session_cache_update(sess.id)
 		sess.id = nil
 		setheader('set-cookie', {
-			[session_cookie_name] = {
+			session = {
 				value = '0',
 				attrs = {
 					Path = '/',
@@ -940,30 +948,6 @@ function auth.update(auth)
 
 	clear_userinfo_cache(usr)
 	return usr
-end
-
---self-test ------------------------------------------------------------------
-
-if not ... then
-	if false then
-		http_run(auth_create_tables)
-	else
-		config('secret', '!xpAi$^!@#)fas!`5@cXiOZ{!9fdsjdkfh7zk')
-		webb_request{
-			uri = '/login.json',
-			headers = {
-				cookie = {
-					session = '1|ac9b46efa4058b1bd70f47143c133193|93c11a3fb3d40bdf3d36c46e49c392107ddde9fd249857c9c8a9e11a022671fb',
-				},
-			},
-		}
-		http_run(function()
-			--query('delete from usrtoken')
-			--print(gen_auth_code('email', 'admin@mysite'))
-			--prq(query'select * from sess')
-			--prq(query'select * from usr')
-		end)
-	end
 end
 
 return auth_schema --so you can call schema:import'webb_auth'
