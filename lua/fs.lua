@@ -1789,22 +1789,24 @@ function cp(src_file, dst_file, quiet)
 end
 
 function try_touch(file, mtime, btime, quiet) --create file or update its mtime.
-	if not exists(file) then
+	local create = not exists(file)
+	if create then
 		local ok, err = try_save(file, '', quiet)
 		if not ok then return false, err end
-		if not (mtime or btime) then
-			return
-		end
+	end
+	if not (create and not (mtime or btime)) then
+		local ok, err = try_file_attr(file, {
+			mtime = mtime or time(),
+			btime = btime or nil,
+		})
+		if not ok then return false, err end
 	end
 	if not quiet then
 		log('', 'fs', 'touch', '%s to %s%s', file,
 			date('%d-%m-%Y %H:%M', mtime) or 'now',
 			btime and ', btime '..date('%d-%m-%Y %H:%M', btime) or '')
 	end
-	local ok, err = try_file_attr(file, {
-		mtime = mtime or time(),
-		btime = btime or nil,
-	})
+	return true
 end
 
 function touch(file, mtime, btime, quiet)
@@ -1873,7 +1875,7 @@ function ls_dir(path, patt, min_mtime, create, order_by, recursive)
 	end
 end
 
-local function toid(s, field) --validate and id minimally.
+local function toid(s, field) --validate id minimally.
 	local n = tonumber(s)
 	if n and n >= 0 and floor(n) == n then return n end
  	return nil, '%s invalid: %s', field or 'field', s
