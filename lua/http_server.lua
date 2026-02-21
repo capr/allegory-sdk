@@ -231,7 +231,8 @@ function http_server(...)
 		if req.body_was_read == nil then
 			req:read_body()
 		end
-		assert(req.body_was_read, 'request body was not read')
+		assertf(req.body_was_read,
+			'request body was not read for: %s', req.uri)
 
 	end
 
