@@ -12,7 +12,6 @@ if not ... then require'resize_image_test'; return end
 
 require'glue'
 require'fs'
-require'path'
 require'rect'
 require'pillow'
 require'jpeg'

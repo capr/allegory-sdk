@@ -133,7 +133,6 @@ require'sock'
 require'json'
 require'base64'
 require'fs'
-require'path'
 require'rect'
 require'mustache'
 require'xxhash'
@@ -628,7 +627,7 @@ end
 
 local _wwwdirs = {}
 function wwwdir(path) --relative to scripdir()
-	if not path_isabs(path) then
+	if not path:starts'/' then
 		path = path_normalize(indir(scriptdir(), path))
 	end
 	add(_wwwdirs, path)

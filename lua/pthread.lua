@@ -78,44 +78,12 @@ IMPLEMENTATION NOTES ---------------------------------------------------------
 IMPORTANT: Build your LuaJIT binary with `-pthread`!
 
 POSIX is a standard indifferent to binary compatibility, resulting in each
-implementation having a different ABI. Moreso, different implementations
-only cover a subset of the API.
+pthread implementation potentially having a different ABI.
 
-Functions that don't make sense with Lua (pthread_once) or are stubs
-in one or more implementations (pthread_setconcurrency) or are unsafe
-to use with Lua states (killing, cancelation) were also dropped. All in all
+Functions that don't make sense with Lua (pthread_once) or are unsafe
+to use with Lua states (killing, cancelation) were dropped. All in all
 you get a pretty thin library with just the basics covered.
 The good news is that this is really all you need for most apps.
-A more comprehensive but still portable threading library would have to
-be implemented on top of native synchronization primitives.
-
-Next are a few tips to get a rough idea of the portability situation.
-
-To find out (part of) the truth about API coverage, you can start by
-checking the exported symbols on the pthreads library on each platform
-and compare them:
-
-	On Linux:
-
-		c/syms /lib/libpthread.so.0 | \
-			grep '^pthread' > pthread_syms_linux.txt
-
-	Compare the results (the first column tells the number of platforms
-	that a symbol was found on):
-
-		sort pthread_syms_* | uniq -c | sort -nr
-
-To find out the differences in ABI and supported flags, you can preprocess
-the headers on different platforms and compare them:
-
-	c/precompile pthread.h sched.h semaphore.h > pthread_h_<platform>.lua
-
-The above will use gcc to preprocess the headers and generate a
-(very crude, mind you) Lua cdef template file that you can use
-as a starting point for a binding and/or to check ABI differences.
-
-Next step is to look at the source code for winpthreads and find out what
-is really implemented (and how).
 
 ]=]
 

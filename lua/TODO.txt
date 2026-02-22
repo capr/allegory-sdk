@@ -1,3 +1,25 @@
+LEVERAGE AI
+------------------------------------------------------------------------------
+* API quality
+	* find ways to make API more regular and consistent
+	* find ways to decrease API surface but keep it composable
+	* find better and more consistent names, args lists, etc.!
+	* remove unused code, find functions used only once and inline
+	* simplify complicated code
+	* find allocations that could be easily prevented, hoisted, etc.
+* code quality
+	* find obvious bugs
+		Where are hidden allocations?
+		Where can reentrancy explode?
+		What violates my invariants?
+	* gen unit tests
+	* gen fuzz testing (esp. for http)
+* doc quality
+	* fix doc inconsistencies
+	* write release notes
+	* write commit messages
+
+
 BUGS
 ------------------------------------------------------------------------------
 * WEBB_ACTION dir/file.ext action/arg.json vs action.json/arg

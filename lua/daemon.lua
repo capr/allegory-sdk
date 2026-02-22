@@ -24,9 +24,8 @@ require'glue'
 require'proc'
 require'fs'
 require'cmdline'
-require'path'
 
---daemonize (Linux only) -----------------------------------------------------
+--daemonize ------------------------------------------------------------------
 
 local pidfile
 local run_server
