@@ -584,7 +584,7 @@ exec_task:override('init', function(inherited, self, cmd, opt)
 		p:forget()
 
 		if not self.bg and not self.allow_fail and exit_code ~= 0 then
-			local cmd_s = isstr(cmd) and cmd or cmdline_quote_args(nil, unpack(cmd))
+			local cmd_s = isstr(cmd) and cmd or cmdline_quote_args(unpack(cmd))
 			local s = _('%s [%s]', cmd_s, exit_code)
 			if self.stdin then
 				--s = s .. '\nSTDIN:\n' .. self.stdin
