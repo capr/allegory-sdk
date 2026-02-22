@@ -189,7 +189,6 @@ function parse.accept_ranges(s) -- "none" | 1#( "bytes" | token )
 	return nameset(s)
 end
 
-parse.accept_datetime = date
 parse.age = int --seconds
 parse.allow = nameset --#method
 
@@ -210,6 +209,9 @@ local credentials_parsers = {
 	response = must_hex(32),  --"response" "=" <"> 32LHEX <">
 	opaque = must_value,      --"opaque" "=" quoted-string
 	algorithm = must_name,    --"algorithm" "=" ( "MD5" | "MD5-sess" | token )
+	immutable = no_value,     --widely used extension (RFC 8246)
+	stale_while_revalidate = must_int,
+	stale_if_error = must_int,
 }
 
 local function credentials(s) --basic base64-string | digest k=v,... per http://tools.ietf.org/html/rfc2617
@@ -223,6 +225,8 @@ local function credentials(s) --basic base64-string | digest k=v,... per http://
 		local dt = propertylist(s, credentials_parsers)
 		dt.scheme = scheme
 		return dt
+	elseif scheme == 'bearer' then
+		return {scheme = scheme, token = s}
 	else
 		return {scheme = scheme, rest = s}
 	end
@@ -282,7 +286,6 @@ local cc_parse = {
 	no_cache = opt_nameset,       --"no-cache" [ "=" <"> 1#field-name <"> ]
 	no_store = no_value,          --"no-store"
 	no_transform = no_value,      --"no-transform"
-	must_transform = no_value,    --"must-transform"
 	must_revalidate = no_value,   --"must-revalidate"
 	proxy_revalidate = no_value,  --"proxy-revalidate"
 	max_age = must_int,           --"max-age" "=" delta-seconds
@@ -298,10 +301,6 @@ parse.content_encoding = namelist --1#(content-coding)
 parse.content_language = nameset --1#(language-tag)
 parse.content_length = int
 parse.content_location = url
-
-function parse.content_md5(s)
-	return base64_decode(s)
-end
 
 function parse.content_range(s) --bytes <from>-<to>/<total> -> {from=,to=,total=,size=}
 	local from,to,total = s:match'bytes (%d+)%-(%d+)/(%d+)'
@@ -339,7 +338,6 @@ function parse.expect(s) --1#( "100-continue" | ( token "=" ( token | quoted-str
 end
 
 parse.expires = date
-parse.from = nil --email-address
 
 function parse.host(s) --host [ ":" port ]
 	local host, port = s:match'^(.-) ?: ?(.*)$'
@@ -379,12 +377,6 @@ parse.last_modified = date
 parse.location = url
 parse.max_forwards = int
 
-local pragma_parse = {no_cache = no_value}
-
-function parse.pragma(s) -- 1#( "no-cache" | token [ "=" ( token | quoted-string ) ] )
-	return propertylist(s, pragma_parse)
-end
-
 function parse.range(s) --bytes=<from>-<to> -> {from=,to=,size=}
 	local from,to = s:match'bytes=(%d+)%-(%d+)'
 	local t = {}
@@ -400,29 +392,6 @@ function parse.retry_after(s) --date | seconds
 	return int(s) or date(s)
 end
 
-function parse.server(s) --1*( ( token ["/" version] ) | comment )
-	local dt = {}
-	for t,i,j in tsplit(tokens(s), ',') do
-		local product, slash, version = unpack(t,i,j)
-		if slash == '/' then
-			dt[name(product)] = version or true
-		end
-	end
-	return dt
-end
-
-local te_parse = {trailers = no_value, q = must_int}
-
-function parse.te(s) --#( "trailers" | ( transfer-extension [ accept-params ] ) )
-	local dt = {}
-	for t,i,j, params in valueparamslist(s, te_parse) do
-		dt[name(t[i])] = params or true
-	end
-	return dt
-end
-
-parse.trailer = nameset --1#header-name
-
 local trenc_parse = {chunked = no_value}
 
 function parse.transfer_encoding(s) --1# ( "chunked" | token *( ";" name "=" ( token | quoted-string ) ) )
@@ -435,59 +404,12 @@ function parse.transfer_encoding(s) --1# ( "chunked" | token *( ";" name "=" ( t
 	return dt
 end
 
-function parse.upgrade(s) --1#product
-	local dt = {}
-	for t,i,j in tsplit(tokens(s), ',') do
-		local protocol,slash,version = unpack(t,i,j)
-		dt[name(protocol)] = version or true
-	end
-	return dt
-end
-
 parse.user_agent = string.lower --1*( product | comment )
 
 function parse.vary(s) --( "*" | 1#field-name )
 	if s == '*' then return '*' end
 	return nameset(s)
 end
-
-function parse.via(s) --1#( [ protocol-name "/" ] protocol-version host [ ":" port ] [ comment ] )
-	local dt = {}
-	for t,i,j in tsplit(tokens(s), ',') do
-		local proto = t[i+1] == '/' and t[i] or nil
-		local o = proto and 2 or 0
-		if o+j-i+1 < 2 then return end
-		local ver, host = t[o+i], t[o+i+1]
-		local port = t[o+i+2] ==':' and t[o+i+3] or nil
-		local comment = t[o+i+2+(port and 2 or 0)]
-		if comment == ',' then comment = nil end
-		if ver and host then
-			dt[#dt+1] = {
-				protocol = proto and name(proto),
-				version = ver:lower(),
-				host = host:lower(),
-				comment = comment
-			}
-		end
-	end
-	return dt
-end
-
-function parse.warning(s) --1#(code ( ( host [ ":" port ] ) | pseudonym ) text [date])
-	local dt = {}
-	for t,i,j in tsplit(tokens(s), ',') do
-		local code, host, port, message, date
-		if t[i+2] == ':' then
-			code, host, port, message, date = unpack(t,i,j)
-		else
-			code, host, message, date = unpack(t,i,j)
-		end
-		dt[#dt+1] = {code = int(code), host = host:lower(), port = int(port), message = message}
-	end
-	return dt
-end
-
-function parse.dnt(s) return s == '1' end --means "do not track"
 
 function parse.link(s) --</feed>; rel="alternate" (http://tools.ietf.org/html/rfc5988)
 	--[[ --TODO
@@ -535,6 +457,7 @@ headers.cookie_attr_parsers = {
 	['max-age'] = tonumber,
 	domain = function(s) return s ~= '' and s:lower() or nil end,
 	path = function(s) return s:sub(1, 1) == '/' and s or nil end,
+	samesite = function(s) return s:lower() end,
 }
 
 local function cookie_value(s)
@@ -591,6 +514,14 @@ function parse.cookie(s)
 	end
 	return dt
 end
+
+--security / modern headers (parsed as raw strings; structure is simple enough)
+parse.strict_transport_security = nil --max-age=<seconds>[; includeSubDomains][; preload]
+parse.content_security_policy   = nil --directive list; complex enough to leave raw
+parse.x_content_type_options    = name --"nosniff"
+parse.x_frame_options           = name --"deny" | "sameorigin"
+parse.referrer_policy           = name
+parse.permissions_policy        = nil  --leave raw
 
 function parse.strict_transport_security(s) --http://tools.ietf.org/html/rfc6797
 	--[[ --TODO
@@ -748,12 +679,18 @@ end
 
 --{from=,to=,size=} -> bytes=<from>-<to>
 function format.range(v)
-	--TODO:
+	if istab(v) then
+		return _('bytes=%d-%d', v.from, v.to)
+	end
+	return v
 end
 
 --{from=,to=,total=,size=} -> bytes <from>-<to>/<total>
 function format.content_range(v)
-	--TODO:
+	if istab(v) then
+		return _('bytes %d-%d/%d', v.from, v.to, v.total)
+	end
+	return v
 end
 
 function format.host(t)
@@ -810,15 +747,9 @@ headers.nofold = { --headers that it isn't safe to fold.
 format.cache_control = kvlist --no_cache
 format.connection = cilist
 format.content_length = int
-function format.content_md5(s) return base64_encode(s) end
 format.content_type = params{charset = ci} --text/html; charset=iso-8859-1
 format.date = date
-format.pragma = nil --cilist?
-format.trailer = headernames
 format.transfer_encoding = cilist
-format.upgrade = nil --http/2.0 shttp/1.3 irc/6.9 rta/x11
-format.via = nil --1.0 fred 1.1 nowhere.com (apache/1.1)
-format.warning = nil --list of '(%d%d%d) (.-) (.-) ?(.*)' --code agent text[ date]
 
 --standard request headers
 format.accept = cilist --paramslist?
@@ -827,7 +758,6 @@ format.accept_encoding = cilist
 format.accept_language = cilist
 format.authorization = ci --basic <password>
 format.expect = cilist --100-continue
-format.from = nil --user@example.com
 format.if_match = nil --<etag>
 format.if_modified_since = date
 format.if_none_match = nil --etag
@@ -841,7 +771,6 @@ format.user_agent = nil --mozilla/5.0 (compatible; msie 9.0; windows nt 6.1; wow
 
 --non-standard request headers
 format.x_requested_with = ci--xmlhttprequest
-format.dnt = function(v) return v[#v]=='1' end --means "do not track"
 format.x_forwarded_for = nil --client1 proxy1 proxy2
 
 --standard response headers
@@ -857,11 +786,9 @@ format.expires = date
 format.last_modified = date
 format.link = nil --?
 format.location = url
-format.p3p = nil
 format.proxy_authenticate = ci --basic
 format.refresh = params{url = url} --seconds; ... (not standard but supported)
 format.retry_after = int --seconds
-format.server = nil
 format.strict_transport_security = nil --eg. max_age=16070400; includesubdomains
 format.vary = headernames
 format.www_authenticate = ci
