@@ -1037,12 +1037,6 @@ function file.try_flush(f)
 	return check_errno(C.fsync(f.fd) == 0)
 end
 
-function file._seek(f, whence, offset)
-	local offs = C.lseek(f.fd, offset, whence)
-	if offs == -1 then return check_errno() end
-	return tonumber(offs)
-end
-
 function file:setexpires(rw, expires)
 	if not isstr(rw) then rw, expires = nil, rw end
 	local r = rw == 'r' or not rw
@@ -1062,7 +1056,9 @@ function file:try_seek(whence, offset)
 	whence = whence or 'cur'
 	offset = tonumber(offset or 0)
 	whence = assertf(whences[whence], 'invalid whence: "%s"', whence)
-	return self:_seek(whence, offset)
+	local offs = C.lseek(self.fd, offset, whence)
+	if offs == -1 then return check_errno() end
+	return tonumber(offs)
 end
 
 function file:try_write(buf, sz)
@@ -1119,13 +1115,14 @@ end
 
 --truncate -------------------------------------------------------------------
 
-cdef'int ftruncate(int fd, int64_t length);'
+cdef[[
+int ftruncate(int fd, int64_t length);
+int fallocate64(int fd, int mode, off64_t offset, off64_t len);
+]]
 
 --NOTE: ftruncate() creates a sparse file (and so would seeking to size-1
 --and writing '\0' there), so we need to call fallocate() to actually reserve
 --any disk space. OTOH, fallocate() is only efficient on some file systems.
-
-cdef'int fallocate64(int fd, int mode, off64_t offset, off64_t len);'
 
 local function fallocate(fd, size)
 	return check_errno(C.fallocate64(fd, 0, 0, size) == 0)
@@ -1173,20 +1170,6 @@ int unlink(const char *pathname);
 int rename(const char *oldpath, const char *newpath);
 ]]
 
-local function _mkdir(path, perms)
-	perms = parse_perms(perms) or default_dir_perms
-	return check_errno(C.mkdir(path, perms) == 0)
-end
-
-local function _rmdir(path)
-	return check_errno(C.rmdir(path) == 0)
-end
-
-local function _chdir(path)
-	startcwd()
-	return check_errno(C.chdir(path) == 0)
-end
-
 local ERANGE = 34
 
 function cwd()
@@ -1204,23 +1187,17 @@ function cwd()
 end
 startcwd = memoize(cwd)
 
-local function _rmfile(path)
-	return check_errno(C.unlink(path) == 0)
-end
-
-local function _mv(oldpath, newpath)
-	return check_errno(C.rename(oldpath, newpath) == 0)
-end
-
 function try_chdir(dir)
-	local ok, err = _chdir(dir)
+	startcwd()
+	local ok, err = check_errno(C.chdir(dir) == 0)
 	if not ok then return false, err end
 	log('', 'fs', 'chdir', '%s', dir)
 	return true
 end
 
 local function _try_mkdir(path, perms, quiet)
-	local ok, err = _mkdir(path, perms)
+	perms = parse_perms(perms) or default_dir_perms
+	local ok, err = check_errno(C.mkdir(path, perms) == 0)
 	if not ok then
 		if err == 'already_exists' then return true, err end
 		return false, err
@@ -1264,7 +1241,7 @@ function try_mkdirs(file, perms, quiet)
 end
 
 function try_rmdir(dir, quiet)
-	local ok, err, errcode = _rmdir(dir)
+	local ok, err, errcode = check_errno(C.rmdir(dir) == 0)
 	if not ok then
 		if err == 'not_found' then return true, err end
 		return false, err
@@ -1274,7 +1251,7 @@ function try_rmdir(dir, quiet)
 end
 
 function try_rmfile(file, quiet)
-	local ok, err = _rmfile(file)
+	local ok, err = check_errno(C.unlink(file) == 0)
 	if not ok then
 		if err == 'not_found' then return true, err end
 		return false, err
@@ -1336,14 +1313,14 @@ function try_mv(old_path, new_path, dst_dirs_perms, quiet)
 		local ok, err = try_mkdirs(new_path, dst_dirs_perms, quiet)
 		if not ok then return false, err end
 	end
-	local ok, err = _mv(old_path, new_path)
+	local ok, err = check_errno(C.rename(oldpath, newpath) == 0)
 	if not ok then return false, err end
 	log(quiet and '' or 'note', 'fs', 'mv', 'old: %s\nnew: %s', old_path, new_path)
 	return true
 end
 
 function try_mksymlink(link_path, target_path, quiet, replace)
-	local ok, err = _mksymlink(link_path, target_path)
+	local ok, err = check_errno(C.symlink(target_path, link_path) == 0)
 	if not ok then
 		if err == 'already_exists' then
 			local file_type, symlink_type = try_file_attr(link_path, 'type')
@@ -1355,7 +1332,7 @@ function try_mksymlink(link_path, target_path, quiet, replace)
 				elseif replace ~= false then
 					local ok, err = try_rmfile(link_path)
 					if not ok then return false, err end
-					local ok, err = _mksymlink(link_path, target_path)
+					local ok, err = check_errno(C.symlink(target_path, link_path) == 0)
 					if not ok then return false, err end
 					return true, 'replaced'
 				end
@@ -1368,7 +1345,7 @@ function try_mksymlink(link_path, target_path, quiet, replace)
 end
 
 function try_mkhardlink(link_path, target_path, quiet)
-	local ok, err = _mkhardlink(link_path, target_path)
+	local ok, err = check_errno(C.link(target_path, link_path) == 0)
 	if not ok then
 		if err == 'already_exists' then
 			local i1 = try_file_attr(target_path, 'inode')
@@ -1454,20 +1431,19 @@ int symlink(const char *oldpath, const char *newpath);
 ssize_t readlink(const char *path, char *buf, size_t bufsize);
 ]]
 
-local function _mksymlink(link_path, target_path)
-	return check_errno(C.symlink(target_path, link_path) == 0)
-end
-
-local function _mkhardlink(link_path, target_path)
-	return check_errno(C.link(target_path, link_path) == 0)
-end
-
 local EINVAL = 22
 
-local function _readlink(link_path)
+function try_readlink(link, maxdepth)
+	maxdepth = maxdepth or 32
+	if not file_is(link, 'symlink') then
+		return link
+	end
+	if maxdepth == 0 then
+		return nil, 'not_found'
+	end
 	local buf, sz = cbuf(256)
 	::again::
-	local len = C.readlink(link_path, buf, sz)
+	local len = C.readlink(link, buf, sz)
 	if len == -1 then
 		if errno() == EINVAL then --make it legit: no symlink, no target
 			return nil
@@ -1478,21 +1454,7 @@ local function _readlink(link_path)
 		buf, sz = cbuf(sz * 2)
 		goto again
 	end
-	return str(buf, len)
-end
-
-function try_readlink(link, maxdepth)
-	maxdepth = maxdepth or 32
-	if not file_is(link, 'symlink') then
-		return link
-	end
-	if maxdepth == 0 then
-		return nil, 'not_found'
-	end
-	local target, err = _readlink(link)
-	if not target then
-		return nil, err
-	end
+	local target = str(buf, len)
 	if target:starts'/' then
 		link = target
 	else --relative symlinks are relative to their own dir
@@ -1595,8 +1557,6 @@ struct stat {
 };
 ]]
 
-local fstat, stat, lstat
-
 local file_types = {
 	[0xc000] = 'socket',
 	[0xa000] = 'symlink',
@@ -1657,17 +1617,15 @@ local function wrap(stat_func)
 end
 
 local int = ctype'int'
-fstat = wrap(function(f, st)
+local fstat = wrap(function(f, st)
 	return C.syscall(5, cast(int, f.fd), cast(voidp, st))
 end)
-stat = wrap(function(path, st)
+local stat = wrap(function(path, st)
 	return C.syscall(4, cast(voidp, path), cast(voidp, st))
 end)
-lstat = wrap(function(path, st)
+local lstat = wrap(function(path, st)
 	return C.syscall(6, cast(voidp, path), cast(voidp, st))
 end)
-
-local utimes, futimes, lutimes
 
 cdef[[
 struct timespec {
@@ -1694,14 +1652,14 @@ local AT_FDCWD = -100
 
 local ts_ct = ctype'struct timespec[2]'
 local ts
-function futimes(f, atime, mtime)
+local function futimes(f, atime, mtime)
 	ts = ts or ts_ct()
 	set_timespec(atime, ts[0])
 	set_timespec(mtime, ts[1])
 	return check_errno(C.futimens(f.fd, ts) == 0)
 end
 
-function utimes(path, atime, mtime)
+local function utimes(path, atime, mtime)
 	ts = ts or ts_ct()
 	set_timespec(atime, ts[0])
 	set_timespec(mtime, ts[1])
@@ -1710,7 +1668,7 @@ end
 
 local AT_SYMLINK_NOFOLLOW = 0x100
 
-function lutimes(path, atime, mtime)
+local function lutimes(path, atime, mtime)
 	ts = ts or ts_ct()
 	set_timespec(atime, ts[0])
 	set_timespec(mtime, ts[1])
@@ -1743,9 +1701,6 @@ cdef[[
 int fchown(int fd,           uid_t owner, gid_t group);
 int  chown(const char *path, uid_t owner, gid_t group);
 int lchown(const char *path, uid_t owner, gid_t group);
-]]
-
-cdef[[
 typedef unsigned int uid_t;
 typedef unsigned int gid_t;
 struct passwd {
@@ -1786,9 +1741,7 @@ local fchown = wrap(function(f, uid, gid) return C.fchown(f.fd, uid, gid) end)
 local chown = wrap(C.chown)
 local lchown = wrap(C.lchown)
 
-_file_attr_get = fstat
-
-function _fs_attr_get(path, attr, deref)
+local function _fs_attr_get(path, attr, deref)
 	local stat = deref and stat or lstat
 	return stat(path, attr)
 end
@@ -1812,11 +1765,11 @@ local function wrap(chmod_func, chown_func, utimes_func)
 	end
 end
 
-_file_attr_set = wrap(fchmod, fchown, futimes)
+local _file_attr_set = wrap(fchmod, fchown, futimes)
 
 local set_deref   = wrap( chmod,  chown,  utimes)
 local set_symlink = wrap(lchmod, lchown, lutimes)
-function _fs_attr_set(path, t, deref)
+local function _fs_attr_set(path, t, deref)
 	local set = deref and set_deref or set_symlink
 	return set(path, t)
 end
@@ -1825,7 +1778,7 @@ function file.try_attr(f, attr)
 	if istab(attr) then
 		return _file_attr_set(f, attr)
 	else
-		return _file_attr_get(f, attr)
+		return fstat(f, attr)
 	end
 end
 
@@ -1920,9 +1873,6 @@ struct dirent { // NOTE: 64bit version
 	unsigned char   d_type;
 	char            d_name[256];
 };
-]]
-
-cdef[[
 typedef struct DIR DIR;
 DIR *opendir(const char *name);
 struct dirent *readdir(DIR *dirp) asm("readdir64");
@@ -1995,18 +1945,6 @@ function dir.next(dir)
 	end
 end
 
-function _ls(path, skip_dot_dirs)
-	local dir = dir_ct(#path)
-	dir._dirlen = #path
-	copy(dir._dir, path, #path)
-	dir._skip_dot_dirs = skip_dot_dirs and 1 or 0
-	dir._dirp = C.opendir(path)
-	if dir._dirp == nil then
-		dir._errno = errno()
-	end
-	return dir.next, dir
-end
-
 --dirent.d_type consts
 local DT_UNKNOWN = 0
 local DT_FIFO    = 1
@@ -2039,7 +1977,7 @@ local dt_names = {
 	[DT_UNKNOWN] = 'unknown',
 }
 
-function _dir_attr_get(dir, attr)
+local function _dir_attr_get(dir, attr)
 	if attr == 'type' and dir._dentry.d_type == DT_UNKNOWN then
 		--some filesystems (eg. VFAT) require this extra call to get the type.
 		local type, err = lstat(dir:path(), 'type')
@@ -2065,7 +2003,16 @@ end
 
 function ls(dir, opt)
 	local skip_dot_dirs = not (opt and opt:find('..', 1, true))
-	return _ls(dir or '.', skip_dot_dirs)
+	dir = dir or '.'
+	local dir = dir_ct(#dir)
+	dir._dirlen = #dir
+	copy(dir._dir, dir, #dir)
+	dir._skip_dot_dirs = skip_dot_dirs and 1 or 0
+	dir._dirp = C.opendir(dir)
+	if dir._dirp == nil then
+		dir._errno = errno()
+	end
+	return dir.next, dir
 end
 
 function dir.path(dir)
@@ -2230,11 +2177,16 @@ local function protect_bits(write, exec, copy)
 		exec and PROT_EXEC or 0)
 end
 
-local function mmap(...)
+local function C_mmap(...)
 	local addr = C.mmap(...)
 	local ok, err = check_errno(cast('intptr_t', addr) ~= -1)
 	if not ok then return nil, err end
 	return addr
+end
+
+function check_tagname(tagname)
+	assert(not tagname:find'[/\\]', 'tagname cannot contain `/` or `\\`')
+	return tagname
 end
 
 local MAP_SHARED  = 1
@@ -2242,7 +2194,8 @@ local MAP_PRIVATE = 2 --copy-on-write
 local MAP_FIXED   = 0x0010
 local MAP_ANON    = 0x0020
 
-function _mmap(path, access, size, offset, addr, tagname, perms)
+--TODO: merge this into mmap()
+local function _mmap(path, access, size, offset, addr, tagname, perms)
 
 	local write, exec, copy = parse_access(access or '')
 
@@ -2313,7 +2266,7 @@ function _mmap(path, access, size, offset, addr, tagname, perms)
 		file and 0 or MAP_ANON,
 		addr and MAP_FIXED or 0)
 
-	local addr, err = mmap(addr, size, protect, flags, file and file.fd or -1, offset)
+	local addr, err = C_mmap(addr, size, protect, flags, file and file.fd or -1, offset)
 	if not addr then return exit(err) end
 
 	--create the map object.
@@ -2358,6 +2311,7 @@ function mprotect(addr, size, access)
 	return check_errno(C.mprotect(addr, size, protect) == 0)
 end
 
+local split_uint64, join_uint64
 do
 local m = new[[
 	union {
@@ -2401,11 +2355,6 @@ function parse_access(s)
 	local copy  = s:find'c' and true or false
 	assert(not (write and copy), 'invalid access flags')
 	return write, exec, copy
-end
-
-function check_tagname(tagname)
-	assert(not tagname:find'[/\\]', 'tagname cannot contain `/` or `\\`')
-	return tagname
 end
 
 function file.try_mmap(f, ...)
