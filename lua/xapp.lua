@@ -33,7 +33,7 @@ CONFIG
 require'glue'
 require'webb'
 
-local sdkdir = path_normalize(indir(exedir(), '../..'), nil, {dot_dot_dirs = false})
+local sdkdir = path_normalize(indir(exedir(), '../..'), {dot_dot_dirs = false})
 wwwdir'www'
 wwwdir(indir(sdkdir, 'www'))
 wwwdir(indir(sdkdir, 'canvas-ui/www'))

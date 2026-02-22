@@ -642,7 +642,7 @@ function tmppath(patt, t)
 	t = t or {}
 	t.request_id = req() and req().request_id or 0
 	local file = subst(patt, t)
-	return path_combine(tmpdir(), file)
+	return indir(tmpdir(), file)
 end
 
 function wwwpath(file, type)

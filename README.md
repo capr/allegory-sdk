@@ -78,9 +78,9 @@ to see what's missing, broken or wanted.
 
 # Binaries
 
-Binaries are included in a separate repo that is kept in sync.
+Binaries are included in a separate repo that is kept in sync with the Lua code.
 
-	git submodule update --init bin
+	git submodule update --init bin/linux
 
 # Building
 

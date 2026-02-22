@@ -2667,8 +2667,8 @@ end
 
 function check(errorclass, event, v, ...)
 	if v then return v end
-	assert(type(errorclass) == 'string' or iserror(errorclass))
-	assert(type(event) == 'string')
+	assert(typeof(errorclass) == 'string' or iserror(errorclass))
+	assert(typeof(event) == 'string')
 	local e = newerror(errorclass, ...)
 	if not e.logged then
 		log('ERROR', e.errortype, event, '%s', e.message)
@@ -2694,7 +2694,7 @@ end
 do
 	local conf = {}
 	function config(k, default)
-		if type(k) == 'table' then
+		if typeof(k) == 'table' then
 			for k, v in pairs(v) do
 				config(k, v)
 			end

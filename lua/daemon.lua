@@ -30,8 +30,6 @@ require'cmdline'
 local pidfile
 local run_server
 
-if Linux then
-
 cmd_server = cmdsection'SERVER CONTROL'
 
 --NOTE: this check is by necessity loosey goosey arbitrary.
@@ -127,14 +125,6 @@ cmd_server('tail', 'tail -f the log file', function()
 	p:forget()
 end)
 
-else --Linux
-
-cmd('run', 'Run server in foreground', function()
-	run_server()
-end)
-
-end
-
 --init -----------------------------------------------------------------------
 
 function daemon(...)
@@ -158,7 +148,7 @@ function daemon(...)
 
 	--make require() see Lua modules from the script dir.
 	luapath(scriptdir())
-	sopath(indir(scriptdir(), 'bin', win and 'windows' or 'linux'))
+	sopath(indir(scriptdir(), 'bin/linux'))
 
 	--cd to scriptdir so that we can use relative paths for everything if we want to.
 	chdir(scriptdir())
