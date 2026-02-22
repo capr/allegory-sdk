@@ -61,8 +61,8 @@ function resize_image(src_path, dst_path, max_w, max_h)
 		local w, h = rect_fit(bmp.w, bmp.h, max_w, max_h)
 		if w < bmp.w or h < bmp.h then
 
-			log('note', 'rszimg', 'rszimg', '%s %d,%d -> %d,%d %d%%', path_file(src_path),
-				bmp.w, bmp.h, w, h, w / bmp.w * 100)
+			log('note', 'rszimg', 'rszimg', '%s %d,%d -> %d,%d %d%%',
+				basename(src_path), bmp.w, bmp.h, w, h, w / bmp.w * 100)
 
 			local src_img = pillow_image(bmp)
 			local dst_img = src_img:resize(w, h)

@@ -1,8 +1,8 @@
 
 # :candy: The Allegory SDK
 
-The **Allegory SDK** is a self-contained cross-platform programming
-environment for developing web-based **database-driven business apps** in
+The **Allegory SDK** is a self-contained programming environment for
+developing web-based **database-driven business apps** in
 **LuaJIT** and **JavaScript**.
 
 The **server-side stack** is written entirely in Lua and contains:
@@ -72,17 +72,15 @@ to see what's missing, broken or wanted.
 
 # Compatibility
 
- * Operating Systems: **Debian 10+**, **Windows 10+**
+ * Operating Systems: **Debian 12+**
  * Browsers: Desktop **Chrome**, **Firefox**, **Edge**, **Safari 16.3+**
  * CPUs: x86-64 with SSE 4.2 (AVX2 used if found).
 
 # Binaries
 
-Binaries are included in separate repos for each supported platform and are
-versioned to follow the main repo.
+Binaries are included in a separate repo that is kept in sync.
 
-	git submodule update --init bin/debian12
-	git submodule update --init bin/windows
+	git submodule update --init bin
 
 # Building
 
@@ -108,8 +106,8 @@ scripts for new libraries without using a build system.
   * [lang](lua/lang.lua)               - Multi-language, country and currency support
   * [reflect](lua/reflect.lua)         - [FFI reflection](https://corsix.github.io/ffi-reflect/) library
 * __Platform APIs__
-  * [fs](lua/fs.lua)                   - Files, directories, symlinks, pipes, memory mapping for [Linux](lua/fs_posix.lua) and [Windows](lua/fs_win.lua)
-  * [proc](lua/proc.lua)               - Async process execution with I/O redirection for [Linux](lua/proc_posix.lua) and [Windows](lua/proc_win.lua)
+  * [fs](lua/fs.lua)                   - Files, directories, symlinks, pipes, memory mapping
+  * [proc](lua/proc.lua)               - Async process execution with I/O redirection
   * [path](lua/path.lua)               - Path manipulation
   * [unixperms](lua/unixperms.lua)     - Unix permissons string parser
   * [time](lua/time.lua)               - Wall clock, monotonic clock, sleep

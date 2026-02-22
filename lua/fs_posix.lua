@@ -1,6 +1,6 @@
 --go@ plink d10 -t -batch /root/sdk/bin/linux/luajit /root/sdk/tests/fs_test.lua
 
---Portable filesystem API for LuaJIT | Linux+OSX backend
+--Filesystem API for Linux.
 --Written by Cosmin Apreutesei. Public Domain.
 
 if not ... then require'fs_test'; return end
@@ -10,7 +10,7 @@ require'unixperms'
 
 --POSIX does not define an ABI and platfoms have different cdefs thus we have
 --to limit support to the platforms and architectures we actually tested for.
-assert(Linux or OSX, 'platform not Linux or OSX')
+assert(Linux, 'platform not Linux')
 assert(package.loaded.fs)
 
 local
@@ -34,9 +34,7 @@ typedef int64_t off64_t;
 
 cdef'int fcntl(int fd, int cmd, ...);' --fallocate, set_inheritable
 
-if Linux then
-	cdef'long syscall(int number, ...);' --stat, fstat, lstat
-end
+cdef'long syscall(int number, ...);' --stat, fstat, lstat
 
 local cbuf = buffer'char[?]'
 
@@ -59,33 +57,26 @@ int close(int fd);
 ]]
 
 local o_bits = {
-	--Linux & OSX
-	rdonly    = OSX and 0x000000 or 0x000000, --access: read only
-	wronly    = OSX and 0x000001 or 0x000001, --access: write only
-	rdwr      = OSX and 0x000002 or 0x000002, --access: read + write
-	accmode   = OSX and 0x000003 or 0x000003, --access: ioctl() only
-	append    = OSX and 0x000008 or 0x000400, --append mode: write() at eof
-	trunc     = OSX and 0x000400 or 0x000200, --truncate the file on opening
-	creat     = OSX and 0x000200 or 0x000040, --create if not exist
-	excl      = OSX and 0x000800 or 0x000080, --create or fail (needs 'creat')
-	nofollow  = OSX and 0x000100 or 0x020000, --fail if file is a symlink
-	directory = OSX and 0x100000 or 0x010000, --open if directory or fail
-	async     = OSX and 0x000040 or 0x002000, --enable signal-driven I/O
-	sync      = OSX and 0x000080 or 0x101000, --enable _file_ sync
-	fsync     = OSX and 0x000080 or 0x101000, --'sync'
-	dsync     = OSX and 0x400000 or 0x001000, --enable _data_ sync
-	noctty    = OSX and 0x020000 or 0x000100, --prevent becoming ctty
-	--Linux only
-	direct    = Linux and 0x004000, --don't cache writes
-	noatime   = Linux and 0x040000, --don't update atime
-	rsync     = Linux and 0x101000, --'sync'
-	path      = Linux and 0x200000, --open only for fd-level ops
-   tmpfile   = Linux and 0x410000, --create anon temp file (Linux 3.11+)
-	--OSX only
-	shlock    = OSX and 0x000010, --get a shared lock
-	exlock    = OSX and 0x000020, --get an exclusive lock
-	evtonly   = OSX and 0x008000, --open for events only (allows unmount)
-	symlink   = OSX and 0x200000, --open the symlink itself
+	rdonly    = 0x000000, --access: read only
+	wronly    = 0x000001, --access: write only
+	rdwr      = 0x000002, --access: read + write
+	accmode   = 0x000003, --access: ioctl() only
+	append    = 0x000400, --append mode: write() at eof
+	trunc     = 0x000200, --truncate the file on opening
+	creat     = 0x000040, --create if not exist
+	excl      = 0x000080, --create or fail (needs 'creat')
+	nofollow  = 0x020000, --fail if file is a symlink
+	directory = 0x010000, --open if directory or fail
+	async     = 0x002000, --enable signal-driven I/O
+	sync      = 0x101000, --enable _file_ sync
+	fsync     = 0x101000, --'sync'
+	dsync     = 0x001000, --enable _data_ sync
+	noctty    = 0x000100, --prevent becoming ctty
+	direct    = 0x004000, --don't cache writes
+	noatime   = 0x040000, --don't update atime
+	rsync     = 0x101000, --'sync'
+	path      = 0x200000, --open only for fd-level ops
+   tmpfile   = 0x410000, --create anon temp file (Linux 3.11+)
 }
 
 _open_mode_opt = {
@@ -99,8 +90,8 @@ _open_mode_opt = {
 
 local F_GETFL     = 3
 local F_SETFL     = 4
-local O_NONBLOCK  = OSX and 0x000004 or 0x000800 --async I/O
-local O_CLOEXEC   = OSX and     2^24 or 0x080000 --close-on-exec
+local O_NONBLOCK  = 0x000800 --async I/O
+local O_CLOEXEC   = 0x080000 --close-on-exec
 
 local F_GETFD = 1
 local F_SETFD = 2
@@ -300,12 +291,12 @@ end
 
 --i/o ------------------------------------------------------------------------
 
-cdef(format([[
+cdef[[
 ssize_t read(int fd, void *buf, size_t count);
 ssize_t write(int fd, const void *buf, size_t count);
 int fsync(int fd);
-int64_t lseek(int fd, int64_t offset, int whence) asm("lseek%s");
-]], Linux and '64' or ''))
+int64_t lseek(int fd, int64_t offset, int whence) asm("lseek64");
+]]
 
 --NOTE: always ask for more than 0 bytes from a pipe or you'll not see EOF.
 function file.try_read(f, buf, sz)
@@ -351,47 +342,10 @@ cdef'int ftruncate(int fd, int64_t length);'
 --and writing '\0' there), so we need to call fallocate() to actually reserve
 --any disk space. OTOH, fallocate() is only efficient on some file systems.
 
-local fallocate
+cdef'int fallocate64(int fd, int mode, off64_t offset, off64_t len);'
 
-if OSX then
-
-	local F_PREALLOCATE    = 42
-	local F_ALLOCATECONTIG = 2
-	local F_PEOFPOSMODE    = 3
-	local F_ALLOCATEALL    = 4
-
-	local fstore_ct = ctype[[
-		struct {
-			uint32_t fst_flags;
-			int      fst_posmode;
-			off64_t  fst_offset;
-			off64_t  fst_length;
-			off64_t  fst_bytesalloc;
-		}
-	]]
-
-	local void = ctype'void*'
-	local store
-	function fallocate(fd, size)
-		store = store or fstore_ct(F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, 0)
-		store.fst_bytesalloc = size
-		local ret = C.fcntl(fd, F_PREALLOCATE, cast(void, store))
-		if ret == -1 then --too fragmented, allocate non-contiguous space
-			store.fst_flags = F_ALLOCATEALL
-			local ret = C.fcntl(fd, F_PREALLOCATE, cast(void, store))
-			if ret == -1 then return check(false) end
-		end
-		return true
-	end
-
-else
-
-	cdef'int fallocate64(int fd, int mode, off64_t offset, off64_t len);'
-
-	function fallocate(fd, size)
-		return check(C.fallocate64(fd, 0, 0, size) == 0)
-	end
-
+local function fallocate(fd, size)
+	return check(C.fallocate64(fd, 0, 0, size) == 0)
 end
 
 --NOTE: lseek() is not defined for shm_open()'ed fds, that's why we ask
@@ -525,28 +479,14 @@ function appdir(appname)
 	return dir and format('%s/.%s', dir, appname)
 end
 
-if OSX then
-	cdef'int _NSGetExecutablePath(char* buf, uint32_t* bufsize);'
-	function exepath()
-		local buf, sz = cbuf(256)
-		local out_sz = u32a(1)
-		::again::
-		if C._NSGetExecutablePath(buf, out_sz) ~= 0 then
-			buf, sz = cbuf(out_sz[0])
-			goto again
-		end
-		return (str(buf, sz):gsub('//', '/'))
-	end
-else
-	function exepath()
-		return readlink'/proc/self/exe'
-	end
+function exepath()
+	return readlink'/proc/self/exe'
 end
 exepath = memoize(exepath)
 
 --file attributes ------------------------------------------------------------
 
-if Linux then cdef[[
+cdef[[
 struct stat {
 	uint64_t st_dev;
 	uint64_t st_ino;
@@ -567,37 +507,7 @@ struct stat {
 	uint64_t st_ctime_nsec;
 	int64_t  __unused[3];
 };
-]] elseif OSX then cdef[[
-struct stat { // NOTE: 64bit version
-	uint32_t st_dev;
-	uint16_t st_mode;
-	uint16_t st_nlink;
-	uint64_t st_ino;
-	uint32_t st_uid;
-	uint32_t st_gid;
-	uint32_t st_rdev;
-	// NOTE: these were `struct timespec`
-	time_t   st_atime;
-	long     st_atime_nsec;
-	time_t   st_mtime;
-	long     st_mtime_nsec;
-	time_t   st_ctime;
-	long     st_ctime_nsec;
-	time_t   st_btime; // birth-time i.e. creation time
-	long     st_btime_nsec;
-	int64_t  st_size;
-	int64_t  st_blocks;
-	int32_t  st_blksize;
-	uint32_t st_flags;
-	uint32_t st_gen;
-	int32_t  st_lspare;
-	int64_t  st_qspare[2];
-};
-int fstat64(int fd, struct stat *buf);
-int stat64(const char *path, struct stat *buf);
-int lstat64(const char *path, struct stat *buf);
 ]]
-end
 
 local fstat, stat, lstat
 
@@ -638,8 +548,6 @@ local stat_getters = {
 	atime   = function(st) return st_time(st.st_atime, st.st_atime_nsec) end,
 	mtime   = function(st) return st_time(st.st_mtime, st.st_mtime_nsec) end,
 	ctime   = function(st) return st_time(st.st_ctime, st.st_ctime_nsec) end,
-	btime   = OSX and
-				 function(st) return st_time(st.st_btime, st.st_btime_nsec) end,
 }
 
 local stat_ct = ctype'struct stat'
@@ -661,115 +569,66 @@ local function wrap(stat_func)
 		end
 	end
 end
-if Linux then
-	local void = ctype'void*'
-	local int = ctype'int'
-	fstat = wrap(function(f, st)
-		return C.syscall(5, cast(int, f.fd), cast(void, st))
-	end)
-	stat = wrap(function(path, st)
-		return C.syscall(4, cast(void, path), cast(void, st))
-	end)
-	lstat = wrap(function(path, st)
-		return C.syscall(6, cast(void, path), cast(void, st))
-	end)
-elseif OSX then
-	fstat = wrap(function(f, st) return C.fstat64(f.fd, st) end)
-	stat = wrap(C.stat64)
-	lstat = wrap(C.lstat64)
-end
+
+local int = ctype'int'
+fstat = wrap(function(f, st)
+	return C.syscall(5, cast(int, f.fd), cast(voidp, st))
+end)
+stat = wrap(function(path, st)
+	return C.syscall(4, cast(voidp, path), cast(voidp, st))
+end)
+lstat = wrap(function(path, st)
+	return C.syscall(6, cast(voidp, path), cast(voidp, st))
+end)
 
 local utimes, futimes, lutimes
 
-if Linux then
+cdef[[
+struct timespec {
+	time_t tv_sec;
+	long   tv_nsec;
+};
+int futimens(int fd, const struct timespec times[2]);
+int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
+]]
 
-	cdef[[
-	struct timespec {
-		time_t tv_sec;
-		long   tv_nsec;
-	};
-	int futimens(int fd, const struct timespec times[2]);
-	int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
-	]]
+local UTIME_OMIT = shl(1,30)-2
 
-	local UTIME_OMIT = shl(1,30)-2
-
-	local function set_timespec(ts, t)
-		if ts then
-			t.tv_sec = ts
-			t.tv_nsec = (ts - floor(ts)) * 1e9
-		else
-			t.tv_sec = 0
-			t.tv_nsec = UTIME_OMIT
-		end
-	end
-
-	local AT_FDCWD = -100
-
-	local ts_ct = ctype'struct timespec[2]'
-	local ts
-	function futimes(f, atime, mtime)
-		ts = ts or ts_ct()
-		set_timespec(atime, ts[0])
-		set_timespec(mtime, ts[1])
-		return check(C.futimens(f.fd, ts) == 0)
-	end
-
-	function utimes(path, atime, mtime)
-		ts = ts or ts_ct()
-		set_timespec(atime, ts[0])
-		set_timespec(mtime, ts[1])
-		return check(C.utimensat(AT_FDCWD, path, ts, 0) == 0)
-	end
-
-	local AT_SYMLINK_NOFOLLOW = 0x100
-
-	function lutimes(path, atime, mtime)
-		ts = ts or ts_ct()
-		set_timespec(atime, ts[0])
-		set_timespec(mtime, ts[1])
-		return check(C.utimensat(AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW) == 0)
-	end
-
-elseif OSX then
-
-	cdef[[
-	struct timeval {
-		time_t  tv_sec;
-		int32_t tv_usec; // ignored by futimes()
-	};
-	int futimes(int fd, const struct timeval times[2]);
-	int utimes(const char *path, const struct timeval times[2]);
-	int lutimes(const char *path, const struct timeval times[2]);
-	]]
-
-	local function set_timeval(ts, t)
+local function set_timespec(ts, t)
+	if ts then
 		t.tv_sec = ts
-		t.tv_usec = (ts - floor(ts)) * 1e7 --apparently ignored
+		t.tv_nsec = (ts - floor(ts)) * 1e9
+	else
+		t.tv_sec = 0
+		t.tv_nsec = UTIME_OMIT
 	end
+end
 
-	--TODO: find a way to change btime too (probably with CF or Cocoa, which
-	--means many more LOC and more BS for setting one damn integer).
-	local tv_ct = ctype'struct timeval[2]'
-	local tv
-	local function wrap(utimes_func, stat_func)
-		return function(arg, atime, mtime)
-			tv = tv or tv_ct()
-			if not atime or not mtime then
-				local t, err = stat_func(arg)
-				if not t then return nil, err end
-				atime = atime or t.atime
-				mtime = mtime or t.mtime
-			end
-			set_timeval(atime, tv[0])
-			set_timeval(mtime, tv[1])
-			return check(utimes_func(arg, tv) == 0)
-		end
-	end
-	futimes = wrap(function(f, tv) return C.futimes(f.fd, tv) end, fstat)
-	utimes  = wrap(C.utimes, stat)
-	lutimes = wrap(C.lutimes, lstat)
+local AT_FDCWD = -100
 
+local ts_ct = ctype'struct timespec[2]'
+local ts
+function futimes(f, atime, mtime)
+	ts = ts or ts_ct()
+	set_timespec(atime, ts[0])
+	set_timespec(mtime, ts[1])
+	return check(C.futimens(f.fd, ts) == 0)
+end
+
+function utimes(path, atime, mtime)
+	ts = ts or ts_ct()
+	set_timespec(atime, ts[0])
+	set_timespec(mtime, ts[1])
+	return check(C.utimensat(AT_FDCWD, path, ts, 0) == 0)
+end
+
+local AT_SYMLINK_NOFOLLOW = 0x100
+
+function lutimes(path, atime, mtime)
+	ts = ts or ts_ct()
+	set_timespec(atime, ts[0])
+	set_timespec(mtime, ts[1])
+	return check(C.utimensat(AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW) == 0)
 end
 
 cdef[[
@@ -878,7 +737,7 @@ end
 
 --directory listing ----------------------------------------------------------
 
-if Linux then cdef[[
+cdef[[
 struct dirent { // NOTE: 64bit version
 	uint64_t        d_ino;
 	int64_t         d_off;
@@ -886,23 +745,14 @@ struct dirent { // NOTE: 64bit version
 	unsigned char   d_type;
 	char            d_name[256];
 };
-]] elseif OSX then cdef[[
-struct dirent { // NOTE: 64bit version
-	uint64_t d_ino;
-	uint64_t d_seekoff;
-	uint16_t d_reclen;
-	uint16_t d_namlen;
-	uint8_t  d_type;
-	char     d_name[1024];
-};
-]] end
+]]
 
-cdef(format([[
+cdef[[
 typedef struct DIR DIR;
 DIR *opendir(const char *name);
-struct dirent *readdir(DIR *dirp) asm("%s");
+struct dirent *readdir(DIR *dirp) asm("readdir64");
 int closedir(DIR *dirp);
-]], Linux and 'readdir64' or OSX and 'readdir$INODE64'))
+]]
 
 dir_ct = ctype[[
 	struct {
@@ -1036,31 +886,25 @@ end
 --memory mapping -------------------------------------------------------------
 
 local librt = C
-if Linux then --for shm_open()
+do --for shm_open()
 	local ok, rt = pcall(ffi.load, 'rt')
 	if ok then librt = rt end
 end
 
-if Linux then
-	cdef'int __getpagesize();'
-elseif OSX then
-	cdef'int getpagesize();'
-end
-local getpagesize = Linux and C.__getpagesize or C.getpagesize
+cdef'int __getpagesize();'
+local getpagesize = C.__getpagesize
 pagesize = memoize(function() return getpagesize() end)
 
 cdef[[
 int shm_open(const char *name, int oflag, mode_t mode);
 int shm_unlink(const char *name);
-]]
 
-cdef(format([[
 void* mmap(void *addr, size_t length, int prot, int flags,
-	int fd, off64_t offset) asm("%s");
+	int fd, off64_t offset) asm("mmap64");
 int munmap(void *addr, size_t length);
 int msync(void *addr, size_t length, int flags);
 int mprotect(void *addr, size_t len, int prot);
-]], OSX and 'mmap' or 'mmap64'))
+]]
 
 local PROT_READ  = 1
 local PROT_WRITE = 2
@@ -1082,7 +926,7 @@ end
 local MAP_SHARED  = 1
 local MAP_PRIVATE = 2 --copy-on-write
 local MAP_FIXED   = 0x0010
-local MAP_ANON    = OSX and 0x1000 or 0x0020
+local MAP_ANON    = 0x0020
 
 function _mmap(path, access, size, offset, addr, tagname, perms)
 
@@ -1162,7 +1006,7 @@ function _mmap(path, access, size, offset, addr, tagname, perms)
 
 	local MS_ASYNC      = 1
 	local MS_INVALIDATE = 2
-	local MS_SYNC       = OSX and 0x0010 or 4
+	local MS_SYNC       = 4
 
 	local function flush(self, async, addr, sz)
 		if not isbool(async) then --async arg is optional
@@ -1201,8 +1045,6 @@ function mprotect(addr, size, access)
 end
 
 --mirror buffer --------------------------------------------------------------
-
-if Linux then
 
 cdef'int memfd_create(const char *name, unsigned int flags);'
 local MFD_CLOEXEC = 0x0001
@@ -1268,16 +1110,6 @@ function mirror_buffer(size, addr)
 
 end
 
-elseif OSX then
-
-function mirror_buffer(size, addr)
-	error'NYI'
-end
-
-end --if OSX
-
-if Linux then
-
 --free space reporting -------------------------------------------------------
 
 cdef[[
@@ -1340,6 +1172,3 @@ function pidfd_open(pid, opt, quiet)
 	end
 	return f
 end
-
-
-end --if Linux

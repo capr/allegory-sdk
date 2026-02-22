@@ -1,23 +1,20 @@
 --[=[
 
-	Portable filesystem API for Windows, Linux and OSX.
+	Filesystem API for Linux.
 	Written by Cosmin Apreutesei. Public Domain.
 
 FEATURES
-  * utf8 filenames on all platforms
-  * symlinks and hard links on all platforms
-  * memory mapping on all platforms
-  * some error code unification for common error cases
+  * utf8 filenames
+  * symlinks and hard links
+  * memory mapping
   * cdata buffer-based I/O
-  * platform-specific functionality exposed
 
 FILE OBJECTS
 	[try_]open(opt | path,[mode],[quiet]) -> f    open file
 	f:[try_]close()                               close file
 	f:closed() -> true|false                      check if file is closed
 	isfile(f [,'file'|'pipe']) -> true|false      check if f is a file or pipe
-	f.handle -> HANDLE                            Windows HANDLE (Windows platforms)
-	f.fd -> fd                                    POSIX file descriptor (POSIX platforms)
+	f.fd -> fd                                    POSIX file descriptor
 PIPES
 	[try_]pipe([opt]) -> rf, wf                   create an anonymous pipe
 	[try_]pipe(path|{path=,...}) -> pf            create/open a named pipe
@@ -78,7 +75,7 @@ FILESYSTEM OPS
 	[try_]mkdirs(file, [perms], [quiet]) -> file     make file's dir
 	[try_]mv(old_path, new_path, [dst_dirs_perms], [quiet])   rename/move file or dir on the same filesystem
 SYMLINKS & HARDLINKS
-	[try_]mksymlink(symlink, path, is_dir, [quiet])  create a symbolic link for a file or dir
+	[try_]mksymlink(symlink, path, [quiet])       create a symbolic link for a file or dir
 	[try_]mkhardlink(hardlink, path, [quiet])     create a hard link for a file
 	[try_]readlink(path) -> path                  dereference a symlink recursively
 COMMON PATHS
@@ -91,7 +88,6 @@ COMMON PATHS
 	vardir() -> path                              get script's private r/w directory
 	varpath(...) -> path                          get vardir-relative path
 LOW LEVEL
-	file_wrap_handle(HANDLE, [opt], ...) -> f     wrap opened HANDLE (Windows)
 	file_wrap_fd(fd, [opt], ...) -> f             wrap opened file descriptor
 	file_wrap_file(FILE*, [opt], ...) -> f        wrap opened FILE* object
 	fileno(FILE*) -> fd                           get stream's file descriptor
@@ -102,7 +98,7 @@ MEMORY MAPPING
 	map.size                                      size of the mapped memory in bytes
 	map:flush([async, ][addr, size])              flush (parts of) the mapping to disk
 	map:free()                                    release the memory and associated resources
-	unlink_mapfile(tagname)                       remove the shared memory file from disk (Linux, OSX)
+	unlink_mapfile(tagname)                       remove the shared memory file from disk
 	map:unlink()
 	mirror_buffer([size], [addr]) -> map          create a mirrored memory-mapped ring buffer
 	pagesize() -> bytes                           get allocation granularity
@@ -122,37 +118,23 @@ followed recursively and transparently where this option is available.
 
 FILE ATTRIBUTES
 
- attr          | Win    | OSX    | Linux    | Description
- --------------+--------+--------+----------+--------------------------------
- type          | r      | r      | r        | file type (see below)
- size          | r      | r      | r        | file size
- atime         | rw     | rw     | rw       | last access time (seldom correct)
- mtime         | rw     | rw     | rw       | last contents-change time
- btime         | rw     | r      |          | creation (aka "birth") time
- ctime         | rw     | r      | r        | last metadata-or-contents-change time
- target        | r      | r      | r        | symlink's target (nil if not symlink)
- dosname       | r      |        |          | 8.3 filename (Windows)
- archive       | rw     |        |          | archive bit (for backup programs)
- hidden        | rw     |        |          | hidden bit (don't show in Explorer)
- readonly      | rw     |        |          | read-only bit (can't open in write mode)
- system        | rw     |        |          | system bit
- temporary     | rw     |        |          | writes need not be commited to storage
- not_indexed   | rw     |        |          | exclude from indexing
- sparse_file   | r      |        |          | file is sparse
- reparse_point | r      |        |          | has a reparse point or is a symlink
- compressed    | r      |        |          | file is compressed
- encrypted     | r      |        |          | file is encrypted
- perms         |        | rw     | rw       | permissions
- uid           |        | rw     | rw       | user id or name
- gid           |        | rw     | rw       | group id or name
- dev           |        | r      | r        | device id containing the file
- inode         |        | r      | r        | inode number (int64_t)
- volume        | r      |        |          | volume serial number
- id            | r      |        |          | file id (int64_t)
- nlink         | r      | r      | r        | number of hard links
- rdev          |        | r      | r        | device id (if special file)
- blksize       |        | r      | r        | block size for I/O
- blocks        |        | r      | r        | number of 512B blocks allocated
+ attr     | R/W | Description
+ ---------+-----+--------------------------------
+ type     | r   | file type (see below)
+ size     | r   | file size
+ atime    | rw  | last access time (seldom correct)
+ mtime    | rw  | last contents-change time
+ ctime    | r   | last metadata-or-contents-change time
+ target   | r   | symlink's target (nil if not symlink)
+ perms    | rw  | permissions
+ uid      | rw  | user id or name
+ gid      | rw  | group id or name
+ dev      | r   | device id containing the file
+ inode    | r   | inode number (int64_t)
+ nlink    | r   | number of hard links
+ rdev     | r   | device id (if special file)
+ blksize  | r   | block size for I/O
+ blocks   | r   | number of 512B blocks allocated
 
 On the table above, `r` means that the attribute is read/only and `rw` means
 that the attribute can be changed. Attributes can be queried and changed via
@@ -163,17 +145,16 @@ at most 8KTB.
 
 FILE TYPES
 
- name         | Win    | OSX    | Linux    | description
- -------------+--------+--------+----------+---------------------------------
- file         | *      | *      | *        | file is a regular file
- dir          | *      | *      | *        | file is a directory
- symlink      | *      | *      | *        | file is a symlink
- dev          | *      |        |          | file is a Windows device
- blockdev     |        | *      | *        | file is a block device
- chardev      |        | *      | *        | file is a character device
- pipe         |        | *      | *        | file is a pipe
- socket       |        | *      | *        | file is a socket
- unknown      |        | *      | *        | file type unknown
+ name      | description
+ ----------+---------------------------------
+ file      | file is a regular file
+ dir       | file is a directory
+ symlink   | file is a symlink
+ blockdev  | file is a block device
+ chardev   | file is a character device
+ pipe      | file is a pipe
+ socket    | file is a socket
+ unknown   | file type unknown
 
 NORMALIZED ERROR MESSAGES
 
@@ -201,20 +182,13 @@ Open/create a file for reading and/or writing. The second arg can be a string:
 
 	... or an options table with platform-specific options which represent
 	OR-ed bitmask flags which must be given either as 'foo bar ...',
-	{foo=true, bar=true} or {'foo', 'bar'}, eg. {sharing = 'read write'}
-	sets the `dwShareMode` argument of CreateFile() to
-	`FILE_SHARE_READ | FILE_SHARE_WRITE` on Windows.
+	{foo=true, bar=true} or {'foo', 'bar'}.
 	All fields and flags are documented in the code.
 
- field     | OS           | reference                            | default
- ----------+--------------+--------------------------------------+----------
- access    | Windows      | CreateFile() / dwDesiredAccess       | 'file_read'
- sharing   | Windows      | CreateFile() / dwShareMode           | 'file_read'
- creation  | Windows      | CreateFile() / dwCreationDisposition | 'open_existing'
- attrs     | Windows      | CreateFile() / dwFlagsAndAttributes  | ''
- flags     | Windows      | CreateFile() / dwFlagsAndAttributes  | ''
- flags     | Linux, OSX   | open() / flags                       | 'rdonly'
- perms     | Linux, OSX   | octal or symbolic perms              | '0666' / 'rwx'
+ field       | reference                            | default
+ ------------+--------------------------------------+----------
+ flags       | open() / flags                       | 'rdonly'
+ perms       | octal or symbolic perms              | '0666' / 'rwx'
  inheritable | all        | sub-processes inherit the fd/handle  | false
 
 The `perms` arg is passed to unixperms_parse().
@@ -233,19 +207,9 @@ Pipes ------------------------------------------------------------------------
 		* `inheritable`, `read_inheritable`, `write_inheritable`: make one
 		or both pipes inheritable by sub-processes.
 
-	NOTE: If you're using async anonymous pipes in Windows _and_ you're
-	also creating multiple Lua states _per OS thread_, make sure to set
-	a unique `lua_state_id` per Lua state to distinguish them. That is because
-	in Windows, async anonymous pipes are emulated using named pipes.
-
 [try_]pipe(path|{path=,...}) -> pf
 
 	Create and open a named pipe.
-
-	On Windows, named pipes must be created in the special hidden directory
-	`\\.\pipe`. After creation they can be opened for reading and writing
-	from any process like normal files. They cannot be removed and are not
-	persistent. A named pipe is freed when the last handle to it is closed.
 
 	On POSIX systems, named pipes are persistent and can be created in any
 	directory as they are just a type of file.
@@ -307,9 +271,7 @@ f:[try_]truncate(size, [opt])
 	This can be done both to shorten a file and thus free disk space, or to
 	preallocate disk space to be subsequently filled (eg. when downloading a file).
 
-	... On Linux
-
-	`opt` is an optional string for Linux which can contain any of the words
+	`opt` is an optional string which can contain any of the words
 	`fallocate` (call `fallocate()`) and `fail` (do not call `ftruncate()`
 	if `fallocate()` fails: return an error instead). The problem with calling
 	`ftruncate()` if `fallocate()` fails is that on most filesystems, that
@@ -321,12 +283,6 @@ f:[try_]truncate(size, [opt])
 
 	Btw, seeking past EOF and writing something there will also create a sparse
 	file, so there's no easy way out of this complexity.
-
-	... On Windows
-
-	On NTFS truncation is smarter: disk space is reserved but no zero bytes are
-	written. Those bytes are only written on subsequent write calls that skip
-	over the reserved area, otherwise there's no overhead.
 
 f:[un]buffered_reader([bufsize]) -> read(buf, len)
 
@@ -402,8 +358,7 @@ ls([dir], [opt]) -> d, next
 
 		Some attributes for directory entries are free to get (but not for symlinks
 		when `deref=true`) meaning that they don't require a system call for each
-		file, notably `type` on all platforms, `atime`, `mtime`, `btime`, `size`
-		and `dosname` on Windows and `inode` on Linux and OSX.
+		file, notably `type`, `atime`, `mtime`, `size` and `inode`.
 
 	d:is(type, [deref]) -> true|false
 
@@ -451,10 +406,9 @@ fileremove(path, [recursive])
 
 filemove(path, newpath, [opt])
 
-	Rename/move a file on the same filesystem. On Windows, `opt` represents
-	the `MOVEFILE_*` flags and defaults to `'replace_existing write_through'`.
+	Rename/move a file on the same filesystem.
 
-	This operation is atomic on all platforms.
+	This operation is atomic.
 
 Symlinks & Hardlinks ---------------------------------------------------------
 
@@ -556,12 +510,11 @@ map:[try_]flush([async, ][addr, size]) -> true | nil,err
 unlink_mapfile(tagname)` <br> `map:unlink()
 
 	Remove a (the) shared memory file from disk. When creating a shared memory
-	mapping using `tagname`, a file is created on the filesystem on Linux
-	and OS X (not so on Windows). That file must be removed manually when it is
-	no longer needed. This can be done anytime, even while mappings are open and
-	will not affect said mappings.
+	mapping using `tagname`, a file is created on the filesystem. That file
+	must be removed manually when it is no longer needed. This can be done
+	anytime, even while mappings are open and will not affect said mappings.
 
-mirror_buffer([size], [addr]) -> map  (OSX support is NYI)
+mirror_buffer([size], [addr]) -> map
 
 	Create a mirrored buffer to use with a lock-free ring buffer. Args:
 	* `size`: the size of the memory segment (optional; one page size
@@ -601,12 +554,9 @@ Programming Notes ------------------------------------------------------------
 Most filesystem operations are non-atomic (unless otherwise specified) and
 thus prone to race conditions. This library makes no attempt at fixing that
 and in fact it ignores the issue entirely in order to provide a simpler API.
-For instance, in order to change _only_ the "archive" bit of a file on
-Windows, the file attribute bits need to be read first (because WinAPI doesn't
-take a mask there). That's a TOCTTOU. Resolving a symlink or removing a
-directory recursively in userspace has similar issues. So never work on the
-(same part of the) filesystem from multiple processes without proper locking
-(watch Niall Douglas's "Racing The File System" presentation for more info).
+So never work on the (same part of the) filesystem from multiple processes
+without proper locking (watch Niall Douglas's "Racing The File System"
+presentation for more info).
 
 ### Flushing does not protect against power loss
 
@@ -877,7 +827,7 @@ end
 
 function try_mkdir(dir, recursive, perms, quiet)
 	if recursive then
-		if win and not path_dir(dir) then --because mkdir'c:/' gives access denied.
+		if win and not dirname(dir) then --because mkdir'c:/' gives access denied.
 			return true
 		end
 		dir = path_normalize(dir) --avoid creating `dir` in `dir/..` sequences
@@ -889,7 +839,7 @@ function try_mkdir(dir, recursive, perms, quiet)
 				return ok, err
 			end
 			push(t, dir)
-			dir = path_dir(dir)
+			dir = dirname(dir)
 			if not dir then --reached root
 				return ok, err
 			end
@@ -906,7 +856,7 @@ function try_mkdir(dir, recursive, perms, quiet)
 end
 
 function try_mkdirs(file, perms, quiet)
-	local ok, err = try_mkdir(assert(path_dir(file)), true, perms, quiet)
+	local ok, err = try_mkdir(assert(dirname(file)), true, perms, quiet)
 	if not ok then return nil, err end
 	return file
 end
@@ -996,28 +946,20 @@ function try_mv(old_path, new_path, dst_dirs_perms, quiet)
 	return true
 end
 
---is_dir is required for Windows for creating symlinks to directories.
---it's ignored on Linux and OSX.
-function try_mksymlink(link_path, target_path, is_dir, quiet, replace)
-	if not win then is_dir = nil end
-	local ok, err = _mksymlink(link_path, target_path, is_dir)
+function try_mksymlink(link_path, target_path, quiet, replace)
+	local ok, err = _mksymlink(link_path, target_path)
 	if not ok then
 		if err == 'already_exists' then
 			local file_type, symlink_type = try_file_attr(link_path, 'type')
 			if file_type == 'symlink'
-				and (symlink_type == 'dir') == (is_dir or false)
+				and (symlink_type == 'dir') == false
 			then
 				if try_readlink(link_path) == target_path then
 					return true, err
 				elseif replace ~= false then
-					if is_dir then
-						local ok, err = try_rmdir(link_path)
-						if not ok then return false, err end
-					else
-						local ok, err = try_rmfile(link_path)
-						if not ok then return false, err end
-					end
-					local ok, err = _mksymlink(link_path, target_path, is_dir)
+					local ok, err = try_rmfile(link_path)
+					if not ok then return false, err end
+					local ok, err = _mksymlink(link_path, target_path)
 					if not ok then return false, err end
 					return true, 'replaced'
 				end
@@ -1025,9 +967,7 @@ function try_mksymlink(link_path, target_path, is_dir, quiet, replace)
 		end
 		return false, err
 	end
-	log('', 'fs', 'mkslink', 'link:   %s%s\ntarget:  %s', link_path,
-		is_dir and ' (dir)' or is_dir == false and ' (file)' or '',
-		target_path)
+	log('', 'fs', 'mkslink', 'link:   %s\ntarget:  %s', link_path, target_path)
 	return true
 end
 
@@ -1064,7 +1004,7 @@ function mkdir(dir, perms, quiet)
 end
 
 function mkdirs(file)
-	mkdir(assert(path_dir(file)))
+	mkdir(assert(dirname(file)))
 	return file
 end
 
@@ -1099,8 +1039,8 @@ function mv(old_path, new_path, perms, quiet)
 		old_path, new_path, err)
 end
 
-function mksymlink(link_path, target_path, is_dir, quiet)
-	local ok, err = try_mksymlink(link_path, target_path, is_dir)
+function mksymlink(link_path, target_path, quiet)
+	local ok, err = try_mksymlink(link_path, target_path)
 	if ok then return dir, err end
 	check('fs', 'mkslink', ok, '%s: %s', dir, err)
 end
@@ -1128,7 +1068,7 @@ function try_readlink(link, maxdepth)
 	if path_isabs(target) then
 		link = target
 	else --relative symlinks are relative to their own dir
-		local link_dir = path_dir(link)
+		local link_dir = dirname(link)
 		if not link_dir then
 			return nil, 'not_found'
 		elseif link_dir == '.' then
@@ -1168,7 +1108,7 @@ function run_indir(dir, fn, ...)
 end
 
 exedir = memoize(function()
-	return path_dir(exepath())
+	return dirname(exepath())
 end)
 
 scriptdir = memoize(function()
@@ -1219,12 +1159,7 @@ end
 function try_file_attr(path, ...)
 	local attr, deref = attr_args(...)
 	if attr == 'target' then
-		--NOTE: posix doesn't need a type check here, but Windows does
-		if not win or file_is(path, 'symlink') then
-			return try_readlink(path)
-		else
-			return nil --no error for non-symlink files
-		end
+		return try_readlink(path)
 	end
 	if istab(attr) then
 		return _fs_attr_set(path, attr, deref)
@@ -1691,8 +1626,8 @@ local function _save(file, s, sz, perms)
 
 	local tmpfile = file..'.tmp'
 
-	local dir = path_dir(tmpfile)
-	if path_dir(dir) then --because mkdir'c:/' gives access denied.
+	local dir = dirname(tmpfile)
+	if dirname(dir) then --because mkdir'c:/' gives access denied.
 		local ok, err = try_mkdir(dir, true, perms)
 		if not ok then
 			return false, _('could not create dir %s: %s', dir, err)
@@ -1903,13 +1838,7 @@ end
 _fs_file = file
 _fs_dir = dir
 
-if win then
-	require'fs_win'
-elseif Linux or OSX then
-	require'fs_posix'
-else
-	error'unsupported platform'
-end
+require'fs_posix'
 
 file.close    = unprotect_io(file.try_close)
 file.read     = unprotect_io(file.try_read)
