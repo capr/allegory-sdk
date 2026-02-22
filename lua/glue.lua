@@ -1581,10 +1581,6 @@ function gettersandsetters(getters, setters, super)
 	return {__index = get, __newindex = set}
 end
 
---os -------------------------------------------------------------------------
-
-win = package.config:sub(1,1) == '\\'
-
 --process control ------------------------------------------------------------
 
 exit = os.exit
@@ -2486,10 +2482,10 @@ local errno_msgs = {
 	[ 17] = 'already_exists', --EEXIST, open(), mkdir(), mkfifo()
 	[ 20] = 'not_found', --ENOTDIR, opendir()
 	[ 21] = 'is_dir', --EISDIR, unlink()
-	[Linux and 39 or OSX and 66 or ''] = 'not_empty', --ENOTEMPTY, rmdir()
+	[ 39] = 'not_empty', --ENOTEMPTY, rmdir()
 	[ 28] = 'disk_full', --ENOSPC: fallocate()
-	[Linux and 95 or ''] = 'not_supported', --EOPNOTSUPP: fallocate()
-	[Linux and 32 or ''] = 'eof', --EPIPE: write()
+	[ 95] = 'not_supported', --EOPNOTSUPP: fallocate()
+	[ 32] = 'eof', --EPIPE: write()
 	--sock
 	[ 98] = 'address_already_in_use' , --EADDRINUSE
 	[103] = 'connection_aborted'     , --ECONNABORTED
@@ -2499,7 +2495,7 @@ local errno_msgs = {
 	[ 12] = 'out_of_mem'              , --ENOMEM
 	[ 22] = 'invalid_argument'        , --EINVAL
 	[ 27] = 'disk_full'               , --EFBIG
-	[OSX and 69 or 122] = 'disk_full' , --EDQUOT
+	[122] = 'disk_full' , --EDQUOT
 }
 
 function check_errno(ret, err)
