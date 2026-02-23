@@ -4,7 +4,7 @@
 	Written by Cosmin Apreutesei. Public Domain.
 
 	basename(s) -> s|nil                   get the last component of a path
-	dirname(s) -> s|nil                    get the path without the last component
+	dirname(s[, levels=1]) -> s|nil        get the path without last component(s)
 	path_nameext(s) -> name|nil, ext|nil   split `basename(s)` into name and extension
 	path_ext(s) -> s|nil                   return only the extension from `nameext(s)`
 	indir(dir, ...) -> path                combine path with one or more sub-paths
@@ -27,10 +27,15 @@ function basename(s)
 end
 
 local function remove_dots(s)
-    s = s:gsub('/%./', '/')  -- a/./b -> a/b
-    s = s:gsub('^%./', '')   -- ./b -> b
-    s = s:gsub('/%.$', '')   -- a/. -> a
-    return s
+	local s0
+	s = s:gsub('//+', '/')   -- // -> /
+	repeat  -- a/././b -> a/./b -> a/b
+		s0 = s
+		s = s:gsub('/%./', '/')
+	until s == s0
+	s = s:gsub('^%./', '')   -- ./b -> b
+	s = s:gsub('/%.$', '')   -- a/. -> a
+	return s
 end
 
 --Get a path without the last component and slash.
@@ -38,11 +43,16 @@ end
 --Semantics chosen so that recursive dirname() always ends in nil.
 --NOTE: paths with '.' components circumvent the semantics of "going up"
 --so we remove those before computing dirname.
-function dirname(s)
-	s = remove_dots(s) --dots get in he way of
-	if s == '' or s == '/' or s == '.' then return nil end
-	local s = s:match'^(.*)/' or '.' -- /a/b -> /a; /a -> ''; a -> .
-	return s == '' and '/' or s -- /a -> /
+function dirname(s, levels)
+	s = remove_dots(s)
+	levels = levels or 1
+	while levels > 0 do
+		if s == '' or s == '/' or s == '.' then return nil end
+		local s = s:match'^(.*)/' or '.' -- /a/b -> /a; /a -> ''; a -> .
+		if s == '' then return '/' end -- /a -> /
+		levels = levels - 1
+	end
+	return s
 end
 
 --Split a path's last component into the name and extension parts like so:
@@ -116,7 +126,7 @@ function path_normalize(s, opt)
 		if s == '.' and not opt.dot_dirs then
 			--skip adding the `.` dir and the separator following it
 			lastsep = '/'
-		elseif s == '..' and opt.dot_dot_dirs ~= false and #t > 0 then
+		elseif s == '..' and opt.dot_dot_dirs == false and #t > 0 then
 			--find the last dir past any `.` dirs, in case opt.dot_dirs = true.
 			local i = #t-1
 			while t[i] == '.' do
@@ -164,7 +174,7 @@ end
 ---number of non-empty path components, excluding prefixes.
 local function path_depth(p)
 	local n = 0
-	for _ in p:gmatch'()[^/]+' do
+	for _ in p:gmatch'()[^/]+' do -- () prevents creating a string that we don't need
 		n = n + 1
 	end
 	return n
@@ -177,7 +187,7 @@ function path_commonpath(p1, p2)
 	if p == '' then return nil end
 	local sep = ('/'):byte(1)
 	local si = 0 --index where the last common separator was found
-	for i = 1, #p + 1 do
+	for i = 1, #p + 1 do --going 1 byte beyond the end where we "see" a sep
 		local c1 = p1:byte(i)
 		local c2 = p2:byte(i)
 		local sep1 = c1 == nil or c1 == sep
@@ -188,6 +198,7 @@ function path_commonpath(p1, p2)
 			break
 		end
 	end
+	if si == 0 then return nil end
 	return p:sub(1, si)
 end
 

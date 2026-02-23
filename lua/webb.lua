@@ -85,6 +85,7 @@ RESPONSE
 
 FILESYSTEM
 
+	wwwdir(path)                            register a www search path
 	wwwdirs() -> {dir1,...}                 www dirs
 	wwwpath(file, [type]) -> path           get www subpath (and check if exists)
 	wwwfile(file, [default]) -> s           get www file contents
@@ -628,7 +629,7 @@ end
 local _wwwdirs = {}
 function wwwdir(path) --relative to scripdir()
 	if not path:starts'/' then
-		path = path_normalize(indir(scriptdir(), path))
+		path = indir(scriptdir(), path)
 	end
 	add(_wwwdirs, path)
 end

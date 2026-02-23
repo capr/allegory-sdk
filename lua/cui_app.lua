@@ -35,7 +35,7 @@ cmd('run', 'Run server', function()
 end)
 
 --configure webb_action static file loading.
-local sdkdir = path_normalize(indir(exedir(), '../..'), {dot_dot_dirs = false})
+local sdkdir = dirname(exedir(), 2)
 wwwdir'www'
 wwwdir(indir(sdkdir, 'www'))
 wwwdir(indir(sdkdir, 'canvas-ui/www'))
