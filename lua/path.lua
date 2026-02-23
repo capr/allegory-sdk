@@ -27,9 +27,35 @@ function basename(s)
 end
 
 local function remove_dots(s)
-    s = s:gsub('/%./', '/')  -- a/./b -> a/b
+    local old
+    repeat
+        old = s
+        s = s:gsub('/%./', '/')  -- a/./b -> a/b
+    until s == old
     s = s:gsub('^%./', '')   -- ./b -> b
     s = s:gsub('/%.$', '')   -- a/. -> a
+    return s
+end
+
+--Remove unnecessary ".." components lexically.
+--Must be called after remove_dots().
+local function remove_double_dots(s)
+    local endsep = s:sub(-1) == '/'
+    if not endsep then s = s .. '/' end
+    local old
+    repeat
+        old = s
+        s = s:gsub('([^/]+)/%.%./', function(parent)
+            if parent == '..' then return nil end --keep leading ..
+            return ''
+        end)
+    until s == old
+    --can't go above / on absolute paths.
+    repeat
+        old = s
+        s = s:gsub('^(/+)%.%./', '%1')
+    until s == old
+    if not endsep and #s > 1 then s = s:gsub('/$', '') end
     return s
 end
 
