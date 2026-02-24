@@ -55,6 +55,9 @@
 [submodule "canvas-ui"]
 	path = canvas-ui
 	url = ../canvas-ui.git
+[submodule "bin/debian12"]
+	path = bin/debian12
+	url = ../allegory-sdk-bin-debian12.git
 [submodule "c/mdbx/src"]
 	path = c/mdbx/src
 	url = ../allegory-sdk-libmdbx.git
