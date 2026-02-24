@@ -54,19 +54,16 @@
 	url = ../allegory-sdk-bcrypt.git
 [submodule "canvas-ui"]
 	path = canvas-ui
-	url = git@github.com:allegory-software/canvas-ui.git
-[submodule "bin/windows"]
-	path = bin/windows
-	url = git@github.com:allegory-software/allegory-sdk-bin-windows
+	url = ../canvas-ui.git
 [submodule "bin/debian12"]
-	path = bin
-	url = git@github.com:allegory-software/allegory-sdk-bin-debian12
+	path = bin/debian12
+	url = ../allegory-sdk-bin-debian12.git
 [submodule "c/mdbx/src"]
 	path = c/mdbx/src
-	url = git@github.com:erthink/libmdbx.git
+	url = ../allegory-sdk-libmdbx.git
 [submodule "c/utf8proc/src"]
 	path = c/utf8proc/src
-	url = git@github.com:JuliaStrings/utf8proc.git
+	url = ../allegory-sdk-utf8proc.git
 [submodule "c/mir"]
 	path = c/mir
-	url = git@github.com:vnmakarov/mir.git
+	url = ../allegory-sdk-mir.git
