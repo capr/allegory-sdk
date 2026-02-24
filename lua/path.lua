@@ -18,56 +18,60 @@ if not ... then require'path_test'; return end
 
 require'glue'
 local
-	typeof, select, assertf, tostring, add, remove, concat =
-	typeof, select, assertf, tostring, add, remove, concat
+	typeof, select, assertf, tostring =
+	typeof, select, assertf, tostring
 
 --Get the last path component of a path. Returns '' for 'a/'.
 function basename(s)
 	return s:match'[^/]*$'
 end
 
-local function remove_dots(s)
+--NOTE: returns nil if path results in `/../foo` which is invalid.
+--NOTE: Removing `..` breaks the path if there are symlinks involved!
+function path_normalize(s, rm_double_dots, rm_add_endsep)
+	if s == '' then s = '.' end --important or it turns into `/` later on.
+	--remove empty components
+	s = s:gsub('//+', '/')  -- // -> /
+	--remove `.` components
 	local s0
 	repeat  -- a/././b -> a/./b -> a/b
 		s0 = s
 		s = s:gsub('/%./', '/')
 	until s == s0
-	s = s:gsub('^%./', '')   -- ./b -> b
-	s = s:gsub('/%.$', '')   -- a/. -> a
-	return s
-end
-
---Remove unnecessary `..` path components lexically.
---Expects a path that ends with `/`. Must be called after remove_dots().
---Returns nil if the path results in `/../etc`.
---WARNING: Removing `..` breaks the path if there are symlinks involved!
-local function remove_double_dots(s)
-	local endsep = s:sub(-1) == '/'
-	if not endsep then s = s .. '/' end -- add / temporarily
-	local s0
-	repeat --remove `foo/../` sequences but not `../../`
-		s0 = s
-		s = s:gsub('([^/]+)/%.%./', function(parent)
-			if parent == '..' then return nil end --keep leading ..
-			return ''
-		end)
-	until s == s0
-	if s:starts'/../' then return nil end --can't go above / on abs paths.
-	if not endsep and #s > 1 then s = s:sub(1, -2) end
-	return s
-end
-
---NOTE: returns nil if path results in /../foo
-function path_normalize(s, rm_double_dots, rm_endsep)
-	s = s:gsub('//+', '/')  -- // -> /
-	s = remove_dots(s)  -- /./ -> /
-	if rm_double_dots then
-		s = remove_double_dots(s)
+	if s ~= './' then
+		s = s:gsub('^%./', '') -- './a' -> 'a' but './' -> './'
 	end
-	if s and rm_endsep and s:sub(-1) == '/' then
+	if s ~= '/.' then
+		s = s:gsub('/%.$', '') -- 'a/.' -> 'a' but '/.' -> '/'
+	else
+		s = '/'
+	end
+	--remove `a/..` components (this only works if no `.` components are left).
+	if rm_double_dots then
+		local endsep = s:sub(-1) == '/'
+		if not endsep then s = s .. '/' end --add end `/` temporarily
+		local s0
+		repeat -- `a/../` -> ''
+			s0 = s
+			s = s:gsub('([^/]+)/%.%./', function(parent)
+				if parent == '..' then return nil end --keep leading `..`
+				return ''
+			end)
+		until s == s0
+		if s:starts'/../' then --can't go above / on abs paths
+			return nil
+		elseif s == '' then --removed too much, path got ambiguous
+			s = endsep and './' or '.'
+		elseif not endsep and s ~= '/' then --remove temp `/`
+			s = s:sub(1, -2)
+		end
+	end
+	--add or remove end `/`
+	if rm_add_endsep == true and s:sub(-1) ~= '/' then --add
+		s = s .. '/'
+	elseif rm_add_endsep == false and s ~= '/' and s:sub(-1) == '/' then --remove
 		s = s:sub(1, -2)
 	end
-	if s == '' then return nil end
 	return s
 end
 
@@ -80,7 +84,7 @@ function dirname(s, levels)
 	levels = levels or 1
 	while levels > 0 do
 		if s == '' or s == '/' or s == '.' then return nil end
-		s = s:match'^(.*)/' or '.' -- /a/b -> /a; /a -> ''; a -> .
+		s = s:match'^(.*)/' or '.' -- /a/b/c -> /a/b; /a -> ''; a -> .
 		if s == '' then return '/' end -- /a -> /
 		levels = levels - 1
 	end
@@ -127,6 +131,7 @@ end
 
 --Get the common path prefix of two paths, including the end separator if both
 --paths share it, or nil if the paths don't have anything in common.
+--Returns '' if both are relative paths with nothing in common.
 function path_commonpath(p1, p2)
 	local p = #p1 <= #p2 and p1 or p2
 	if p == '' then return nil end
@@ -143,7 +148,12 @@ function path_commonpath(p1, p2)
 			break
 		end
 	end
-	if si == 0 then return nil end
+	if si == 0 then
+		local abs1 = p1:byte(1) == sep
+		local abs2 = p2:byte(1) == sep
+		if abs1 ~= abs2 then return nil end  --paths with nothing in common
+		return '' --both relative, implicit shared base
+	end
 	return p:sub(1, si)
 end
 

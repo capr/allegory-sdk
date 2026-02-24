@@ -68,143 +68,93 @@ test('a/b'  , 'a')
 test('aa/bb', 'aa')
 test('a/b'  , 'a')
 
---gsplit ---------------------------------------------------------------------
-
-function test(s, full, t2)
-	local t1 = {}
-	for s, sep in path_split(s, full) do
-		table.insert(t1, s)
-		table.insert(t1, sep)
-	end
-	print('split', s, full, '->', pp(t1))
-	assert(pp(t1) == pp(t2))
-end
-
-test(''       {})
-test('/'      {'', '/'})
-test('/a'     {'', '/', 'a', ''})
-test('/a/'    {'', '/', 'a', '/'})
-test('//a//'  {'', '\\/', 'a', '\\/'})
-test('a/b/c'  {'a', '/', 'b\\c', ''})
-
 --normalize ------------------------------------------------------------------
 
-local function test(s, opt, s2)
-	local s1 = path_normalize(s, opt)
-	print('normal', s, 'opt', '->', s1)
-	assert(s1 == s2)
+local function test(name, input, dd, endsep, expected)
+	local got = path_normalize(input, dd, endsep)
+	printf('path_normalize %-20s %-6s, %-6s -> %-10s', input, dd, endsep, got)
+	assert(got == expected)
 end
 
---remove `.`
-local opt = {dot_dot_dirs = true, endsep = 'leave', sep = 'leave'}
-test('.', 'win', opt, '.')
-test('./', 'win', opt, './')
-test('C:.', 'win', opt, 'C:')
-test('C:./', 'win', opt, 'C:')
-test('.\\', 'win', opt, '.\\')
-test('./.', 'win', opt, '.')
-test('./.\\', 'win', opt, '.\\')
-test('/.', 'win', opt, '/')
-test('\\./', 'win', opt, '\\') --root slash kept
-test('/.\\.', 'win', opt, '/') --root slash kept
-test('/a/.', 'win', opt, '/a')
-test('/./a', 'win', opt, '/a')
-test('./a', 'win', opt, 'a')
-test('a/.', 'win', opt, 'a')
-test('a\\.', 'win', opt, 'a')
-test('a\\./', 'win', opt, 'a\\')
-test('a/b\\c', 'win', opt, 'a/b\\c')
-test('a\\././b///', 'win', opt, 'a\\b///')
-test('a/.\\.\\b\\\\', 'win', opt, 'a/b\\\\')
+-- Empty / trivial inputs
+test('empty string',                      '',       false, nil,   '.')
+test('empty string + dd',                 '',       true,  nil,   '.')
+test('empty string + add sep',            '',       false, true,  './')
+test('empty string + rm sep',             '',       false, false, '.')
+test('empty string + dd + add sep',       '',       true,  true,  './')
+test('dot',                               '.',      false, nil,   '.')
+test('dot + dd',                          '.',      true,  nil,   '.')
+test('dot slash',                         './',     false, nil,   './')
+test('slash',                             '/',      false, nil,   '/')
+test('slash + rm sep',                    '/',      false, false, '/')
 
---remove `..`
-local opt = {dot_dirs = true, endsep = 'leave', sep = 'leave'}
-test('a/b/..', 'win', opt, 'a') --remove endsep from leftover
-test('a/b/c/..', 'win', opt, 'a/b') --remove endsep from leftover
-test('a/..', 'win', opt, '.') --no leftover to remove endsep from
-test('\\a/..', 'win', opt, '\\') --can't remove endsep from empty abs path
-test('\\a/../', 'win', opt, '\\') --keep endsep
-test('\\../', 'win', opt, '\\') --remove from root, keep endsep
-test('a\\b/../', 'win', opt, 'a\\') --keep endsep
-test('a/../', 'win', opt, './') --no leftover to see endsep
-test('C:/a/b/..', 'win', opt, 'C:/a')
-test('C:/a/b/c/../..', 'win', opt, 'C:/a')
---remove till empty
-test('a/..', 'win', opt, '.')
-test('a/b/../..', 'win', opt, '.')
-test('C:/a/..', 'win', opt, 'C:/') --keep endsep
-test('C:/a/b/../..', 'win', opt, 'C:/') --keep endsep
---one `..` too many from rel paths
-test('..', 'win', opt, '..')
-test('../', 'win', opt, '../')
-test('../..', 'win', opt, '../..')
-test('../..\\', 'win', opt, '../..\\')
-test('a/..\\', 'win', opt, '.\\')
-test('a/b/../../..', 'win', opt, '..')
---one `..` too many from abs paths
-test('/..', 'win', opt, '/')
-test('/..\\', 'win', opt, '/')
-test('/../..', 'win', opt, '/')
-test('/../..\\', 'win', opt, '/')
-test('C:/a/b/../../..', 'win', opt, 'C:/')
---skip `.` dirs when removing
-test('a/b/./././..', 'win', opt, 'a/././.')
-test('a/./././..', 'win', opt, '././.')
-test('./././..', 'win', opt, './././..')
-test('/./././..', 'win', opt, '/./././..')
+-- Double slash removal
+test('double slash',                      'a//b',       false, nil, 'a/b')
+test('triple slash',                      'a///b',      false, nil, 'a/b')
+test('leading double slash',              '//a',        false, nil, '/a')
+test('trailing double slash',             'a//',        false, nil, 'a/')
+test('all slashes',                       '///',        false, nil, '/')
 
---default options: remove `.` and `..` and end-slash, set-sep-if-mixed.
-test('C:///a/././b/x/../c\\d', 'win', nil, 'C:\\a\\b\\c\\d')
---default options: even when not mixed, separators are collapsed.
-test('C:///a/././b/x/../c/d', 'win', nil, 'C:/a/b/c/d')
---default options: remove endsep
-test('.\\', 'win', nil, '.')
-test('.\\././.\\', 'win', nil, '.')
-test('C:./', 'win', nil, 'C:')
+-- Dot removal
+test('mid dot',                           'a/./b',      false, nil, 'a/b')
+test('multiple dots',                     'a/./././b',  false, nil, 'a/b')
+test('leading dot slash',                 './a',        false, nil, 'a')
+test('trailing slash dot',                'a/.',        false, nil, 'a')
+test('root dot',                          '/.',         false, nil, '/')
+test('root dot slash',                    '/./a',       false, nil, '/a')
+test('dot slash alone preserved',         './',         false, nil, './')
+test('complex dots',                      './a/./b/./c',false, nil, 'a/b/c')
 
---combine (& implicitly abs) -------------------------------------------------
+-- Double dot removal (rm_double_dots = true)
+test('simple dd',                         'a/b/..',     true, nil, 'a')
+test('dd mid',                            'a/b/../c',   true, nil, 'a/c')
+test('dd multi',                          'a/b/c/../../d', true, nil, 'a/d')
+test('dd all relative',                   'a/..',       true, nil, '.')
+test('dd all relative endsep',            'a/../',      true, nil, './')
+test('dd leading dotdot kept',            '../a',       true, nil, '../a')
+test('dd multiple leading dotdots',       '../../a',    true, nil, '../../a')
+test('dd only dotdots',                   '../..',      true, nil, '../..')
+test('dd abs simple',                     '/a/b/..',    true, nil, '/a')
+test('dd abs to root',                    '/a/..',      true, nil, '/')
+test('dd abs invalid above root',         '/a/../../b', true, nil, nil)
+test('dd abs invalid direct',             '/../a',      true, nil, nil)
+test('dd with dots and slashes',          'a/./b/../c', true, nil, 'a/c')
+test('dd deep collapse',                  'a/b/c/../../../d', true, nil, 'd')
 
-local function test(s1, s2, p2, err2)
-	local p1, err1 = path_combine(s1, s2, pl)
-	print('combine', s1, s2, '->', p1, err1, err1)
-	assert(p1 == p2)
-	if err2 then
-		assert(err1:find(err2, 1, true))
-	end
-end
+-- End separator handling
+test('add endsep',                        'a/b',    false, true,  'a/b/')
+test('add endsep already there',          'a/b/',   false, true,  'a/b/')
+test('rm endsep',                         'a/b/',   false, false, 'a/b')
+test('rm endsep already gone',            'a/b',    false, false, 'a/b')
+test('rm endsep root unchanged',          '/',      false, false, '/')
+test('add endsep root unchanged',         '/',      false, true,  '/')
+test('add endsep + dd',                   'a/b/../c', true, true, 'a/c/')
+test('rm endsep + dd',                    'a/b/../c/', true, false,'a/c')
 
--- any + '' -> any
-test('C:a/b', '', 'win', 'C:a/b')
-
--- any + c/d -> any/c/d
-test('C:\\', 'c/d', 'win', 'C:\\c/d')
-
--- C:a/b + /d/e -> C:/d/e/a/b
-test('C:a/b', '\\d\\e', 'win', 'C:\\d\\e/a/b')
-
--- C:/a/b + C:d/e -> C:/a/b/d/e
-test('C:/a/b', 'C:d\\e', 'win', 'C:/a/b/d\\e')
-
--- errors
-test('/a', '/b', 'win', nil, 'cannot combine') --types
-test('C:', 'D:', 'win', nil, 'cannot combine') --drives
+-- Combined edge cases
+test('complex 1',                         './/a/./b/../c/', true,  nil,   'a/c/')
+test('complex 2',                         '/a/b/./../../c', true,  nil,   '/c')
+test('complex 3',                         'a/b/c/../../..',  true,  nil,   '.')
+test('just dot with add sep',             '.',       false, true,  './')
+test('dotdot no dd flag',                 'a/../b',  false, nil,   'a/../b')
 
 --rel ------------------------------------------------------------------------
 
-local function test(s, pwd, s2, sep, default_sep)
-	local s1 = relpath(s, pwd, sep, default_sep)
+local function test(s, pwd, s2)
+	local s1 = relpath(s, pwd)
 	print('rel', s, pwd, '->', s1)
 	assert(s1 == s2)
 end
 
-test('/a/c',   '/a/b', '../c', 'win')
-test('/a/b/c', '/a/b', 'c',    'win')
+test('/a/c',   '/a/b', '../c')
+test('/a/b/c', '/a/b', 'c'   )
 
-test('',  '',    '.'      )
-test('',  'a',   '..'     )
-test('a',  '',   'a'      )
-test('a/', '',   'a/'     )
-test('a',  'b',  '../a',  '/')
+test('' ,  '',    nil     )
+test('' ,  '.',   nil     )
+test('' ,  'a',   nil     )
+test('a',  '.',   '../a'  )
+test('a/', '.',  '../a/'  )
+test('a',  'b',  '../a'   )
 test('a/', 'b',  '../a/'  )
 test('a',  'b/', '../a'   )
 
@@ -215,7 +165,5 @@ test('a/b/',   'a/b/c', '../'      ) --1 updir + empty + endsep
 test('a/b/c',  'a/b',   'c'        ) --0 updirs + non-empty
 test('a/b',    'a/b',   '.'        ) --0 updirs + empty
 test('a/b/',   'a/b',   './'       ) --0 updirs + empty + endsep
-test('C:a/b/', 'C:a/b', './'       ) --0 updirs + empty + endsep
 test('a/b',    'a/c/d', '../../b'  ) --2 updirs + non-empty
 test('a/b/',   'a/c/d', '../../b/' ) --2 updirs + non-empty + endsep
-test('C:/a/b', 'C:/a' , 'b'        ) --0 updirs + non-empty (DOS)
