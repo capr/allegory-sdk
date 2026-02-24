@@ -3,7 +3,7 @@
 	Path manipulation for UNIX paths.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	path_normalize(s, remove_double_dots) -> s|nil  normalize a path by removing //, /./, foo/../
+	path_normalize(s, remove_double_dots, remove_endsep) -> s|nil  normalize a path by removing //, /./, foo/../
 	basename(s) -> s|nil                   get the last component of a path
 	dirname(s[, levels=1]) -> s|nil        get the path without last component(s)
 	path_nameext(s) -> name|nil, ext|nil   split `basename(s)` into name and extension
@@ -38,12 +38,12 @@ local function remove_dots(s)
 end
 
 --Remove unnecessary `..` path components lexically.
---Must be called after remove_dots().
+--Expects a path that ends with `/`. Must be called after remove_dots().
 --Returns nil if the path results in `/../etc`.
 --WARNING: Removing `..` breaks the path if there are symlinks involved!
 local function remove_double_dots(s)
 	local endsep = s:sub(-1) == '/'
-	if not endsep then s = s .. '/' end
+	if not endsep then s = s .. '/' end -- add / temporarily
 	local s0
 	repeat --remove `foo/../` sequences but not `../../`
 		s0 = s
@@ -52,18 +52,22 @@ local function remove_double_dots(s)
 			return ''
 		end)
 	until s == s0
-	if s:starts'/../' then return nil end --can't go above / on absolute paths.
+	if s:starts'/../' then return nil end --can't go above / on abs paths.
 	if not endsep and #s > 1 then s = s:sub(1, -2) end
 	return s
 end
 
---NOTE: returns nil if path results in ../.
-function path_normalize(s, rm_double_dots)
-	s = s:gsub('//+', '/')   -- // -> /
+--NOTE: returns nil if path results in /../foo
+function path_normalize(s, rm_double_dots, rm_endsep)
+	s = s:gsub('//+', '/')  -- // -> /
 	s = remove_dots(s)  -- /./ -> /
 	if rm_double_dots then
 		s = remove_double_dots(s)
 	end
+	if s and rm_endsep and s:sub(-1) == '/' then
+		s = s:sub(1, -2)
+	end
+	if s == '' then return nil end
 	return s
 end
 
@@ -76,7 +80,7 @@ function dirname(s, levels)
 	levels = levels or 1
 	while levels > 0 do
 		if s == '' or s == '/' or s == '.' then return nil end
-		local s = s:match'^(.*)/' or '.' -- /a/b -> /a; /a -> ''; a -> .
+		s = s:match'^(.*)/' or '.' -- /a/b -> /a; /a -> ''; a -> .
 		if s == '' then return '/' end -- /a -> /
 		levels = levels - 1
 	end

@@ -1209,7 +1209,10 @@ end
 
 function try_mkdir(dir, recursive, perms, quiet)
 	if recursive then
-		dir = path_normalize(dir, true) --avoid creating `dir` in `dir/..` sequences
+		dir = path_normalize(dir, true, true) --avoid creating `dir` in `dir/..` sequences
+		if not dir or dir == '.' or dir == '/' then
+			return nil, 'invalid path'
+		end
 		local t = {}
 		while true do
 			local ok, err = _try_mkdir(dir, perms, quiet)
@@ -1219,7 +1222,7 @@ function try_mkdir(dir, recursive, perms, quiet)
 			end
 			push(t, dir)
 			dir = dirname(dir)
-			if dir == '/' then --reached root
+			if not dir or dir == '.' or dir == '/' then --reached root
 				return ok, err
 			end
 		end
@@ -1235,8 +1238,11 @@ function try_mkdir(dir, recursive, perms, quiet)
 end
 
 function try_mkdirs(file, perms, quiet)
-	local ok, err = try_mkdir(assert(dirname(file)), true, perms, quiet)
-	if not ok then return nil, err end
+	local dir = dirname(file)
+	if dir and dir ~= '.' and dir ~= '/' then
+		local ok, err = try_mkdir(dir, true, perms, quiet)
+		if not ok then return nil, err end
+	end
 	return file
 end
 
@@ -1313,7 +1319,7 @@ function try_mv(old_path, new_path, dst_dirs_perms, quiet)
 		local ok, err = try_mkdirs(new_path, dst_dirs_perms, quiet)
 		if not ok then return false, err end
 	end
-	local ok, err = check_errno(C.rename(oldpath, newpath) == 0)
+	local ok, err = check_errno(C.rename(old_path, new_path) == 0)
 	if not ok then return false, err end
 	log(quiet and '' or 'note', 'fs', 'mv', 'old: %s\nnew: %s', old_path, new_path)
 	return true
@@ -1462,9 +1468,10 @@ function try_readlink(link, maxdepth)
 		if not link_dir then
 			return nil, 'not_found'
 		elseif link_dir == '.' then
-			link_dir = ''
+			link = target
+		else
+			link = indir(link_dir, target)
 		end
-		link = indir(link_dir, target)
 	end
 	return try_readlink(link, maxdepth - 1)
 end
@@ -2001,14 +2008,14 @@ local function dir_check(dir)
 	assert(dir_ready(dir), 'dir not ready') --must call next() at least once.
 end
 
-function ls(dir, opt)
+function ls(p, opt)
 	local skip_dot_dirs = not (opt and opt:find('..', 1, true))
-	dir = dir or '.'
-	local dir = dir_ct(#dir)
-	dir._dirlen = #dir
-	copy(dir._dir, dir, #dir)
+	p = p or '.'
+	local dir = dir_ct(#p)
+	dir._dirlen = #p
+	copy(dir._dir, p, #p)
 	dir._skip_dot_dirs = skip_dot_dirs and 1 or 0
-	dir._dirp = C.opendir(dir)
+	dir._dirp = C.opendir(p)
 	if dir._dirp == nil then
 		dir._errno = errno()
 	end

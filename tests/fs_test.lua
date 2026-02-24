@@ -1,8 +1,8 @@
---go@ plink d10 -t -batch sdk/bin/linux/luajit sdk/tests/fs_test.lua
---go@ x:\sdk\bin\windows\luajit.exe -lscite fs_test.lua
+#!../bin/linux/luajit
 require'glue'
 require'fs'
 require'logging'
+require'sock'
 
 --if luapower sits on a VirtualBox shared folder on a Windows host
 --we can't mmap files, create symlinks or use locking on that, so we'll use
@@ -1094,6 +1094,6 @@ else
 	print('Unknown test "'..(name)..'".')
 end
 
-assert(path_file(cwd()) == 'fs_test')
+assert(basename(cwd()) == 'fs_test')
 chdir'..'
 rm_rf'fs_test'
