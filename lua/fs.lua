@@ -1209,7 +1209,7 @@ end
 
 function try_mkdir(dir, recursive, perms, quiet)
 	if recursive then
-		dir = path_normalize(dir) --avoid creating `dir` in `dir/..` sequences
+		dir = path_normalize(dir, true) --avoid creating `dir` in `dir/..` sequences
 		local t = {}
 		while true do
 			local ok, err = _try_mkdir(dir, perms, quiet)
