@@ -768,7 +768,9 @@ function file.try_close(f)
 	if f._after_close then
 		f:_after_close()
 	end
-	_sock_cancel_wait_io(f)
+	if f.async then
+		_sock_cancel_wait_io(f)
+	end
 	if not ok then return ok, err end
 	log(f.quiet and '' or 'note', 'fs', 'closed', '%-4s r:%d w:%d', f, f.r, f.w)
 	live(f, nil)

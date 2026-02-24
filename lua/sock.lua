@@ -1780,7 +1780,6 @@ end
 	return wait_io_cont(thread, coro_transfer(poll_thread))
 end
 
-if Linux or OSX then
 --closing a socket doesn't trigger an epoll event, instead the socket is
 --silently removed from the epoll list, thus we have to wake up any waiting
 --threads manually when the socket is closed from another thread.
@@ -1799,7 +1798,6 @@ if Linux or OSX then
 	end
 end
 _sock_cancel_wait_io = cancel_wait_io
-end
 
 function poll(ignore_interrupts)
 	if wait_count == 0 then
