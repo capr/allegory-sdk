@@ -37,6 +37,8 @@ FILE I/O
 OPEN FILE ATTRIBUTES
 	f:attr([attr]) -> val|t                       get/set attribute(s) of open file
 	f:size() -> n                                 get file size
+FILE LOCKING
+	f:[try_]lock(f, 'sh|ex|un', [nonblock])
 DIRECTORY LISTING
 	ls(dir, [opt]) -> d, name, next               directory contents iterator
 	  d:next() -> name, d                         call the iterator explicitly
@@ -112,6 +114,7 @@ HI-LEVEL APIs
 	file_saver(path) -> f(v | buf,len | t | read) atomic save writer function
 	touch(file, [mtime], [btime], [quiet])
 	cp(src_file, dst_file)
+	gen_id(name, [start=1], [quiet]) -> id        persistent atomic autoincrement
 
 The `deref` arg is true by default, meaning that by default, symlinks are
 followed recursively and transparently where this option is available.
@@ -176,9 +179,9 @@ Open/create a file for reading and/or writing. The second arg can be a string:
 	'r'  : open; allow reading only (default)
 	'r+' : open; allow reading and writing
 	'w'  : open and truncate or create; allow writing only
-	'w+' : open and truncate or create; allow reading and writing
-	'a'  : open and seek to end or create; allow writing only
-	'a+' : open and seek to end or create; allow reading and writing
+	'w+' : open or create; allow reading and writing
+	'a'  : open or create; allow appending only
+	'a+' : open or create; allow reading and appending only
 
 	... or an options table with platform-specific options which represent
 	OR-ed bitmask flags which must be given either as 'foo bar ...',
@@ -1867,6 +1870,23 @@ function checkexists(file, type, deref)
 	check('fs', 'exists', exists(file, type, deref), '%s', file)
 end
 
+--file locking ---------------------------------------------------------------
+
+cdef'int flock(int fd, int operation);'
+
+local LOCK_SH = 1
+local LOCK_EX = 2
+local LOCK_NB = 4
+local LOCK_UN = 8
+
+local lock_ops = {sh = LOCK_SH, ex = LOCK_EX, un = LOCK_UN}
+
+function file.try_lock(f, op, nonblock)
+    local flags = assertf(lock_ops[op], 'invalid lock op: %s', op)
+    if nonblock then flags = bor(flags, LOCK_NB) end
+    return check_errno(C.flock(f.fd, flags) == 0)
+end
+
 --directory listing ----------------------------------------------------------
 
 cdef[[
@@ -2839,14 +2859,16 @@ local function toid(s, field) --validate id minimally.
 end
 function gen_id(name, start, quiet)
 	local next_id_file = varpath'next_'..name
-	if not exists(next_id_file) then
-		save(next_id_file, tostring(start or 1), nil, quiet)
-	else
-		touch(next_id_file, nil, nil, quiet)
-	end
-	local n = tonumber(load(next_id_file))
+	local f = open(next_id_file, 'w+')
+	f:lock'ex' --exclusive lock, blocks until acquired
+	local s = f:readall()
+	local n = tonumber(s) or start or 1
 	check('fs', 'gen_id', toid(n, next_id_file))
-	save(next_id_file, tostring(n + 1), nil, quiet)
+	f:seek('set', 0)
+	f:truncate(0)
+	f:write(tostring(n + 1))
+	f:lock'un'
+	f:close()
 	log('note', 'fs', 'gen_id', '%s: %d', name, n)
 	return n
 end
@@ -2925,6 +2947,7 @@ file.flush    = unprotect_io(file.try_flush)
 file.truncate = unprotect_io(file.try_truncate)
 file.seek     = unprotect_io(file.try_seek)
 file.skip     = unprotect_io(file.try_skip)
+file.lock     = unprotect_io(file.try_lock)
 
 metatype(stream_ct, stream)
 metatype(dir_ct, dir)
