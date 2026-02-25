@@ -662,8 +662,8 @@ local open_mode_opt = {
 	['r+'] = {flags = 'rdwr'},
 	['w' ] = {flags = 'creat wronly trunc'},
 	['w+'] = {flags = 'creat rdwr'},
-	['a' ] = {flags = 'creat wronly', seek_end = true},
-	['a+'] = {flags = 'creat rdwr', seek_end = true},
+	['a' ] = {flags = 'creat wronly append'},
+	['a+'] = {flags = 'creat rdwr append'},
 }
 
 local F_GETFL     = 3
@@ -727,9 +727,10 @@ local function _open(path, opt, quiet, file_type)
 	if not opt.inheritable then
 		flags = bor(flags, O_CLOEXEC)
 	end
-	local r = band(flags, o_bits.rdonly) == o_bits.rdonly
-	local w = band(flags, o_bits.wronly) == o_bits.wronly
-	quiet = repl(quiet, nil, not w or nil) --r/o opens are quiet
+	local wo = getbit(flags, o_bits.wronly)
+	local rw = getbit(flags, o_bits.rdwr)
+	assert(not (wo and rw), 'open: conflicting flags: wronly + rdwr')
+	quiet = repl(quiet, nil, not (wo or rw) or nil) --r/o opens are quiet
 	local perms = parse_perms(opt.perms)
 	local open = opt.open or C.open
 	local fd = open(path, flags, perms)
@@ -741,15 +742,7 @@ local function _open(path, opt, quiet, file_type)
 		return nil, err
 	end
 	log(f.quiet and '' or 'note', 'fs', 'open',
-		'%-4s %s%s %s fd=%d', f, r and 'r' or '', w and 'w' or '', path, fd)
-
-	if opt.seek_end then
-		local pos, err = f:seek('end', 0)
-		if not pos then
-			assert(f:close())
-			return nil, err
-		end
-	end
+		'%-4s %s %s fd=%d', f, wo and 'wo' or rw and 'rw' or 'r', path, fd)
 
 	return f
 end
@@ -841,8 +834,8 @@ file.check_io = check_io
 file.checkp   = checkp
 
 function file:try_skip(n)
-	local i, err = f:try_seek('cur', 0); if not i then return nil, err end
-	local j, err = f:try_seek('cur', n); if not i then return nil, err end
+	local i, err = self:try_seek('cur', 0); if not i then return nil, err end
+	local j, err = self:try_seek('cur', n); if not j then return nil, err end
 	return j - i
 end
 
@@ -923,7 +916,7 @@ function mkfifo(path, perms)
 	return ok
 end
 
-local function _pipe(path, opt)
+local function _pipe(path, perms, opt)
 	local async = repl(opt.async, nil, true) --pipes are async by default
 	if path then --named pipe
 		local ok, err = try_mkfifo(path, perms, opt.quiet)
@@ -959,9 +952,9 @@ end
 
 local function pipe_args(path_opt)
 	if istab(path_opt) then
-		return path_opt.path, path_opt
+		return path_opt.path, path_opt.perms, path_opt
 	else
-		return path_opt, empty
+		return path_opt, nil, empty
 	end
 end
 
@@ -970,8 +963,8 @@ function try_pipe(...)
 end
 
 function pipe(...)
-	local path, opt = pipe_args(...)
-	local ret, err = _pipe(path, opt)
+	local path, perms, opt = pipe_args(...)
+	local ret, err = _pipe(path, perms, opt)
 	check('fs', 'pipe', ret, '%s: %s', path or '', err)
 	if not path then return ret, err end --actually rf, wf
 	return ret --pf
@@ -1050,6 +1043,12 @@ function file:settimeout(s, rw)
 	self:setexpires(s and clock() + s, rw)
 end
 
+function file:_seek(whence, offset)
+	local offs = C.lseek(self.fd, offset, whence)
+	if offs == -1 then return check_errno() end
+	return tonumber(offs)
+end
+
 local whences = {set = 0, cur = 1, ['end'] = 2} --FILE_*
 function file:try_seek(whence, offset)
 	if tonumber(whence) and not offset then --middle arg missing
@@ -1058,9 +1057,7 @@ function file:try_seek(whence, offset)
 	whence = whence or 'cur'
 	offset = tonumber(offset or 0)
 	whence = assertf(whences[whence], 'invalid whence: "%s"', whence)
-	local offs = C.lseek(self.fd, offset, whence)
-	if offs == -1 then return check_errno() end
-	return tonumber(offs)
+	return self:_seek(whence, offset)
 end
 
 function file:try_write(buf, sz)
@@ -1178,13 +1175,14 @@ function cwd()
 	while true do
 		local buf, sz = cbuf(256)
 		if C.getcwd(buf, sz) == nil then
-			if errno() ~= ERANGE or buf >= 2048 then
+			if errno() ~= ERANGE or sz >= 2048 then
 				return assert(check_errno())
 			else
 				buf, sz = cbuf(sz * 2)
 			end
+		else
+			return str(buf)
 		end
-		return str(buf)
 	end
 end
 startcwd = memoize(cwd)
@@ -1421,14 +1419,12 @@ end
 
 function mksymlink(link_path, target_path, quiet)
 	local ok, err = try_mksymlink(link_path, target_path)
-	if ok then return dir, err end
-	check('fs', 'mkslink', ok, '%s: %s', dir, err)
+	check('fs', 'mkslink', ok, '%s -> %s: %s', link_path, target_path, err)
 end
 
 function mkhardlink(link_path, target_path, quiet)
 	local ok, err = try_mkhardlink(link_path, target_path)
-	if ok then return dir, err end
-	check('fs', 'mkhlink', ok, '%s%s%s: %s', dir, perms and ' ' or '', perms or '', err)
+	check('fs', 'mkhlink', ok, '%s -> %s: %s', link_path, target_path, err)
 end
 
 --hardlinks & symlinks -------------------------------------------------------
@@ -1521,7 +1517,7 @@ function run_indir(dir, fn, ...)
 		if ok then return ... end
 		error(..., 2)
 	end
-	pass(pcall(fn, ...))
+	return pass(pcall(fn, ...))
 end
 
 exedir = memoize(function()
@@ -1692,14 +1688,13 @@ int lchmod(const char *path, mode_t mode);
 
 local function wrap(chmod_func, stat_func)
 	return function(f, perms)
-		local cur_perms
 		local _, is_rel = parse_perms(perms)
 		if is_rel then
 			local cur_perms, err = stat_func(f, 'perms')
 			if not cur_perms then return nil, err end
+			perms = parse_perms(perms, cur_perms)
 		end
-		local mode = parse_perms(perms, cur_perms)
-		return chmod_func(f, mode) == 0
+		return chmod_func(f, perms) == 0
 	end
 end
 local fchmod = wrap(function(f, mode) return C.fchmod(f.fd, mode) end, fstat)
@@ -2048,7 +2043,7 @@ function dir.attr(dir, ...)
 		end
 	end
 	if istab(attr) then
-		return fs_attr_set(dir:path(), attr, deref)
+		return _fs_attr_set(dir:path(), attr, deref)
 	elseif not attr or (deref and dir_is_symlink(dir)) then
 		return _fs_attr_get(dir:path(), attr, deref)
 	else
@@ -2366,20 +2361,20 @@ function parse_access(s)
 	return write, exec, copy
 end
 
-function file.try_mmap(f, ...)
+function file.try_mmap(f, t, ...)
 	local access, size, offset, addr
 	if istab(t) then
 		access, size, offset, addr = t.access, t.size, t.offset, t.addr
 	else
-		offset, size, addr, access = ...
+		offset, size, addr, access = t, ...
 	end
-	return mmap(f, access or f.access, size, offset, addr)
+	return try_mmap(f, access or f.access, size, offset, addr)
 end
 function file:mmap(...)
 	self:check_io(self:try_mmap(...))
 end
 
-function try_mmap(t,...)
+function try_mmap(t, ...)
 	local file, access, size, offset, addr, tagname, perms
 	if istab(t) then
 		file, access, size, offset, addr, tagname, perms =
@@ -2434,7 +2429,7 @@ function mirror_buffer(size, addr)
 
 		local addr = cast('void*', addr)
 		local flags = bor(MAP_PRIVATE, MAP_ANON, addr ~= nil and MAP_FIXED or 0)
-		local addr0, err = mmap(addr, size * 2, 0, flags, 0, 0)
+		local addr0, err = try_mmap(addr, size * 2, 0, flags, 0, 0)
 		if not addr0 then
 			free()
 			return nil, err
@@ -2574,16 +2569,17 @@ end
 vfile.try_seek = file.try_seek
 vfile.try_skip = file.try_skip
 
-function vfile:try_truncate(n)
+function vfile.try_truncate(f, n)
 	local pos, err = f:try_seek(n)
 	if not pos then return nil, err end
-	local n0 = #f.b
+	local b = f.b
+	local n0 = #b
 	if n == 0 then
 		b:reset()
 	elseif n > n0 then
 		local n = n - n0
 		local p = b:reserve(n)
-		fill(b, n)
+		fill(p, n)
 		b:commit(n)
 	elseif n < n0 then
 		return nil, 'NYI'
@@ -2752,7 +2748,7 @@ end
 function try_touch(file, mtime, btime, quiet) --create file or update its mtime.
 	local create = not exists(file)
 	if create then
-		local ok, err = try_save(file, '', quiet)
+		local ok, err = try_save(file, '', nil, nil, quiet)
 		if not ok then return false, err end
 	end
 	if not (create and not (mtime or btime)) then
@@ -2816,7 +2812,7 @@ function ls_dir(path, patt, min_mtime, create, order_by, recursive)
 					f.name    = file
 					f.path    = d:path()
 					f.relpath = file
-					f.type    = sc:attr'type'
+					f.type    = d:attr'type'
 					f.mtime   = d:attr'mtime'
 					f.btime   = d:attr'btime'
 					t[#t+1] = f
