@@ -846,9 +846,9 @@ end
 function file.unbuffered_reader(f)
 	return function(buf, sz)
 		if not buf then --skip bytes (libjpeg semantics)
-			return f:skip(sz)
+			return f:try_skip(sz)
 		else
-			return f:read(buf, sz)
+			return f:try_read(buf, sz)
 		end
 	end
 end
@@ -1698,7 +1698,7 @@ local function wrap(chmod_func, stat_func)
 			if not cur_perms then return nil, err end
 			perms = parse_perms(perms, cur_perms)
 		end
-		return check_errno(chmod_func(f, perms))
+		return check_errno(chmod_func(f, perms) == 0)
 	end
 end
 local fchmod = wrap(function(f, mode) return C.fchmod(f.fd, mode) end, fstat)
@@ -1742,7 +1742,7 @@ end
 
 local function wrap(chown_func)
 	return function(arg, uid, gid)
-		return check_errno(chown_func(arg, get_uid(uid) or -1, get_gid(gid) or -1))
+		return check_errno(chown_func(arg, get_uid(uid) or -1, get_gid(gid) or -1) == 0)
 	end
 end
 local fchown = wrap(function(f, uid, gid) return C.fchown(f.fd, uid, gid) end)
@@ -1796,6 +1796,10 @@ function file.attr(f, attr)
 	check('fs', 'attr', ok, '%s: %s', f.path, err)
 	if err ~= nil then return ret, err end
 	return ret
+end
+
+function file.try_size(f)
+	return f:try_attr'size'
 end
 
 function file.size(f)
@@ -1852,16 +1856,16 @@ end
 function try_chown(path, uid, gid, quiet)
 	local ok, err = try_file_attr(path, {uid = uid, gid = gid})
 	if not ok then return false, err end
-	log(quiet and '' or 'note', 'fs', 'chown', '%s%s%s%s%s', path,
-		uid and ' uid=', uid or '',
-		gid and ' gid=', gid or '')
+	log(quiet and '' or 'note', 'fs', 'chown', '%s%s%s', path,
+		uid and ' uid='..uid or '',
+		gid and ' gid='..gid or '')
 	return path
 end
 function chown(path, uid, gid, quiet)
 	local ok, err = try_chown(path, uid, gid, quiet)
-	check('fs', 'chown', ok, '%s%s%s%s%s: %s', path,
-		uid and ' uid=', uid or '',
-		gid and ' gid=', gid or '',
+	check('fs', 'chown', ok, '%s%s%s: %s', path,
+		uid and ' uid='..uid or '',
+		gid and ' gid='..gid or '',
 		err)
 	return path
 end
