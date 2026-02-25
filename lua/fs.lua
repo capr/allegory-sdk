@@ -65,6 +65,7 @@ FILE ATTRIBUTES
 	checkexists(path, [type], [deref])            assert that file exists
 	[try_]mtime(path, [deref]) -> ts              get file's modification time
 	[try_]chmod(path, perms, [quiet]) -> path     change a file or dir's permissions
+	[try_]chown(path, [uid], [gid], [quiet]) -> path  change a file or dir's owner and/or group
 FILESYSTEM OPS
 	cwd() -> path                                 get current working directory
 	abspath(path[, cwd]) -> path                  convert path to absolute path
@@ -855,7 +856,7 @@ end
 function file.buffered_reader(f, bufsize)
 	local ptr_ct = u8p
 	local buf_ct = u8a
-	local o1, err = f:size()
+	local o1, err = f:try_size()
 	local o0, err = f:try_seek'cur'
 	if not (o0 and o1) then
 		return function() return nil, err end
@@ -866,7 +867,7 @@ function file.buffered_reader(f, bufsize)
 	local eof = false
 	return function(dst, sz)
 		if not dst then --skip bytes (libjpeg semantics)
-			return f:skip(sz)
+			return f:try_skip(sz)
 		end
 		local rsz = 0
 		while sz > 0 do
@@ -875,7 +876,7 @@ function file.buffered_reader(f, bufsize)
 					return 0
 				end
 				ofs = 0
-				local len1, err = f:read(buf, bufsize)
+				local len1, err = f:try_read(buf, bufsize)
 				if not len1 then return nil, err end
 				len = len1
 				if len == 0 then
@@ -1421,12 +1422,12 @@ function mv(old_path, new_path, perms, quiet)
 end
 
 function mksymlink(link_path, target_path, quiet)
-	local ok, err = try_mksymlink(link_path, target_path)
+	local ok, err = try_mksymlink(link_path, target_path, quiet)
 	check('fs', 'mkslink', ok, '%s -> %s: %s', link_path, target_path, err)
 end
 
 function mkhardlink(link_path, target_path, quiet)
-	local ok, err = try_mkhardlink(link_path, target_path)
+	local ok, err = try_mkhardlink(link_path, target_path, quiet)
 	check('fs', 'mkhlink', ok, '%s -> %s: %s', link_path, target_path, err)
 end
 
@@ -1697,7 +1698,7 @@ local function wrap(chmod_func, stat_func)
 			if not cur_perms then return nil, err end
 			perms = parse_perms(perms, cur_perms)
 		end
-		return chmod_func(f, perms) == 0
+		return check_errno(chmod_func(f, perms))
 	end
 end
 local fchmod = wrap(function(f, mode) return C.fchmod(f.fd, mode) end, fstat)
@@ -1741,14 +1742,14 @@ end
 
 local function wrap(chown_func)
 	return function(arg, uid, gid)
-		return chown_func(arg, get_uid(uid) or -1, get_gid(gid) or -1) == 0
+		return check_errno(chown_func(arg, get_uid(uid) or -1, get_gid(gid) or -1))
 	end
 end
 local fchown = wrap(function(f, uid, gid) return C.fchown(f.fd, uid, gid) end)
 local chown = wrap(C.chown)
 local lchown = wrap(C.lchown)
 
-local function _fs_attr_get(path, attr, deref)
+local function fs_attr_get(path, attr, deref)
 	local stat = deref and stat or lstat
 	return stat(path, attr)
 end
@@ -1772,18 +1773,18 @@ local function wrap(chmod_func, chown_func, utimes_func)
 	end
 end
 
-local _file_attr_set = wrap(fchmod, fchown, futimes)
+local file_attr_set = wrap(fchmod, fchown, futimes)
 
 local set_deref   = wrap( chmod,  chown,  utimes)
 local set_symlink = wrap(lchmod, lchown, lutimes)
-local function _fs_attr_set(path, t, deref)
+local function fs_attr_set(path, t, deref)
 	local set = deref and set_deref or set_symlink
 	return set(path, t)
 end
 
 function file.try_attr(f, attr)
 	if istab(attr) then
-		return _file_attr_set(f, attr)
+		return file_attr_set(f, attr)
 	else
 		return fstat(f, attr)
 	end
@@ -1817,9 +1818,9 @@ function try_file_attr(path, ...)
 		return try_readlink(path)
 	end
 	if istab(attr) then
-		return _fs_attr_set(path, attr, deref)
+		return fs_attr_set(path, attr, deref)
 	else
-		return _fs_attr_get(path, attr, deref)
+		return fs_attr_get(path, attr, deref)
 	end
 end
 function file_attr(path, ...)
@@ -1840,12 +1841,28 @@ end
 function try_chmod(path, perms, quiet)
 	local ok, err = try_file_attr(path, {perms = perms})
 	if not ok then return false, err end
-	log(quiet and '' or 'note', 'fs', 'chmod', '%s', path)
+	log(quiet and '' or 'note', 'fs', 'chmod', '%s %s', path, perms)
 	return path
 end
 function chmod(path, perms, quiet)
 	local ok, err = try_chmod(path, perms, quiet)
-	check('fs', 'chmod', ok, '%s: %s', path, err)
+	check('fs', 'chmod', ok, '%s %s: %s', path, perms, err)
+	return path
+end
+function try_chown(path, uid, gid, quiet)
+	local ok, err = try_file_attr(path, {uid = uid, gid = gid})
+	if not ok then return false, err end
+	log(quiet and '' or 'note', 'fs', 'chown', '%s%s%s%s%s', path,
+		uid and ' uid=', uid or '',
+		gid and ' gid=', gid or '')
+	return path
+end
+function chown(path, uid, gid, quiet)
+	local ok, err = try_chown(path, uid, gid, quiet)
+	check('fs', 'chown', ok, '%s%s%s%s%s: %s', path,
+		uid and ' uid=', uid or '',
+		gid and ' gid=', gid or '',
+		err)
 	return path
 end
 
@@ -2001,7 +2018,7 @@ local dt_names = {
 	[DT_UNKNOWN] = 'unknown',
 }
 
-local function _dir_attr_get(dir, attr)
+local function dir_attr_get(dir, attr)
 	if attr == 'type' and dir._dentry.d_type == DT_UNKNOWN then
 		--some filesystems (eg. VFAT) require this extra call to get the type.
 		local type, err = lstat(dir:path(), 'type')
@@ -2049,7 +2066,7 @@ function dir.name(dir)
 end
 
 local function dir_is_symlink(dir)
-	return _dir_attr_get(dir, 'type', false) == 'symlink'
+	return dir_attr_get(dir, 'type') == 'symlink'
 end
 
 function dir.attr(dir, ...)
@@ -2063,13 +2080,13 @@ function dir.attr(dir, ...)
 		end
 	end
 	if istab(attr) then
-		return _fs_attr_set(dir:path(), attr, deref)
+		return fs_attr_set(dir:path(), attr, deref)
 	elseif not attr or (deref and dir_is_symlink(dir)) then
-		return _fs_attr_get(dir:path(), attr, deref)
+		return fs_attr_get(dir:path(), attr, deref)
 	else
-		local val, found = _dir_attr_get(dir, attr)
+		local val, found = dir_attr_get(dir, attr)
 		if found == false then --attr not found in state
-			return _fs_attr_get(dir:path(), attr)
+			return fs_attr_get(dir:path(), attr)
 		else
 			return val
 		end
@@ -2636,7 +2653,7 @@ function try_load_tobuffer(file, default_buf, default_len, ignore_file_size)
 		end
 		return nil, err
 	end
-	local buf, len = f:readall(ignore_file_size)
+	local buf, len = f:try_readall(ignore_file_size)
 	f:close()
 	return buf, len
 end
@@ -2759,10 +2776,9 @@ function file_saver(file, thread_name)
 end
 
 function try_cp(src_file, dst_file, async, quiet)
-	local opt = async and {async = true} or nil
-	local sf, err = try_open(src_file, 'r', opt)
+	local sf, err = try_open{path = src_file, mode = 'r', async = async, quiet = quiet}
 	if not sf then return nil, err end
-	local df, err = try_open(dst_file, 'w', opt)
+	local df, err = try_open{path = dst_file, mode = 'w', async = async, quiet = quiet}
 	if not df then
 		sf:close()
 		return nil, err
@@ -2787,8 +2803,8 @@ function try_cp(src_file, dst_file, async, quiet)
 	log(quiet and '' or 'note', 'fs', 'cp', 'src: %s\ndst: %s', src_file, dst_file)
 	return true
 end
-function cp(src_file, dst_file, quiet)
-	local ok, err = try_cp(src_file, dst_file, quiet)
+function cp(src_file, dst_file, async, quiet)
+	local ok, err = try_cp(src_file, dst_file, async, quiet)
 	check('fs', 'cp', ok, '%s -> %s: %s', src_file, dst_file, err)
 end
 
