@@ -4,10 +4,15 @@
 	Written by Cosmin Apreutesei. Public Domain.
 
 FEATURES
-  * utf8 filenames
-  * symlinks and hard links
-  * memory mapping
-  * cdata buffer-based I/O
+	* utf8 filenames
+	* symlinks and hard links
+	* named pipes with async I/O
+	* cdata buffer-based I/O
+
+TODO
+	* cp() via copy_file_range() (sync only)
+	* realpath() instead of recursive readlink() (faster, more accurate?)
+	* get/set btime via statx() (ext4+)
 
 FILE OBJECTS
 	[try_]open(opt | path,[mode],[quiet]) -> f    open file
@@ -22,8 +27,6 @@ PIPES
 STDIO STREAMS
 	f:stream(mode) -> fs                          open a FILE* object from a file
 	fs:[try_]close()                              close the FILE* object
-MEMORY STREAMS
-	open_buffer(buf, [size], [mode]) -> f         create a memory stream
 FILE I/O
 	f:[try_]read(buf, len) -> readlen             read data from file
 	f:[try_]readn(buf, n) -> buf, n               read exactly n bytes
@@ -38,7 +41,8 @@ OPEN FILE ATTRIBUTES
 	f:attr([attr]) -> val|t                       get/set attribute(s) of open file
 	f:size() -> n                                 get file size
 FILE LOCKING
-	f:[try_]lock(f, 'sh|ex|un', [nonblock])
+	f:[try_]lock(f, 'sh|ex', [async])
+	f:[try_]unlock(f, [async])
 DIRECTORY LISTING
 	ls(dir, [opt]) -> d, name, next               directory contents iterator
 	  d:next() -> name, d                         call the iterator explicitly
@@ -80,7 +84,7 @@ FILESYSTEM OPS
 SYMLINKS & HARDLINKS
 	[try_]mksymlink(symlink, path, [quiet])       create a symbolic link for a file or dir
 	[try_]mkhardlink(hardlink, path, [quiet])     create a hard link for a file
-	[try_]readlink(path) -> path                  dereference a symlink recursively
+	[try_]readlink(path, [maxdepth]) -> path      dereference a symlink recursively
 COMMON PATHS
 	homedir() -> path                             get current user's home directory
 	tmpdir() -> path                              get the temporary directory
@@ -94,26 +98,13 @@ LOW LEVEL
 	file_wrap_fd(fd, [opt], ...) -> f             wrap opened file descriptor
 	file_wrap_file(FILE*, [opt], ...) -> f        wrap opened FILE* object
 	fileno(FILE*) -> fd                           get stream's file descriptor
-MEMORY MAPPING
-	mmap(...) -> map                              create a memory mapping
-	f:map([offset],[size],[addr],[access]) -> map   create a memory mapping
-	map.addr                                      a void* pointer to the mapped memory
-	map.size                                      size of the mapped memory in bytes
-	map:flush([async, ][addr, size])              flush (parts of) the mapping to disk
-	map:free()                                    release the memory and associated resources
-	unlink_mapfile(tagname)                       remove the shared memory file from disk
-	map:unlink()
-	mirror_buffer([size], [addr]) -> map          create a mirrored memory-mapped ring buffer
-	pagesize() -> bytes                           get allocation granularity
-	aligned_size(bytes[, dir]) -> bytes           next/prev page-aligned size
-	aligned_addr(ptr[, dir]) -> ptr               next/prev page-aligned address
 FILESYSTEM INFO
 	fs_info(path) -> {size=, free=}               get free/total disk space for a path
 HI-LEVEL APIs
 	[try_]load[_tobuffer](path, [default], [ignore_fsize]) -> buf,len  read file to string or buffer
 	[try_]save(path, s, [sz], [perms], [quiet])   atomic save value/buffer/array/read-results
 	file_saver(path) -> f(v | buf,len | t | read) atomic save writer function
-	touch(file, [mtime], [btime], [quiet])
+	[try_]touch(file, [mtime], [quiet])
 	[try_]cp(src_file, dst_file, [async], [quiet])
 	gen_id(name, [start=1], [quiet]) -> id        persistent atomic autoincrement
 
@@ -229,13 +220,6 @@ f:stream(mode) -> fs
 fs:[try_]close()
 
 	Close the `FILE*` object and the underlying file object.
-
-Memory Streams ---------------------------------------------------------------
-
-open_buffer(buf, [size], [mode]) -> f
-
-	Create a memory stream for reading and writing data from and into a buffer
-	using the file API. Only opening modes 'r' and 'w' are supported.
 
 File I/O ---------------------------------------------------------------------
 
@@ -394,7 +378,7 @@ file_is(path, [type], [deref]) -> true|false, ['not_found']
 
 Filesystem operations --------------------------------------------------------
 
-mkdir(path, [recursive], [perms])
+mkdir(path, [recursive], [perms], [quiet])
 
 	Make directory. `perms` can be a number or a string passed to unixperms_parse().
 
@@ -413,134 +397,10 @@ filemove(path, newpath, [opt])
 
 Symlinks & Hardlinks ---------------------------------------------------------
 
-[try_]readlink(path) -> path
+[try_]readlink(path, [maxdepth]) -> path
 
 	Dereference a symlink recursively. The result can be an absolute or
 	relative path which can be valid or not.
-
-Memory Mapping ---------------------------------------------------------------
-
-	FEATURES
-	  * file-backed and pagefile-backed (anonymous) memory maps
-	  * read-only, read/write and copy-on-write access modes plus executable flag
-	  * name-tagged memory maps for sharing memory between processes
-	  * mirrored memory maps for using with lock-free ring buffers.
-	  * synchronous and asynchronous flushing
-
-	LIMITATIONS
-	  * I/O errors from accessing mmapped memory cause a crash (and there's
-	  nothing that can be done about that with the current ffi), which makes
-	  this API unsuitable for mapping files from removable media or recovering
-	  from write failures in general. For all other uses it is fine.
-
-[try_]mmap(args_t) -> map
-[try_]mmap(path, [access], [size], [offset], [addr], [tagname], [perms]) -> map
-f:[try_]map([offset], [size], [addr], [access])
-
-	Create a memory map object. Args:
-
-	* `path`: the file to map: optional; if nil, a portion of the system pagefile
-	will be mapped instead.
-	* `access`: can be either:
-		* '' (read-only, default)
-		* 'w' (read + write)
-		* 'c' (read + copy-on-write)
-		* 'x' (read + execute)
-		* 'wx' (read + write + execute)
-		* 'cx' (read + copy-on-write + execute)
-	* `size`: the size of the memory segment (optional, defaults to file size).
-		* if given it must be > 0 or an error is raised.
-		* if not given, file size is assumed.
-			* if the file size is zero the mapping fails with `'file_too_short'`.
-		* if the file doesn't exist:
-			* if write access is given, the file is created.
-			* if write access is not given, the mapping fails with `'not_found'` error.
-		* if the file is shorter than the required offset + size:
-			* if write access is not given (or the file is the pagefile which
-			can't be resized), the mapping fails with `'file_too_short'` error.
-			* if write access is given, the file is extended.
-				* if the disk is full, the mapping fails with `'disk_full'` error.
-	* `offset`: offset in the file (optional, defaults to 0).
-		* if given, must be >= 0 or an error is raised.
-		* must be aligned to a page boundary or an error is raised.
-		* ignored when mapping the pagefile.
-	* `addr`: address to use (optional; an error is raised if zero).
-		* it's best to provide an address that is above 4 GB to avoid starving
-		LuaJIT which can only allocate in the lower 4 GB of the address space.
-	* `tagname`: name of the memory map (optional; cannot be used with `file`;
-		must not contain slashes or backslashes).
-		* using the same name in two different processes (or in the same process)
-		gives access to the same memory.
-
-	Returns an object with the fields:
-
-	* `addr` - a `void*` pointer to the mapped memory
-	* `size` - the actual size of the memory block
-
-	If the mapping fails, returns `nil,err` where `err` can be:
-
-	* `'not_found'` - file not found.
-	* `'file_too_short'` - the file is shorter than the required size.
-	* `'disk_full'` - the file cannot be extended because the disk is full.
-	* `'out_of_mem'` - size or address too large or specified address in use.
-	* an OS-specific error message.
-
-NOTES
-
-	* when mapping or resizing a `FILE` that was written to, the write buffers
-	should be flushed first.
-	* after mapping an opened file handle of any kind, that file handle should
-	not be used anymore except to close it after the mapping is freed.
-	* attempting to write to a memory block that wasn't mapped with write
-	or copy-on-write access results in a crash.
-	* changes done externally to a mapped file may not be visible immediately
-	(or at all) to the mapped memory.
-	* access to shared memory from multiple processes must be synchronized.
-
-map:free()
-
-	Free the memory and all associated resources and close the file
-	if it was opened by the `mmap()` call.
-
-map:[try_]flush([async, ][addr, size]) -> true | nil,err
-
-	Flush (part of) the memory to disk. If the address is not aligned,
-	it will be automatically aligned to the left. If `async` is true,
-	perform the operation asynchronously and return immediately.
-
-unlink_mapfile(tagname)` <br> `map:unlink()
-
-	Remove a (the) shared memory file from disk. When creating a shared memory
-	mapping using `tagname`, a file is created on the filesystem. That file
-	must be removed manually when it is no longer needed. This can be done
-	anytime, even while mappings are open and will not affect said mappings.
-
-mirror_buffer([size], [addr]) -> map
-
-	Create a mirrored buffer to use with a lock-free ring buffer. Args:
-	* `size`: the size of the memory segment (optional; one page size
-	  by default. automatically aligned to the next page size).
-	* `addr`: address to use (optional; can be anything convertible to `void*`).
-
-	The result is a table with `addr` and `size` fields and all the mirror map
-	objects in its array part (freeing the mirror will free all the maps).
-	The memory block at `addr` is mirrored such that
-	`(char*)addr[i] == (char*)addr[size+i]` for any `i` in `0..size-1`.
-
-aligned_size(bytes[, dir]) -> bytes
-
-	Get the next larger (dir = 'right', default) or smaller (dir = 'left') size
-	that is aligned to a page boundary. It can be used to align offsets and sizes.
-
-aligned_addr(ptr[, dir]) -> ptr
-
-	Get the next (dir = 'right', default) or previous (dir = 'left') address that
-	is aligned to a page boundary. It can be used to align pointers.
-
-pagesize() -> bytes
-
-	Get the current page size. Memory will always be allocated in multiples
-	of this size and file offsets must be aligned to this size too.
 
 Async I/O --------------------------------------------------------------------
 
@@ -573,7 +433,7 @@ on network mounts (NFS, Samba).
 
 ### Async disk I/O
 
-Async disk I/O is a complete afterthought on all major Operating Systems.
+Async disk I/O is a no-op on Linux with epoll, and we don't support io_uring.
 If your app is disk-bound just bite the bullet and make a thread pool.
 Read Arvid Norberg's article[1] for more info.
 
@@ -627,7 +487,7 @@ local function parse_perms(s, base)
 	if isstr(s) then
 		return unixperms_parse(s, base)
 	else --pass-through
-		return s or default_file_perms, false
+		return s, false
 	end
 end
 
@@ -658,7 +518,7 @@ local o_bits = {
 	noatime   = 0x040000, --don't update atime
 	rsync     = 0x101000, --'sync'
 	path      = 0x200000, --open only for fd-level ops
-   tmpfile   = 0x410000, --create anon temp file (Linux 3.11+)
+	tmpfile   = 0x410000, --create anon temp file (Linux 3.11+)
 }
 
 local open_mode_opt = {
@@ -682,6 +542,7 @@ local FD_CLOEXEC = 1
 local function fcntl_set_flags_func(GET, SET)
 	return function(f, mask, bits)
 		local cur_bits = C.fcntl(f.fd, GET)
+		assert(check_errno(cur_bits != -1))
 		local bits = setbits(cur_bits, mask, bits)
 		assert(check_errno(C.fcntl(f.fd, SET, cast('int', bits)) == 0))
 	end
@@ -735,7 +596,7 @@ local function _open(path, opt, quiet, file_type)
 	local rw = getbit(flags, o_bits.rdwr)
 	assert(not (wo and rw), 'open: conflicting flags: wronly + rdwr')
 	quiet = repl(quiet, nil, not (wo or rw) or nil) --r/o opens are quiet
-	local perms = parse_perms(opt.perms)
+	local perms = parse_perms(opt.perms) or default_file_perms
 	local open = opt.open or C.open
 	local fd = open(path, flags, perms)
 	if fd == -1 then
@@ -861,7 +722,7 @@ function file.buffered_reader(f, bufsize)
 	if not (o0 and o1) then
 		return function() return nil, err end
 	end
-	local bufsize = min(bufsize or 64 * 1024, o1 - o0)
+	local bufsize = min(bufsize or 64 * 1024, max(0, o1 - o0))
 	local buf = buf_ct(bufsize)
 	local ofs, len = 0, 0
 	local eof = false
@@ -904,7 +765,7 @@ int mkfifo(const char *pathname, mode_t mode);
 ]]
 
 function try_mkfifo(path, perms, quiet)
-	perms = parse_perms(perms)
+	perms = parse_perms(perms) or default_file_perms
 	local ok, err = check_errno(C.mkfifo(path, perms) == 0)
 	if not ok and err ~= 'already_exists' then return nil, err end
 	log(quiet and '' or 'note', 'fs', 'mkfifo', '%s %o', path, perms)
@@ -913,7 +774,7 @@ function try_mkfifo(path, perms, quiet)
 end
 
 function mkfifo(path, perms)
-	perms = parse_perms(perms)
+	perms = parse_perms(perms) or default_file_perms
 	local ok, err = try_mkfifo(path, perms)
 	check('fs', 'mkfifo', ok, '%s %o', path, perms)
 	if err then return ok, err end
@@ -1112,7 +973,7 @@ function file:try_readall(ignore_file_size)
 	local buf = u8a(sz)
 	local n, err = self:try_read(buf, sz)
 	if not n then return nil, err end
-	if n < sz then return nil, 'partial', buf, n end
+	if n < sz then return nil, 'partial_read' end
 	return buf, n
 end
 
@@ -1176,8 +1037,8 @@ int rename(const char *oldpath, const char *newpath);
 local ERANGE = 34
 
 function cwd()
+	local buf, sz = cbuf(256)
 	while true do
-		local buf, sz = cbuf(256)
 		if C.getcwd(buf, sz) == nil then
 			if errno() ~= ERANGE or sz >= 2048 then
 				return assert(check_errno())
@@ -1200,7 +1061,7 @@ function try_chdir(dir)
 end
 
 local function _try_mkdir(path, perms, quiet)
-	perms = parse_perms(perms) or default_dir_perms
+	perms = perms and parse_perms(perms) or default_dir_perms
 	local ok, err = check_errno(C.mkdir(path, perms) == 0)
 	if not ok then
 		if err == 'already_exists' then return true, err end
@@ -1270,7 +1131,7 @@ function try_rmfile(file, quiet)
 	return ok, err
 end
 
-local function try_rm(path, quiet)
+function try_rm(path, quiet)
 	local type, err = try_file_attr(path, 'type', false)
 	if not type and err == 'not_found' then
 		return true, err
@@ -1303,7 +1164,7 @@ local function try_rmdir_recursive(dir, quiet)
 	end
 	return try_rmdir(dir, quiet)
 end
-local function try_rm_rf(path, quiet)
+function try_rm_rf(path, quiet)
 	--not recursing if the dir is a symlink, unless it has an endsep!
 	if not path:ends'/' then
 		local type, err = try_file_attr(path, 'type', false)
@@ -1385,8 +1246,8 @@ function mkdir(dir, perms, quiet)
 	check('fs', 'mkdir', ok, '%s%s%s: %s', dir, perms and ' ' or '', perms or '', err)
 end
 
-function mkdirs(file)
-	mkdir(assert(dirname(file)))
+function mkdirs(file, perms, quiet)
+	mkdir(assert(dirname(file)), perms, quiet)
 	return file
 end
 
@@ -1636,6 +1497,11 @@ local lstat = wrap(function(path, st)
 	return C.syscall(6, cast(voidp, path), cast(voidp, st))
 end)
 
+local function fs_attr_get(path, attr, deref)
+	local stat = deref and stat or lstat
+	return stat(path, attr)
+end
+
 cdef[[
 struct timespec {
 	time_t tv_sec;
@@ -1692,6 +1558,7 @@ int lchmod(const char *path, mode_t mode);
 
 local function wrap(chmod_func, stat_func)
 	return function(f, perms)
+		assert(perms, 'perms missing')
 		local _, is_rel = parse_perms(perms)
 		if is_rel then
 			local cur_perms, err = stat_func(f, 'perms')
@@ -1709,8 +1576,6 @@ cdef[[
 int fchown(int fd,           uid_t owner, gid_t group);
 int  chown(const char *path, uid_t owner, gid_t group);
 int lchown(const char *path, uid_t owner, gid_t group);
-typedef unsigned int uid_t;
-typedef unsigned int gid_t;
 struct passwd {
 	char   *pw_name;    // Username
 	char   *pw_passwd;  // User password (usually "x" or "*")
@@ -1748,11 +1613,6 @@ end
 local fchown = wrap(function(f, uid, gid) return C.fchown(f.fd, uid, gid) end)
 local chown = wrap(C.chown)
 local lchown = wrap(C.lchown)
-
-local function fs_attr_get(path, attr, deref)
-	local stat = deref and stat or lstat
-	return stat(path, attr)
-end
 
 local function wrap(chmod_func, chown_func, utimes_func)
 	return function(arg, t)
@@ -1902,10 +1762,14 @@ local LOCK_UN = 8
 
 local lock_ops = {sh = LOCK_SH, ex = LOCK_EX, un = LOCK_UN}
 
-function file.try_lock(f, op, nonblock)
+function file.try_lock(f, op, async)
 	local flags = assertf(lock_ops[op], 'invalid lock op: %s', op)
-	if nonblock then flags = bor(flags, LOCK_NB) end
+	if async then flags = bor(flags, LOCK_NB) end
 	return check_errno(C.flock(f.fd, flags) == 0)
+end
+
+function file.try_unlock(f, async)
+	return self:try_lock(f, 'un', async)
 end
 
 --directory listing ----------------------------------------------------------
@@ -2189,458 +2053,6 @@ function scandir(arg)
 	end
 end
 
---memory mapping -------------------------------------------------------------
-
-local librt = C
-do --for shm_open()
-	local ok, rt = pcall(ffi.load, 'rt')
-	if ok then librt = rt end
-end
-
-cdef'int __getpagesize();'
-local getpagesize = C.__getpagesize
-pagesize = memoize(function() return getpagesize() end)
-
-cdef[[
-int shm_open(const char *name, int oflag, mode_t mode);
-int shm_unlink(const char *name);
-
-void* mmap(void *addr, size_t length, int prot, int flags,
-	int fd, off64_t offset) asm("mmap64");
-int munmap(void *addr, size_t length);
-int msync(void *addr, size_t length, int flags);
-int mprotect(void *addr, size_t len, int prot);
-]]
-
-local PROT_READ  = 1
-local PROT_WRITE = 2
-local PROT_EXEC  = 4
-
-local function protect_bits(write, exec, copy)
-	return bor(PROT_READ,
-		(write or copy) and PROT_WRITE or 0,
-		exec and PROT_EXEC or 0)
-end
-
-local function C_mmap(...)
-	local addr = C.mmap(...)
-	local ok, err = check_errno(cast('intptr_t', addr) ~= -1)
-	if not ok then return nil, err end
-	return addr
-end
-
-function check_tagname(tagname)
-	assert(not tagname:find'[/\\]', 'tagname cannot contain `/` or `\\`')
-	return tagname
-end
-
-local MAP_SHARED  = 1
-local MAP_PRIVATE = 2 --copy-on-write
-local MAP_FIXED   = 0x0010
-local MAP_ANON    = 0x0020
-
---TODO: merge this into mmap()
-local function _mmap(path, access, size, offset, addr, tagname, perms)
-
-	local write, exec, copy = parse_access(access or '')
-
-	path = path or tagname and check_tagname(tagname)
-
-	--open the file, if any.
-
-	local file
-	local function exit(err)
-		if file then file:try_close() end
-		return nil, err
-	end
-
-	if isstr(path) then
-		local flags = write and 'rdwr creat' or 'rdonly'
-		local perms = perms and parse_perms(perms)
-			or tonumber('400', 8) +
-				(write and tonumber('200', 8) or 0) +
-				(exec  and tonumber('100', 8) or 0)
-		local err
-		file, err = _open(path, {
-				flags = flags, perms = perms,
-				open = tagname and librt.shm_open,
-				shm = tagname and true or nil,
-			})
-		if not file then
-			return nil, err
-		end
-	end
-
-	--emulate Windows behavior for missing size and size mismatches.
-
-	if file then
-		if not size then --if size not given, assume entire file.
-			local filesize, err = file:try_attr'size'
-			if not filesize then
-				return exit(err)
-			end
-			size = filesize - offset
-		elseif write then --if writable file too short, extend it.
-			local filesize, err = file:try_attr'size'
-			if not filesize then
-				return exit(err)
-			end
-			if filesize < offset + size then
-				local ok, err = file:try_truncate(offset + size)
-				if not ok then
-					return exit(err)
-				end
-			end
-		else --if read/only file too short.
-			local filesize, err = file:try_attr'size'
-			if not filesize then
-				return exit(err)
-			end
-			if filesize < offset + size then
-				return exit'file_too_short'
-			end
-		end
-	end
-
-	--mmap the file.
-
-	local protect = protect_bits(write, exec, copy)
-
-	local flags = bor(
-		copy and MAP_PRIVATE or MAP_SHARED,
-		file and 0 or MAP_ANON,
-		addr and MAP_FIXED or 0)
-
-	local addr, err = C_mmap(addr, size, protect, flags, file and file.fd or -1, offset)
-	if not addr then return exit(err) end
-
-	--create the map object.
-
-	local MS_ASYNC      = 1
-	local MS_INVALIDATE = 2
-	local MS_SYNC       = 4
-
-	local function flush(self, async, addr, sz)
-		if not isbool(async) then --async arg is optional
-			async, addr, sz = false, async, addr
-		end
-		local addr = aligned_addr(addr or self.addr, 'left')
-		local flags = bor(async and MS_ASYNC or MS_SYNC, MS_INVALIDATE)
-		local ok = C.msync(addr, sz or self.size, flags) == 0
-		if not ok then return check_errno(false) end
-		return true
-	end
-
-	local function free()
-		C.munmap(addr, size)
-		exit()
-	end
-
-	local function unlink()
-		return unlink_mapfile(tagname)
-	end
-
-	return {addr = addr, size = size, free = free,
-		flush = flush, unlink = unlink, access = access}
-
-end
-
-function unlink_mapfile(tagname)
-	local ok, err = check_errno(librt.shm_unlink(check_tagname(tagname)) == 0)
-	if ok or err == 'not_found' then return true end
-	return nil, err
-end
-
-function mprotect(addr, size, access)
-	local protect = protect_bits(parse_access(access or 'x'))
-	return check_errno(C.mprotect(addr, size, protect) == 0)
-end
-
-local split_uint64, join_uint64
-do
-local m = new[[
-	union {
-		struct { uint32_t lo; uint32_t hi; };
-		uint64_t x;
-	}
-]]
-function split_uint64(x)
-	m.x = x
-	return m.hi, m.lo
-end
-function join_uint64(hi, lo)
-	m.hi, m.lo = hi, lo
-	return m.x
-end
-end
-
-function aligned_size(size, dir) --dir can be 'l' or 'r' (default: 'r')
-	if isctype(u64, size) then --an uintptr_t on x64
-		local pagesize = pagesize()
-		local hi, lo = split_uint64(size)
-		local lo = aligned_size(lo, dir)
-		return join_uint64(hi, lo)
-	else
-		local pagesize = pagesize()
-		if not (dir and dir:find'^l') then --align to the right
-			size = size + pagesize - 1
-		end
-		return band(size, bnot(pagesize - 1))
-	end
-end
-
-function aligned_addr(addr, dir)
-	return cast(voidp, aligned_size(cast(uintptr, addr), dir))
-end
-
-function parse_access(s)
-	assert(not s:find'[^rwcx]', 'invalid access flags')
-	local write = s:find'w' and true or false
-	local exec  = s:find'x' and true or false
-	local copy  = s:find'c' and true or false
-	assert(not (write and copy), 'invalid access flags')
-	return write, exec, copy
-end
-
-function file.try_mmap(f, t, ...)
-	local access, size, offset, addr
-	if istab(t) then
-		access, size, offset, addr = t.access, t.size, t.offset, t.addr
-	else
-		offset, size, addr, access = t, ...
-	end
-	return try_mmap(f, access or f.access, size, offset, addr)
-end
-function file:mmap(...)
-	self:check_io(self:try_mmap(...))
-end
-
-function try_mmap(t, ...)
-	local file, access, size, offset, addr, tagname, perms
-	if istab(t) then
-		file, access, size, offset, addr, tagname, perms =
-			t.file, t.access, t.size, t.offset, t.addr, t.tagname, t.perms
-	else
-		file, access, size, offset, addr, tagname, perms = t, ...
-	end
-	assert(not file or isstr(file) or isfile(file), 'invalid file argument')
-	assert(file or size, 'file and/or size expected')
-	assert(not size or size > 0, 'size must be > 0')
-	local offset = file and offset or 0
-	assert(offset >= 0, 'offset must be >= 0')
-	assert(offset == aligned_size(offset), 'offset not page-aligned')
-	local addr = addr and cast(voidp, addr)
-	assert(not addr or addr ~= nil, 'addr can\'t be zero')
-	assert(not addr or addr == aligned_addr(addr), 'addr not page-aligned')
-	assert(not (file and tagname), 'cannot have both file and tagname')
-	assert(not tagname or not tagname:find'\\', 'tagname cannot contain `\\`')
-	return _mmap(file, access, size, offset, addr, tagname, perms)
-end
-function mmap(...)
-	return check_io(nil, try_mmap(...))
-end
-
---mirror buffer --------------------------------------------------------------
-
-cdef'int memfd_create(const char *name, unsigned int flags);'
-local MFD_CLOEXEC = 0x0001
-
-function mirror_buffer(size, addr)
-
-	local size = aligned_size(size or 1)
-
-	local fd = C.memfd_create('mirror_buffer', MFD_CLOEXEC)
-	if fd == -1 then return check_errno() end
-
-	local addr1, addr2
-
-	local function free()
-		if addr1 then C.munmap(addr1, size) end
-		if addr2 then C.munmap(addr2, size) end
-		if fd then C.close(fd) end
-	end
-
-	local ok, err = check_errno(C.ftruncate(fd, size) == 0)
-	if not ok then
-		free()
-		return nil, err
-	end
-
-	for i = 1, 100 do
-
-		local addr = cast('void*', addr)
-		local flags = bor(MAP_PRIVATE, MAP_ANON, addr ~= nil and MAP_FIXED or 0)
-		local addr0, err = try_mmap(addr, size * 2, 0, flags, 0, 0)
-		if not addr0 then
-			free()
-			return nil, err
-		end
-
-		C.munmap(addr0, size * 2)
-
-		local protect = bor(PROT_READ, PROT_WRITE)
-		local flags = bor(MAP_SHARED, MAP_FIXED)
-
-		addr1, err = mmap(addr0, size, protect, flags, fd, 0)
-		if not addr1 then
-			goto skip
-		end
-
-		addr2 = cast('uint8_t*', addr1) + size
-		addr2, err = mmap(addr2, size, protect, flags, fd, 0)
-		if not addr2 then
-			C.munmap(addr1, size)
-			goto skip
-		end
-
-		C.close(fd)
-		fd = nil
-
-		do return {addr = addr1, size = size, free = free} end
-
-		::skip::
-	end
-
-	free()
-	return nil, 'max_tries'
-
-end
-
---memory streams -------------------------------------------------------------
-
-local vfile = {}
-
-vfile.check_io = check_io
-vfile.checkp   = checkp
-
-function open_buffer(buf, sz, mode)
-	sz = sz or #buf
-	mode = mode or 'r'
-	assertf(mode == 'r' or mode == 'w', 'invalid mode: "%s"', mode)
-	local f = {
-		b = string_buffer():set(buf, sz),
-		offset = 0,
-		mode = mode,
-		w = 0,
-		r = 0,
-		__index = vfile,
-	}
-	return setmetatable(f, f)
-end
-
-function vfile.closed(f)
-	return not f.b
-end
-
-function vfile.try_close(f)
-	if f.b then
-		f.b:free()
-		f.b = nil
-	end
-	return true
-end
-
-vfile.onclose = file.onclose
-
-function vfile:try_attr(attr)
-	assert(not istab(attr))
-	if attr == 'size' then
-		return #self.b
-	else
-		assert(false)
-	end
-end
-
-function vfile.try_flush(f)
-	if not f.b then
-		return nil, 'access_denied'
-	end
-	return true
-end
-
-function vfile:flush()
-	self:check_io(self:try_flush())
-end
-
-function vfile.try_read(f, buf, sz)
-	if not f.b then
-		return nil, 'access_denied'
-	end
-	sz = min(max(0, sz), max(0, #f.b - f.offset))
-	copy(buf, f.b:ref() + f.offset, sz)
-	f.offset = f.offset + sz
-	f.r = f.r + sz
-	return sz
-end
-
-vfile.try_readn   = file.try_readn
-vfile.try_readall = file.try_readall
-
-function vfile.try_write(f, buf, sz)
-	if not f.b then
-		return nil, 'access_denied'
-	end
-	if f.mode ~= 'w' then
-		return nil, 'access_denied'
-	end
-	sz = max(0, sz)
-	local sz0 = #f.b
-	local sz1 = f.offset + sz
-	local grow = sz1 - sz0
-	if grow > 0 then
-		f.b:reserve(grow)
-		f.b:commit(grow)
-	end
-	copy(f.b:ref() + f.offset, buf, sz)
-	f.offset = f.offset + sz
-	f.w = f.w + sz
-	return sz
-end
-
-function vfile._seek(f, whence, offset)
-	if whence == 1 then --cur
-		offset = f.offset + offset
-	elseif whence == 2 then --end
-		offset = #f.b + offset
-	end
-	offset = max(offset, 0)
-	f.offset = offset
-	return offset
-end
-vfile.try_seek = file.try_seek
-vfile.try_skip = file.try_skip
-
-function vfile.try_truncate(f, n)
-	local pos, err = f:try_seek(n)
-	if not pos then return nil, err end
-	local b = f.b
-	local n0 = #b
-	if n == 0 then
-		b:reset()
-	elseif n > n0 then
-		local n = n - n0
-		local p = b:reserve(n)
-		fill(p, n)
-		b:commit(n)
-	elseif n < n0 then
-		return nil, 'NYI'
-	end
-	return true
-end
-
-vfile.unbuffered_reader = file.unbuffered_reader
-vfile  .buffered_reader = file  .buffered_reader
-
-vfile.close    = unprotect_io(vfile.try_close)
-vfile.read     = unprotect_io(vfile.try_read)
-vfile.write    = unprotect_io(vfile.try_write)
-vfile.readn    = unprotect_io(vfile.try_readn)
-vfile.readall  = unprotect_io(vfile.try_readall)
-vfile.flush    = unprotect_io(vfile.try_flush)
-vfile.truncate = unprotect_io(vfile.try_truncate)
-vfile.seek     = unprotect_io(vfile.try_seek)
-vfile.skip     = unprotect_io(vfile.try_skip)
-
 --hi-level APIs --------------------------------------------------------------
 
 function file:pbuffer()
@@ -2812,29 +2224,27 @@ function cp(src_file, dst_file, async, quiet)
 	check('fs', 'cp', ok, '%s -> %s: %s', src_file, dst_file, err)
 end
 
-function try_touch(file, mtime, btime, quiet) --create file or update its mtime.
+function try_touch(file, mtime, quiet) --create file or update its mtime.
 	local create = not exists(file)
 	if create then
 		local ok, err = try_save(file, '', nil, nil, quiet)
 		if not ok then return false, err end
 	end
-	if not (create and not (mtime or btime)) then
+	if not (create and not mtime) then
 		local ok, err = try_file_attr(file, {
 			mtime = mtime or time(),
-			btime = btime or nil,
 		})
 		if not ok then return false, err end
 	end
 	if not quiet then
-		log('', 'fs', 'touch', '%s to %s%s', file,
-			date('%d-%m-%Y %H:%M', mtime) or 'now',
-			btime and ', btime '..date('%d-%m-%Y %H:%M', btime) or '')
+		log('', 'fs', 'touch', '%s to %s', file,
+			date('%d-%m-%Y %H:%M', mtime) or 'now')
 	end
 	return true
 end
 
-function touch(file, mtime, btime, quiet)
-	local ok, err = try_touch(file, mtime, btime, quiet)
+function touch(file, mtime, quiet)
+	local ok, err = try_touch(file, mtime, quiet)
 	return check('fs', 'touch', ok and file, '%s: %s', file, err)
 end
 
@@ -2862,7 +2272,6 @@ function ls_dir(path, patt, min_mtime, create, order_by, recursive)
 					f.relpath = sc:relpath()
 					f.type    = sc:attr'type'
 					f.mtime   = sc:attr'mtime'
-					f.btime   = sc:attr'btime'
 					t[#t+1] = f
 				end
 			end
@@ -2881,7 +2290,6 @@ function ls_dir(path, patt, min_mtime, create, order_by, recursive)
 					f.relpath = file
 					f.type    = d:attr'type'
 					f.mtime   = d:attr'mtime'
-					f.btime   = d:attr'btime'
 					t[#t+1] = f
 				end
 			end
@@ -2911,10 +2319,9 @@ function gen_id(name, start, quiet)
 	local s = f:readall()
 	local n = tonumber(s) or start or 1
 	check('fs', 'gen_id', toid(n, next_id_file))
-	f:seek('set', 0)
 	f:truncate(0)
 	f:write(tostring(n + 1))
-	f:lock'un'
+	f:unlock()
 	f:close()
 	log('note', 'fs', 'gen_id', '%s: %d', name, n)
 	return n
@@ -2933,8 +2340,7 @@ struct statfs {
 	__fsword_t f_bsize;   /* Optimal transfer block size */
 	fsblkcnt_t f_blocks;  /* Total data blocks in filesystem */
 	fsblkcnt_t f_bfree;   /* Free blocks in filesystem */
-	fsblkcnt_t f_bavail;  /* Free blocks available to
-									 unprivileged user */
+	fsblkcnt_t f_bavail;  /* Free blocks available unprivileged user */
 	fsfilcnt_t f_files;   /* Total inodes in filesystem */
 	fsfilcnt_t f_ffree;   /* Free inodes in filesystem */
 	fsid_t     f_fsid;    /* Filesystem ID */
@@ -2995,6 +2401,7 @@ file.truncate = unprotect_io(file.try_truncate)
 file.seek     = unprotect_io(file.try_seek)
 file.skip     = unprotect_io(file.try_skip)
 file.lock     = unprotect_io(file.try_lock)
+file.unlock   = unprotect_io(file.try_unlock)
 
 metatype(stream_ct, stream)
 metatype(dir_ct, dir)
