@@ -113,7 +113,7 @@ HI-LEVEL APIs
 	[try_]save(path, s, [sz], [perms], [quiet])   atomic save value/buffer/array/read-results
 	file_saver(path) -> f(v | buf,len | t | read) atomic save writer function
 	touch(file, [mtime], [btime], [quiet])
-	cp(src_file, dst_file)
+	[try_]cp(src_file, dst_file, [async], [quiet])
 	gen_id(name, [start=1], [quiet]) -> id        persistent atomic autoincrement
 
 The `deref` arg is true by default, meaning that by default, symlinks are
@@ -1711,19 +1711,19 @@ int lchown(const char *path, uid_t owner, gid_t group);
 typedef unsigned int uid_t;
 typedef unsigned int gid_t;
 struct passwd {
-    char   *pw_name;    // Username
-    char   *pw_passwd;  // User password (usually "x" or "*")
-    uid_t   pw_uid;     // User ID
-    gid_t   pw_gid;     // Group ID
-    char   *pw_gecos;   // Real name or comment field
-    char   *pw_dir;     // Home directory
-    char   *pw_shell;   // Login shell
+	char   *pw_name;    // Username
+	char   *pw_passwd;  // User password (usually "x" or "*")
+	uid_t   pw_uid;     // User ID
+	gid_t   pw_gid;     // Group ID
+	char   *pw_gecos;   // Real name or comment field
+	char   *pw_dir;     // Home directory
+	char   *pw_shell;   // Login shell
 };
 struct group {
-    char   *gr_name;    // Group name
-    char   *gr_passwd;  // Group password (usually "x" or "*")
-    gid_t   gr_gid;     // Group ID
-    char  **gr_mem;     // Null-terminated list of group members
+	char   *gr_name;    // Group name
+	char   *gr_passwd;  // Group password (usually "x" or "*")
+	gid_t   gr_gid;     // Group ID
+	char  **gr_mem;     // Null-terminated list of group members
 };
 struct passwd *getpwnam(const char *name);
 struct group *getgrnam(const char *name);
@@ -1882,9 +1882,9 @@ local LOCK_UN = 8
 local lock_ops = {sh = LOCK_SH, ex = LOCK_EX, un = LOCK_UN}
 
 function file.try_lock(f, op, nonblock)
-    local flags = assertf(lock_ops[op], 'invalid lock op: %s', op)
-    if nonblock then flags = bor(flags, LOCK_NB) end
-    return check_errno(C.flock(f.fd, flags) == 0)
+	local flags = assertf(lock_ops[op], 'invalid lock op: %s', op)
+	if nonblock then flags = bor(flags, LOCK_NB) end
+	return check_errno(C.flock(f.fd, flags) == 0)
 end
 
 --directory listing ----------------------------------------------------------
@@ -2117,7 +2117,7 @@ local function scandir1(path, dive)
 				return f(self, 0, depth, ...)
 			end
 			local d = d
-		 	if depth ~= 0 then
+			if depth ~= 0 then
 				depth = self:depth(depth)
 				d = pds[depth] or d
 			end
@@ -2758,11 +2758,38 @@ function file_saver(file, thread_name)
 	return write
 end
 
---TODO: try_cp()
+function try_cp(src_file, dst_file, async, quiet)
+	local opt = async and {async = true} or nil
+	local sf, err = try_open(src_file, 'r', opt)
+	if not sf then return nil, err end
+	local df, err = try_open(dst_file, 'w', opt)
+	if not df then
+		sf:close()
+		return nil, err
+	end
+	local bufsize = 64 * 1024
+	local buf = u8a(bufsize)
+	while true do
+		local n, err = sf:try_read(buf, bufsize)
+		if not n then
+			sf:close(); df:close()
+			return nil, err
+		end
+		if n == 0 then break end
+		local ok, err = df:try_write(buf, n)
+		if not ok then
+			sf:close(); df:close()
+			return nil, err
+		end
+	end
+	sf:close()
+	df:close()
+	log(quiet and '' or 'note', 'fs', 'cp', 'src: %s\ndst: %s', src_file, dst_file)
+	return true
+end
 function cp(src_file, dst_file, quiet)
-	log(quiet and '' or 'note', 'fs', 'cp', 'src: %s ->\ndst: %s', src_file, dst_file)
-	--TODO: buffered read for large files.
-	save(dst_file, load(src_file))
+	local ok, err = try_cp(src_file, dst_file, quiet)
+	check('fs', 'cp', ok, '%s -> %s: %s', src_file, dst_file, err)
 end
 
 function try_touch(file, mtime, btime, quiet) --create file or update its mtime.
@@ -2855,7 +2882,7 @@ end
 local function toid(s, field) --validate id minimally.
 	local n = tonumber(s)
 	if n and n >= 0 and floor(n) == n then return n end
- 	return nil, '%s invalid: %s', field or 'field', s
+	return nil, '%s invalid: %s', field or 'field', s
 end
 function gen_id(name, start, quiet)
 	local next_id_file = varpath'next_'..name
