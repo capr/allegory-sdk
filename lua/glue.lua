@@ -32,6 +32,7 @@ MATH
 	ln                           = math.log
 	log10                        = math.log10
 	log2                         = math.log(x, 2)
+	logbase(x, base) -> y          log in given base
 	sin                          = math.sin
 	cos                          = math.cos
 	tan                          = math.tan
@@ -2602,13 +2603,13 @@ You should distinguish between multiple types of errors:
 - Response/format validation errors, i.e. bugs on the other side or corrupt
   data which shouldn't raise but they put the connection/decoder in an
   inconsistent state so the connection/file must be closed. Use `checkp()`
-  short of "check protocol" for those. Note that if your protocol is not meant
+  short for "check protocol" for those. Note that if your protocol is not meant
   to work with a hostile or unstable peer, you can skip the `checkp()` checks
   entirely because they won't guard against anything and just bloat the code.
 
 - Request or response content validation errors, which can be user-corrected
   so they mustn't raise and mustn't close the connection/file. Use `checknp()`
-  for those.
+  short for "check non-protocol" for those.
 
 - I/O errors, i.e. network/pipe failures which can be temporary and thus make
   the request retriable (in a new connection, this one must be closed), so they
@@ -2637,7 +2638,7 @@ local function io_error_init(self)
 	end
 end
 
-io_error = errortype'io'
+local io_error = errortype'io'
 io_error.init = io_error_init
 function check_io(self, v, ...)
 	if v then return v, ... end
@@ -2647,7 +2648,7 @@ function check_io(self, v, ...)
 	}, ...))
 end
 
-protocol_error = errortype'protocol'
+local protocol_error = errortype'protocol'
 protocol_error.init = io_error_init
 function checkp(self, v, ...)
 	if v then return v, ... end
@@ -2657,7 +2658,7 @@ function checkp(self, v, ...)
 	}, ...))
 end
 
-content_error = errortype'content'
+local content_error = errortype'content'
 function checknp(self, v, ...)
 	if v then return v, ... end
 	raise(content_error({
