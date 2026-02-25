@@ -3,7 +3,7 @@
 	Path manipulation for UNIX paths.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	path_normalize(s, remove_double_dots, remove_endsep) -> s|nil  normalize a path by removing //, /./, foo/../
+	path_normalize(s, [remove_double_dots], [remove_endsep]) -> s|nil
 	basename(s) -> s|nil                   get the last component of a path
 	dirname(s[, levels=1]) -> s|nil        get the path without last component(s)
 	path_nameext(s) -> name|nil, ext|nil   split `basename(s)` into name and extension
@@ -26,6 +26,7 @@ function basename(s)
 	return s:match'[^/]*$'
 end
 
+--Normalize path by collapsing `//`, removing `/./` and `foo/..`, and fixing end `/`.
 --NOTE: returns nil if path results in `/../foo` which is invalid.
 --NOTE: Removing `..` breaks the path if there are symlinks involved!
 function path_normalize(s, rm_double_dots, rm_add_endsep)
