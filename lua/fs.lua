@@ -24,9 +24,6 @@ PIPES
 	[try_]pipe([opt]) -> rf, wf                   create an anonymous pipe
 	[try_]pipe(path|{path=,...}) -> pf            create/open a named pipe
 	[try_]mkfifo(path|{path=,...}) -> true        create a named pipe
-STDIO STREAMS
-	f:stream(mode) -> fs                          open a FILE* object from a file
-	fs:[try_]close()                              close the FILE* object
 FILE I/O
 	f:[try_]read(buf, len) -> readlen             read data from file
 	f:[try_]readn(buf, n) -> buf, n               read exactly n bytes
@@ -40,6 +37,7 @@ FILE I/O
 OPEN FILE ATTRIBUTES
 	f:attr([attr]) -> val|t                       get/set attribute(s) of open file
 	f:size() -> n                                 get file size
+	f:set_inheritable(true|false)                 change O_CLOEXEC flag
 FILE LOCKING
 	f:[try_]lock(['sh'|'ex'], [async])
 	f:[try_]unlock([async])
@@ -95,9 +93,7 @@ COMMON PATHS
 	vardir() -> path                              get script's private r/w directory
 	varpath(...) -> path                          get vardir-relative path
 LOW LEVEL
-	file_wrap_fd(fd, [opt], ...) -> f             wrap opened file descriptor
-	file_wrap_file(FILE*, [opt], ...) -> f        wrap opened FILE* object
-	fileno(FILE*) -> fd                           get stream's file descriptor
+	file_wrap_fd(fd, ...) -> f                    wrap opened file descriptor
 FILESYSTEM INFO
 	fs_info(path) -> {size=, free=}               get free/total disk space for a path
 HI-LEVEL APIs
@@ -184,9 +180,11 @@ mode:
 
  field       | reference                            | default
  ------------+--------------------------------------+----------
+ async       | async mode                           | false
  flags       | bitflags(flags)                      | 'rdonly'
  perms       | unix_perm_parse(perms)               | '0666' / 'rwx'
- inheritable | sub-processes inherit the fd/handle  | false
+ inheritable | sub-processes inherit the fd         | false
+ quiet       | quiet logging                        | false
 
 Pipes ------------------------------------------------------------------------
 
@@ -463,17 +461,15 @@ local dir = {}; dir.__index = dir --dir listing object methods
 --types, consts, utils -------------------------------------------------------
 
 cdef[[
-typedef size_t ssize_t; // for older luajit
 typedef unsigned int mode_t;
 typedef unsigned int uid_t;
 typedef unsigned int gid_t;
 typedef size_t time_t;
 typedef int64_t off64_t;
+
+int fcntl(int fd, int cmd, ...); // fallocate, set_inheritable
+long syscall(int number, ...); // stat, fstat, lstat
 ]]
-
-cdef'int fcntl(int fd, int cmd, ...);' --fallocate, set_inheritable
-
-cdef'long syscall(int number, ...);' --stat, fstat, lstat
 
 local cbuf = buffer'char[?]'
 
@@ -581,6 +577,11 @@ function file_wrap_fd(fd, opt, file_type, async, path, quiet, debug_prefix)
 	return f
 end
 
+function isfile(f, type)
+	local mt = getmetatable(f)
+	return istab(mt) and rawget(mt, '__index') == file and (not type or f.type == type)
+end
+
 local function _open(path, opt, file_type)
 	local async = opt.async
 	assert(not (async and file_type == 'file'), 'files cannot be opened async')
@@ -637,29 +638,8 @@ function file.onclose(f, fn)
 	after(f, '_after_close', fn)
 end
 
-cdef[[
-int fileno(struct FILE *stream);
-]]
-
-function fileno(file)
-	local fd = C.fileno(file)
-	if fd == -1 then return check_errno() end
-	return fd
-end
-
-function file_wrap_file(file, opt)
-	local fd = C.fileno(file)
-	if fd == -1 then return check_errno() end
-	return file_wrap_fd(fd, opt, 'file')
-end
-
 function file.set_inheritable(file, inheritable)
 	fcntl_set_fd_flags(file, FD_CLOEXEC, inheritable and 0 or FD_CLOEXEC)
-end
-
-function isfile(f, type)
-	local mt = getmetatable(f)
-	return istab(mt) and rawget(mt, '__index') == file and (not type or f.type == type)
 end
 
 function try_open(path, mode)
@@ -831,31 +811,11 @@ function pipe(...)
 	return ret --pf
 end
 
---stdio streams --------------------------------------------------------------
-
-cdef[[
-typedef struct FILE FILE;
-FILE *fdopen(int fd, const char *mode);
-int fclose(FILE*);
-]]
-
-stream_ct = ctype'struct FILE'
-
-function stream.close(fs)
-	return check_errno(C.fclose(fs) == 0)
-end
-
-function file.stream(f, mode)
-	local fs = C.fdopen(f.fd, mode)
-	if fs == nil then return check_errno() end
-	return fs
-end
-
 --i/o ------------------------------------------------------------------------
 
 cdef[[
-ssize_t read(int fd, void *buf, size_t count);
-ssize_t write(int fd, const void *buf, size_t count);
+size_t read(int fd, void *buf, size_t count);
+size_t write(int fd, const void *buf, size_t count);
 int fsync(int fd);
 int64_t lseek(int fd, int64_t offset, int whence) asm("lseek64");
 ]]
@@ -1292,7 +1252,7 @@ end
 cdef[[
 int link(const char *oldpath, const char *newpath);
 int symlink(const char *oldpath, const char *newpath);
-ssize_t readlink(const char *path, char *buf, size_t bufsize);
+size_t readlink(const char *path, char *buf, size_t bufsize);
 ]]
 
 local EINVAL = 22
@@ -2305,7 +2265,7 @@ local PIDFD_NONBLOCK = 0x000800
 function pidfd_open(pid, opt)
 	local async = not (opt and opt.async == false)
 	local flags = async and PIDFD_NONBLOCK or 0
-	local fd = syscall(434, pid, flags)
+	local fd = C.syscall(434, pid, flags)
 	if fd == -1 then
 		return check_errno()
 	end
