@@ -15,7 +15,7 @@ TODO
 	* get/set btime via statx() (ext4+)
 
 FILE OBJECTS
-	[try_]open(opt | path,[mode],[quiet]) -> f    open file
+	[try_]open(opt | path,[mode]) -> f            open file
 	f:[try_]close()                               close file
 	f:closed() -> true|false                      check if file is closed
 	isfile(f [,'file'|'pipe']) -> true|false      check if f is a file or pipe
@@ -68,22 +68,22 @@ FILE ATTRIBUTES
 	exists                                      = file_is
 	checkexists(path, [type], [deref])            assert that file exists
 	[try_]mtime(path, [deref]) -> ts              get file's modification time
-	[try_]chmod(path, perms, [quiet]) -> path     change a file or dir's permissions
-	[try_]chown(path, [uid], [gid], [quiet]) -> path  change a file or dir's owner and/or group
+	[try_]chmod(path, perms) -> path              change a file or dir's permissions
+	[try_]chown(path, [uid], [gid]) -> path       change a file or dir's owner and/or group
 FILESYSTEM OPS
 	cwd() -> path                                 get current working directory
 	abspath(path[, cwd]) -> path                  convert path to absolute path
 	startcwd() -> path                            get the cwd that process started with
 	[try_]chdir(path)                             set current working directory
 	run_indir(dir, fn)                            run function in specified cwd
-	[try_]mkdir(dir, [recursive], [perms], [quiet]) -> dir    make directory
-	[try_]rm[dir|file](path, [quiet])             remove directory or file
-	[try_]rm_rf(path, [quiet])                    like `rm -rf`
-	[try_]mkdirs(file, [perms], [quiet]) -> file     make file's dir
-	[try_]mv(old_path, new_path, [dst_dirs_perms], [quiet])   rename/move file or dir on the same filesystem
+	[try_]mkdir(dir, [recursive], [perms]) -> dir make directory
+	[try_]rm[dir|file](path) -> path              remove directory or file
+	[try_]rm_rf(path) -> path                     like `rm -rf`
+	[try_]mkdirs(file, [perms]) -> file           make file's dir
+	[try_]mv(old_path, new_path, [dst_dirs_perms]) -> path rename/move file or dir on the same filesystem
 SYMLINKS & HARDLINKS
-	[try_]mksymlink(symlink, path, [quiet])       create a symbolic link for a file or dir
-	[try_]mkhardlink(hardlink, path, [quiet])     create a hard link for a file
+	[try_]mksymlink(symlink, path, [replace])     create a symbolic link for a file or dir
+	[try_]mkhardlink(hardlink, path)              create a hard link for a file
 	[try_]readlink(path, [maxdepth]) -> path      dereference a symlink recursively
 COMMON PATHS
 	homedir() -> path                             get current user's home directory
@@ -102,11 +102,11 @@ FILESYSTEM INFO
 	fs_info(path) -> {size=, free=}               get free/total disk space for a path
 HI-LEVEL APIs
 	[try_]load[_tobuffer](path, [default], [ignore_fsize]) -> buf,len  read file to string or buffer
-	[try_]save(path, s, [sz], [perms], [quiet])   atomic save value/buffer/array/read-results
+	[try_]save(path, s, [sz], [perms])            atomic save value/buffer/array/read-results
 	file_saver(path) -> f(v | buf,len | t | read) atomic save writer function
-	[try_]touch(file, [mtime], [quiet])
-	[try_]cp(src_file, dst_file, [async], [quiet])
-	gen_id(name, [start=1], [quiet]) -> id        persistent atomic autoincrement
+	[try_]touch(file, [mtime])
+	[try_]cp(src_file, dst_file, [async])
+	gen_id(name, [start=1]) -> id                 persistent atomic autoincrement
 
 The `deref` arg is true by default, meaning that by default, symlinks are
 followed recursively and transparently where this option is available.
@@ -164,7 +164,7 @@ NORMALIZED ERROR MESSAGES
 
 File Objects -----------------------------------------------------------------
 
-[try_]open(opt | path,[mode],[quiet]) -> f
+[try_]open(opt | path,[mode]) -> f
 
 Open/create a file for reading and/or writing. The second arg can be a string:
 
@@ -206,7 +206,7 @@ Pipes ------------------------------------------------------------------------
 
 	Create and open a named pipe.
 
-[try_]mkfifo(path, [perms], [quiet]) -> true[,'already_exists']
+[try_]mkfifo(path, [perms]) -> true[,'already_exists']
 
 	Create a named pipe.
 
@@ -378,7 +378,7 @@ file_is(path, [type], [deref]) -> true|false, ['not_found']
 
 Filesystem operations --------------------------------------------------------
 
-mkdir(path, [recursive], [perms], [quiet])
+mkdir(path, [recursive], [perms])
 
 	Make directory. `perms` can be a number or a string passed to unixperms_parse().
 
@@ -567,7 +567,7 @@ function file_wrap_fd(fd, opt, async, file_type, path, quiet, debug_prefix)
 			or file_type == 'pipe' and 'P'
 			or file_type == 'pidfile' and 'D',
 		w = 0, r = 0,
-		quiet = repl(quiet, nil, file_type == 'pipe' or nil), --pipes are quiet
+		quiet = quiet,
 		path = path,
 		async = async,
 	}, opt)
@@ -585,8 +585,8 @@ function file_wrap_fd(fd, opt, async, file_type, path, quiet, debug_prefix)
 	return f
 end
 
-local function _open(path, opt, quiet, file_type)
-	local async = opt.async --files are sync by defualt
+local function _open(path, opt, file_type)
+	local async = opt.async --normal files cannot be async, epoll refuses them.
 	local flags = bitflags(opt.flags or 'rdonly', o_bits)
 	flags = bor(flags, async and O_NONBLOCK or 0)
 	if not opt.inheritable then
@@ -595,7 +595,7 @@ local function _open(path, opt, quiet, file_type)
 	local wo = getbit(flags, o_bits.wronly)
 	local rw = getbit(flags, o_bits.rdwr)
 	assert(not (wo and rw), 'open: conflicting flags: wronly + rdwr')
-	quiet = repl(quiet, nil, not (wo or rw) or nil) --r/o opens are quiet
+	local quiet = file_type == 'pipe' or not (wo or rw) or nil
 	local perms = parse_perms(opt.perms) or default_file_perms
 	local open = opt.open or C.open
 	local fd = open(path, flags, perms)
@@ -635,8 +635,8 @@ function file.try_close(f)
 	return true
 end
 
-function file:onclose(fn)
-	after(self, '_after_close', fn)
+function file.onclose(f, fn)
+	after(f, '_after_close', fn)
 end
 
 cdef[[
@@ -659,20 +659,17 @@ function file.set_inheritable(file, inheritable)
 	fcntl_set_fd_flags(file, FD_CLOEXEC, inheritable and 0 or FD_CLOEXEC)
 end
 
---file objects ---------------------------------------------------------------
-
 function isfile(f, type)
 	local mt = getmetatable(f)
 	return istab(mt) and rawget(mt, '__index') == file and (not type or f.type == type)
 end
 
-function try_open(path, mode, quiet)
+function try_open(path, mode)
 	local opt
 	if istab(path) then --try_open{path=,...}
 		opt = path
 		path = opt.path
 		mode = opt.mode
-		quiet = opt.quiet
 	end
 	assert(isstr(path), 'path required')
 	mode = repl(mode, nil, 'r') --use `false` for no mode.
@@ -684,7 +681,7 @@ function try_open(path, mode, quiet)
 			opt = mode_opt
 		end
 	end
-	local f, err = _open(path, opt or empty, quiet)
+	local f, err = _open(path, opt or empty)
 	if not f then return nil, err end
 	return f
 end
@@ -698,9 +695,9 @@ end
 file.check_io = check_io
 file.checkp   = checkp
 
-function file:try_skip(n)
-	local i, err = self:try_seek('cur', 0); if not i then return nil, err end
-	local j, err = self:try_seek('cur', n); if not j then return nil, err end
+function file.try_skip(f, n)
+	local i, err = f:try_seek('cur', 0); if not i then return nil, err end
+	local j, err = f:try_seek('cur', n); if not j then return nil, err end
 	return j - i
 end
 
@@ -764,11 +761,11 @@ int pipe2(int[2], int flags);
 int mkfifo(const char *pathname, mode_t mode);
 ]]
 
-function try_mkfifo(path, perms, quiet)
+function try_mkfifo(path, perms)
 	perms = parse_perms(perms) or default_file_perms
 	local ok, err = check_errno(C.mkfifo(path, perms) == 0)
 	if not ok and err ~= 'already_exists' then return nil, err end
-	log(quiet and '' or 'note', 'fs', 'mkfifo', '%s %o', path, perms)
+	log('note', 'fs', 'mkfifo', '%s %o', path, perms)
 	if err == 'already_exists' then return true, err end
 	return ok
 end
@@ -784,7 +781,7 @@ end
 local function _pipe(path, perms, opt)
 	local async = repl(opt.async, nil, true) --pipes are async by default
 	if path then --named pipe
-		local ok, err = try_mkfifo(path, perms, opt.quiet)
+		local ok, err = try_mkfifo(path, perms)
 		if not ok then return nil, err end
 		return _open(path, update({
 			async = async,
@@ -897,40 +894,40 @@ function file.try_flush(f)
 	return check_errno(C.fsync(f.fd) == 0)
 end
 
-function file:setexpires(rw, expires)
+function file.setexpires(f, rw, expires)
 	if not isstr(rw) then rw, expires = nil, rw end
 	local r = rw == 'r' or not rw
 	local w = rw == 'w' or not rw
-	if r then self.recv_expires = expires end
-	if w then self.send_expires = expires end
+	if r then f.recv_expires = expires end
+	if w then f.send_expires = expires end
 end
-function file:settimeout(s, rw)
-	self:setexpires(s and clock() + s, rw)
+function file.settimeout(f, s, rw)
+	f:setexpires(s and clock() + s, rw)
 end
 
-function file:_seek(whence, offset)
-	local offs = C.lseek(self.fd, offset, whence)
+function file._seek(f, whence, offset)
+	local offs = C.lseek(f.fd, offset, whence)
 	if offs == -1 then return check_errno() end
 	return tonumber(offs)
 end
 
 local whences = {set = 0, cur = 1, ['end'] = 2} --FILE_*
-function file:try_seek(whence, offset)
+function file.try_seek(f, whence, offset)
 	if tonumber(whence) and not offset then --middle arg missing
 		whence, offset = 'cur', tonumber(whence)
 	end
 	whence = whence or 'cur'
 	offset = tonumber(offset or 0)
 	whence = assertf(whences[whence], 'invalid whence: "%s"', whence)
-	return self:_seek(whence, offset)
+	return f:_seek(whence, offset)
 end
 
-function file:try_write(buf, sz)
+function file.try_write(f, buf, sz)
 	sz = sz or #buf
 	if sz == 0 then return true end --mask out null writes
 	local sz0 = sz
 	while true do
-		local len, err = self:_write(buf, sz)
+		local len, err = f:_write(buf, sz)
 		if len == sz then
 			break
 		elseif not len then --short write
@@ -946,11 +943,11 @@ function file:try_write(buf, sz)
 	return true
 end
 
-function file:try_readn(buf, sz)
+function file.try_readn(f, buf, sz)
 	local buf0, sz0 = buf, sz
 	local buf = cast(u8p, buf)
 	while sz > 0 do
-		local len, err = self:try_read(buf, sz)
+		local len, err = f:try_read(buf, sz)
 		if not len then --short read
 			return nil, err, sz0 - sz
 		elseif len == 0 then --eof
@@ -962,16 +959,16 @@ function file:try_readn(buf, sz)
 	return buf0, sz0
 end
 
-function file:try_readall(ignore_file_size)
-	if self.type == 'pipe' or ignore_file_size then
-		return readall(self.try_read, self)
+function file.try_readall(f, ignore_file_size)
+	if f.type == 'pipe' or ignore_file_size then
+		return readall(f.try_read, f)
 	end
-	assert(self.type == 'file')
-	local size, err = self:try_attr'size'; if not size then return nil, err end
-	local offset, err = self:try_seek(); if not offset then return nil, err end
+	assert(f.type == 'file')
+	local size, err = f:try_attr'size'; if not size then return nil, err end
+	local offset, err = f:try_seek(); if not offset then return nil, err end
 	local sz = size - offset
 	local buf = u8a(sz)
-	local n, err = self:try_read(buf, sz)
+	local n, err = f:try_read(buf, sz)
 	if not n then return nil, err end
 	if n < sz then return nil, 'partial_read' end
 	return buf, n
@@ -997,7 +994,7 @@ end
 function file.try_truncate(f, size, opt)
 	assert(isnum(size), 'size expected')
 	if not f.shm then
-		local pos, err = f:seek('set', size)
+		local pos, err = f:try_seek('set', size)
 		if not pos then return nil, err end
 	end
 	if not f.shm then
@@ -1060,90 +1057,90 @@ function try_chdir(dir)
 	return true
 end
 
-local function _try_mkdir(path, perms, quiet)
+local function _try_mkdir(path, perms)
 	perms = perms and parse_perms(perms) or default_dir_perms
 	local ok, err = check_errno(C.mkdir(path, perms) == 0)
 	if not ok then
 		if err == 'already_exists' then return true, err end
 		return false, err
 	end
-	log(quiet and '' or 'note', 'fs', 'mkdir', '%s%s%s',
+	log('note', 'fs', 'mkdir', '%s%s%s',
 		path, perms and ' ' or '', perms or '')
 	return true
 end
 
-function try_mkdir(dir, recursive, perms, quiet)
+function try_mkdir(dir, recursive, perms)
 	if recursive then
 		dir = path_normalize(dir, true, true) --avoid creating `dir` in `dir/..` sequences
-		if not dir or dir == '.' or dir == '/' then
-			return nil, 'invalid path'
+		if not dir or dir == '.' then
+			return nil, 'invalid_path'
 		end
 		local t = {}
 		while true do
-			local ok, err = _try_mkdir(dir, perms, quiet)
+			local ok, err = _try_mkdir(dir, perms)
 			if ok then break end
 			if err ~= 'not_found' then --other problem
 				return ok, err
 			end
 			push(t, dir)
 			dir = dirname(dir)
-			if not dir or dir == '.' or dir == '/' then --reached root
+			if not dir or dir == '.' or dir == '/' then
 				return ok, err
 			end
 		end
 		while #t > 0 do
 			local dir = pop(t)
-			local ok, err = _try_mkdir(dir, perms, quiet)
+			local ok, err = _try_mkdir(dir, perms)
 			if not ok then return ok, err end
 		end
 		return true
 	else
-		return _try_mkdir(dir, perms, quiet)
+		return _try_mkdir(dir, perms)
 	end
 end
 
-function try_mkdirs(file, perms, quiet)
+function try_mkdirs(file, perms)
 	local dir = dirname(file)
 	if dir and dir ~= '.' and dir ~= '/' then
-		local ok, err = try_mkdir(dir, true, perms, quiet)
+		local ok, err = try_mkdir(dir, true, perms)
 		if not ok then return nil, err end
 	end
 	return file
 end
 
-function try_rmdir(dir, quiet)
+function try_rmdir(dir)
 	local ok, err, errcode = check_errno(C.rmdir(dir) == 0)
 	if not ok then
 		if err == 'not_found' then return true, err end
 		return false, err
 	end
-	log(quiet and '' or 'note', 'fs', 'rmdir', '%s', dir)
+	log('note', 'fs', 'rmdir', '%s', dir)
 	return true
 end
 
-function try_rmfile(file, quiet)
+function try_rmfile(file)
 	local ok, err = check_errno(C.unlink(file) == 0)
 	if not ok then
 		if err == 'not_found' then return true, err end
 		return false, err
 	end
-	log(quiet and '' or 'note', 'fs', 'rmfile', '%s', file)
+	log('note', 'fs', 'rmfile', '%s', file)
 	return ok, err
 end
 
-function try_rm(path, quiet)
+function try_rm(path)
 	local type, err = try_file_attr(path, 'type', false)
 	if not type and err == 'not_found' then
 		return true, err
 	end
 	if type == 'dir' then
-		return try_rmdir(path, quiet)
+		return try_rmdir(path)
 	else
-		return try_rmfile(path, quiet)
+		return try_rmfile(path)
 	end
 end
 
-local function try_rmdir_recursive(dir, quiet)
+local function try_rmdir_recursive(dir)
 	for file, d in ls(dir) do
 		if not file then
 			if d == 'not_found' then return true, d end
@@ -1153,18 +1150,18 @@ local function try_rmdir_recursive(dir, quiet)
 		local ok, err
 		local realtype, err = d:attr('type', false)
 		if realtype == 'dir' then
-			ok, err = try_rmdir_recursive(filepath, quiet)
+			ok, err = try_rmdir_recursive(filepath)
 		elseif realtype then
-			ok, err = try_rmfile(filepath, quiet)
+			ok, err = try_rmfile(filepath)
 		end
 		if not ok then
 			d:close()
 			return ok, err
 		end
 	end
-	return try_rmdir(dir, quiet)
+	return try_rmdir(dir)
 end
-function try_rm_rf(path, quiet)
+function try_rm_rf(path)
 	--not recursing if the dir is a symlink, unless it has an endsep!
 	if not path:ends'/' then
 		local type, err = try_file_attr(path, 'type', false)
@@ -1173,34 +1170,31 @@ function try_rm_rf(path, quiet)
 			return nil, err
 		end
 		if type == 'symlink' then
-			return try_rmfile(path, quiet)
+			return try_rmfile(path)
 		end
 	end
-	return try_rmdir_recursive(path, quiet)
+	return try_rmdir_recursive(path)
 end
 
-function try_mv(old_path, new_path, dst_dirs_perms, quiet)
+function try_mv(old_path, new_path, dst_dirs_perms)
 	if dst_dirs_perms ~= false then
-		local ok, err = try_mkdirs(new_path, dst_dirs_perms, quiet)
+		local ok, err = try_mkdirs(new_path, dst_dirs_perms)
 		if not ok then return false, err end
 	end
 	local ok, err = check_errno(C.rename(old_path, new_path) == 0)
 	if not ok then return false, err end
-	log(quiet and '' or 'note', 'fs', 'mv', 'old: %s\nnew: %s', old_path, new_path)
+	log('note', 'fs', 'mv', 'old: %s\nnew: %s', old_path, new_path)
 	return true
 end
 
-function try_mksymlink(link_path, target_path, quiet, replace)
+function try_mksymlink(link_path, target_path, replace)
 	local ok, err = check_errno(C.symlink(target_path, link_path) == 0)
-	if not ok then
-		if err == 'already_exists' then
-			local file_type, symlink_type = try_file_attr(link_path, 'type')
-			if file_type == 'symlink'
-				and (symlink_type == 'dir') == false
-			then
-				if try_readlink(link_path) == target_path then
-					return true, err
-				elseif replace ~= false then
+	if not ok and err == 'already_exists' and replace then
+		local file_type = try_file_attr(link_path, 'type')
+		if file_type == 'symlink' then
+			if try_readlink(link_path) == target_path then
+				return true, err
+			elseif replace ~= false then
 					local ok, err = try_rmfile(link_path)
 					if not ok then return false, err end
 					local ok, err = check_errno(C.symlink(target_path, link_path) == 0)
@@ -1215,17 +1209,16 @@ function try_mksymlink(link_path, target_path, quiet, replace)
 	return true
 end
 
-function try_mkhardlink(link_path, target_path, quiet)
+function try_mkhardlink(link_path, target_path)
 	local ok, err = check_errno(C.link(target_path, link_path) == 0)
 	if not ok then
 		if err == 'already_exists' then
 			local i1 = try_file_attr(target_path, 'inode')
-			if not i1 then goto fuggetit end
+			if not i1 then return false, err end
 			local i2 = try_file_attr(link_path, 'inode')
-			if not i2 then goto fuggetit end
+			if not i2 then return false, err end
 			if i1 == i2 then return true, err end
 		end
-		::fuggetit::
 		return false, err
 	end
 	log('', 'fs', 'mkhlink', 'link:   %s\ntarget:  %s', link_path, target_path)
@@ -1240,55 +1233,55 @@ function chdir(dir)
 	check('fs', 'chdir', ok, '%s: %s', dir, err)
 end
 
-function mkdir(dir, perms, quiet)
-	local ok, err = try_mkdir(dir, true, perms, quiet)
+function mkdir(dir, perms)
+	local ok, err = try_mkdir(dir, true, perms)
 	if ok then return dir, err end
 	check('fs', 'mkdir', ok, '%s%s%s: %s', dir, perms and ' ' or '', perms or '', err)
 end
 
-function mkdirs(file, perms, quiet)
-	mkdir(assert(dirname(file)), perms, quiet)
+function mkdirs(file, perms)
+	mkdir(assert(dirname(file)), perms)
 	return file
 end
 
-function rmdir(dir, quiet)
-	local ok, err = try_rmdir(dir, quiet)
+function rmdir(dir)
+	local ok, err = try_rmdir(dir)
 	if ok then return dir, err end
 	check('fs', 'rmdir', ok, '%s: %s', dir, err)
 end
 
-function rmfile(path, quiet)
-	local ok, err = try_rmfile(path, quiet)
+function rmfile(path)
+	local ok, err = try_rmfile(path)
 	if ok then return path, err end
 	check('fs', 'rmfile', ok, '%s: %s', path, err)
 end
 
-function rm(path, quiet)
-	local ok, err = try_rm(path, quiet)
+function rm(path)
+	local ok, err = try_rm(path)
 	if ok then return path, err end
 	check('fs', 'rm', ok, '%s: %s', path, err)
 end
 
-function rm_rf(path, quiet)
-	local ok, err = try_rm_rf(path, quiet)
+function rm_rf(path)
+	local ok, err = try_rm_rf(path)
 	if ok then return path, err end
 	check('fs', 'rm_rf', ok, '%s: %s', path, err)
 end
 
-function mv(old_path, new_path, perms, quiet)
-	local ok, err = try_mv(old_path, new_path, perms, quiet)
+function mv(old_path, new_path, perms)
+	local ok, err = try_mv(old_path, new_path, perms)
 	if ok then return new_path, err end
 	check('fs', 'mv', ok, 'old: %s\nnew: %s\nerror: %s',
 		old_path, new_path, err)
 end
 
-function mksymlink(link_path, target_path, quiet)
-	local ok, err = try_mksymlink(link_path, target_path, quiet)
+function mksymlink(link_path, target_path)
+	local ok, err = try_mksymlink(link_path, target_path)
 	check('fs', 'mkslink', ok, '%s -> %s: %s', link_path, target_path, err)
 end
 
-function mkhardlink(link_path, target_path, quiet)
-	local ok, err = try_mkhardlink(link_path, target_path, quiet)
+function mkhardlink(link_path, target_path)
+	local ok, err = try_mkhardlink(link_path, target_path)
 	check('fs', 'mkhlink', ok, '%s -> %s: %s', link_path, target_path, err)
 end
 
@@ -1702,27 +1695,27 @@ function mtime(file, deref)
 	return file_attr(file, 'mtime', deref)
 end
 
-function try_chmod(path, perms, quiet)
+function try_chmod(path, perms)
 	local ok, err = try_file_attr(path, {perms = perms})
 	if not ok then return false, err end
-	log(quiet and '' or 'note', 'fs', 'chmod', '%s %s', path, perms)
+	log('note', 'fs', 'chmod', '%s %s', path, perms)
 	return path
 end
-function chmod(path, perms, quiet)
-	local ok, err = try_chmod(path, perms, quiet)
+function chmod(path, perms)
+	local ok, err = try_chmod(path, perms)
 	check('fs', 'chmod', ok, '%s %s: %s', path, perms, err)
 	return path
 end
-function try_chown(path, uid, gid, quiet)
+function try_chown(path, uid, gid)
 	local ok, err = try_file_attr(path, {uid = uid, gid = gid})
 	if not ok then return false, err end
-	log(quiet and '' or 'note', 'fs', 'chown', '%s%s%s', path,
+	log('note', 'fs', 'chown', '%s%s%s', path,
 		uid and ' uid='..uid or '',
 		gid and ' gid='..gid or '')
 	return path
 end
-function chown(path, uid, gid, quiet)
-	local ok, err = try_chown(path, uid, gid, quiet)
+function chown(path, uid, gid)
+	local ok, err = try_chown(path, uid, gid)
 	check('fs', 'chown', ok, '%s%s%s: %s', path,
 		uid and ' uid='..uid or '',
 		gid and ' gid='..gid or '',
@@ -1769,7 +1762,7 @@ function file.try_lock(f, op, async)
 end
 
 function file.try_unlock(f, async)
-	return self:try_lock(f, 'un', async)
+	return f:try_lock(f, 'un', async)
 end
 
 --directory listing ----------------------------------------------------------
@@ -2055,8 +2048,8 @@ end
 
 --hi-level APIs --------------------------------------------------------------
 
-function file:pbuffer()
-	return pbuffer{f = self}
+function file.pbuffer()
+	return pbuffer{f = f}
 end
 
 ABORT = {} --error signal to pass to save()'s reader function.
@@ -2166,17 +2159,17 @@ local function _save(file, s, sz, perms)
 	return true
 end
 
-function try_save(file, s, sz, perms, quiet)
+function try_save(file, s, sz, perms)
 	local ok, err = _save(file, s, sz, perms)
 	if not ok then return false, err end
 	local sz = sz or isstr(s) and #s
 	local ssz = sz and _(' (%s)', kbytes(sz)) or ''
-	log(quiet and '' or 'note', 'fs', 'save', '%s%s', file, ssz)
+	log('note', 'fs', 'save', '%s%s', file, ssz)
 	return true
 end
 
-function save(file, s, sz, perms, quiet)
-	local ok, err = try_save(file, s, sz, perms, quiet)
+function save(file, s, sz, perms)
+	local ok, err = try_save(file, s, sz, perms)
 	check('fs', 'save', ok, '%s: %s', file, err)
 end
 
@@ -2191,10 +2184,10 @@ function file_saver(file, thread_name)
 	return write
 end
 
-function try_cp(src_file, dst_file, async, quiet)
-	local sf, err = try_open{path = src_file, mode = 'r', async = async, quiet = quiet}
+function try_cp(src_file, dst_file, async)
+	local sf, err = try_open{path = src_file, mode = 'r', async = async}
 	if not sf then return nil, err end
-	local df, err = try_open{path = dst_file, mode = 'w', async = async, quiet = quiet}
+	local df, err = try_open{path = dst_file, mode = 'w', async = async}
 	if not df then
 		sf:close()
 		return nil, err
@@ -2216,18 +2209,18 @@ function try_cp(src_file, dst_file, async, quiet)
 	end
 	sf:close()
 	df:close()
-	log(quiet and '' or 'note', 'fs', 'cp', 'src: %s\ndst: %s', src_file, dst_file)
+	log('note', 'fs', 'cp', 'src: %s\ndst: %s', src_file, dst_file)
 	return true
 end
-function cp(src_file, dst_file, async, quiet)
-	local ok, err = try_cp(src_file, dst_file, async, quiet)
+function cp(src_file, dst_file, async)
+	local ok, err = try_cp(src_file, dst_file, async)
 	check('fs', 'cp', ok, '%s -> %s: %s', src_file, dst_file, err)
 end
 
-function try_touch(file, mtime, quiet) --create file or update its mtime.
+function try_touch(file, mtime) --create file or update its mtime.
 	local create = not exists(file)
 	if create then
-		local ok, err = try_save(file, '', nil, nil, quiet)
+		local ok, err = try_save(file, '')
 		if not ok then return false, err end
 	end
 	if not (create and not mtime) then
@@ -2236,15 +2229,13 @@ function try_touch(file, mtime, quiet) --create file or update its mtime.
 		})
 		if not ok then return false, err end
 	end
-	if not quiet then
-		log('', 'fs', 'touch', '%s to %s', file,
-			date('%d-%m-%Y %H:%M', mtime) or 'now')
-	end
+	log('note', 'fs', 'touch', '%s to %s', file,
+		date('%d-%m-%Y %H:%M', mtime) or 'now')
 	return true
 end
 
-function touch(file, mtime, quiet)
-	local ok, err = try_touch(file, mtime, quiet)
+function touch(file, mtime)
+	local ok, err = try_touch(file, mtime)
 	return check('fs', 'touch', ok and file, '%s: %s', file, err)
 end
 
@@ -2312,7 +2303,7 @@ local function toid(s, field) --validate id minimally.
 	if n and n >= 0 and floor(n) == n then return n end
 	return nil, '%s invalid: %s', field or 'field', s
 end
-function gen_id(name, start, quiet)
+function gen_id(name, start)
 	local next_id_file = varpath'next_'..name
 	local f = open(next_id_file, 'w+')
 	f:lock'ex' --exclusive lock, blocks until acquired
@@ -2375,14 +2366,14 @@ end
 
 local PIDFD_NONBLOCK = 0x000800
 
-function pidfd_open(pid, opt, quiet)
+function pidfd_open(pid, opt)
 	local async = not (opt and opt.async == false)
 	local flags = async and PIDFD_NONBLOCK or 0
 	local fd = syscall(434, pid, flags)
 	if fd == -1 then
 		return check_errno()
 	end
-	local f, err = file_wrap_fd(fd, opt, async, 'pidfile', nil, quiet)
+	local f, err = file_wrap_fd(fd, opt, async, 'pidfile')
 	if not f then
 		return nil, err
 	end
