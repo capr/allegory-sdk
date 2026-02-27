@@ -93,7 +93,6 @@ QA
 - HTTP stress test
 	- continuous random stress testing to find:
 	- memory leaks in app code
-	- memory fragmentation in tarantool
 	- burst stress testing to reach DoS limits and test recovery from DoS
 	- discard cookies to test session garbage collection
 - Lua: integrate strict.lua

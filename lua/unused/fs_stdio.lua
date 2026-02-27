@@ -44,3 +44,5 @@ function file.stream(f, mode)
 	if fs == nil then return check_errno() end
 	return fs
 end
+
+metatype(stream_ct, stream)
