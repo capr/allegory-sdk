@@ -12,7 +12,7 @@ ADDRESS LOOKUP
 	ai:type() -> s                             socket type: 'tcp', ...
 	ai:family() -> s                           address family: 'inet', ...
 	ai:protocol() -> s                         protocol: 'tcp', 'icmp', ...
-	ai:name() -> s                             cannonical name
+	ai:name() -> s                             canonical name
 	ai:tostring() -> s                         formatted address
 	ai.addr -> sa                              first address object
 	sa:family() -> s                           address family: 'inet', ...
@@ -25,6 +25,7 @@ ADDRESS LOOKUP
 SOCKETS
 	tcp([opt], [family], [protocol]) -> tcp         make a TCP socket
 	udp([opt], [family], [protocol]) -> udp         make a UDP socket
+	issocket(s) -> t|f                              check if s is a socket
 	rawsocket([opt], [family], [protocol]) -> raw   make a raw socket
 	[try_]connect([tcp, ]host, port, [timeout]) -> tcp   (create tcp socket and) connect
 	listen([tcp, ]host, port, ...) -> tcp           (create tcp socket and) listen
@@ -45,7 +46,7 @@ SOCKETS
 	tcp|udp:[try_]recv(buf, maxlen) -> len          receive bytes
 	tcp:[try_]listen([backlog, ]host, port, [onaccept], [af])   put socket in listening mode
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
-	tcp:[try_]recvn(buf, n) -> buf, n               receive n bytes
+	tcp:[try_]recvn(buf, n)                         receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
 	tcp:[try_]recvall_read() -> read                make a buffered read function
 	udp:[try_]sendto(host, port, s|buf, [len], [af]) -> len    send a datagram to an address
@@ -63,7 +64,7 @@ THREADS
 	threadstatus(co) -> s                  coroutine.status()
 	transfer(co, ...) -> ...               see coro.transfer()
 	cofinish(co, ...) -> ...               see coro.finish()
-	threadenv([co]) -> t                   get (current) thread's own enviornment
+	threadenv([co]) -> t                   get (current) thread's own environment
 	ownthreadenv([co], [create]) -> t      get/create (current) thread's own environment
 	onthreadfinish(co, f)                  run `f(thread)` when thread finishes
 
@@ -136,7 +137,7 @@ getaddrinfo(...) -> ai
 	* `protocol` can be `'ip'`, `'ipv6'`, `'tcp'`, `'udp'`, `'raw'`, `'icmp'`,
 	`'igmp'` or `'icmpv6'` or `0` (the default is either `'tcp'`, `'udp'`
 	or `'raw'`, based on socket type).
-	* `af` are a `bor()` list of `passive`, `cannonname`,
+	* `af` are a `bor()` list of `passive`, `canonname`,
 	`numerichost`, `numericserv`, `all`, `v4mapped`, `addrconfig`
 	which map to `getaddrinfo()` flags.
 
@@ -150,9 +151,9 @@ tcp([opt], [family], [protocol]) -> tcp
 
 udp([opt], [family], [protocol]) -> udp
 
-	Make an UDP socket. The default family is `'inet'`.
+	Make a UDP socket. The default family is `'inet'`.
 
-rawsocket([opt], [family], [protocol]) -> raw`
+rawsocket([opt], [family], [protocol]) -> raw
 
 	Make a raw socket. The default family is `'inet'`.
 
@@ -170,8 +171,8 @@ s:[try_]bind('unix:FILE')
 	Bind socket to an interface/port (which default to '*' and 0 respectively
 	meaning all interfaces and a random port).
 
-s:setexpires(['r'|'w'], clock|nil)
-s:settimeout(['r'|'w'], seconds|nil)
+s:setexpires(clock|nil, ['r'|'w'])
+s:settimeout(seconds|nil, ['r'|'w'])
 
 	Set or clear the expiration clock for all subsequent I/O operations.
 	If the expiration clock is reached before an operation completes,
@@ -215,7 +216,7 @@ tcp:[try_]accept() -> ctcp | nil,err,[retry]
 	`remote_addr`, `remote_port`, `local_addr`, `local_port`.
 
 	A third return value indicates that the error is a network error and thus
-	the call be retried.
+	the call can be retried.
 
 tcp:[try_]recvn(buf, len) -> true
 
@@ -350,71 +351,6 @@ local coro_finish   = coro.finish
 
 assert(Linux, 'unsupported platform')
 
-do
-	local debug_getinfo = debug.getinfo
-	local string_format = string.format
-	local function trace_line(level, t)
-		local info = debug_getinfo(level + 1, 'nS')
-		local line = string_format('%s: %d',
-			info.source:match('[^\\/]-$'), info.linedefined)
-		t[line] = (t[line] or 0) + 1
-		return line
-	end
-
-	local coro_create0   = coro_create
-	local coro_safewrap0 = coro_safewrap
-	local counts --{line->count}
-	local threads --{line->{thread->true}}
-	local weak_keys
-	local function trace_coro_at(line, th)
-		local t = threads[line]
-		if not t then
-			t = setmetatable({}, weak_keys)
-			threads[line] = t
-		end
-		t[th] = true
-	end
-	function trace_coro()
-		counts = {}
-		threads = {}
-		weak_keys = {__mode = 'k'}
-		function coro_create(...)
-			local line = trace_line(3, counts)
-			local th = coro_create0(...)
-			trace_coro_at(line, th)
-			return th
-		end
-		function coro_safewrap(...)
-			local line = trace_line(3, counts)
-			local f, th = coro_safewrap0(...)
-			trace_coro_at(line, th)
-			return f, th
-		end
-	end
-
-	function coro_counts()
-		local all = cat(imap(sort(keys(counts), function(k1, k2)
-			if counts[k1] == counts[k2] then
-				return k1 < k2
-			end
-			return counts[k1] < counts[k2]
-		end), function(k)
-			return format('%5d %s', counts[k], k)
-		end), '\n')
-		local live = cat(imap(sort(keys(threads), function(k1, k2)
-			local n1 = count(threads[k1])
-			local n2 = count(threads[k2])
-			if n1 == n2 then
-				return k1 < k2
-			end
-			return n1 < n2
-		end), function(k)
-			return format('%5d %s', count(threads[k]), k)
-		end), '\n')
-		return all, live
-	end
-end
-
 local C = C
 
 local socket = {debug_prefix = 'S'} --common socket methods
@@ -435,7 +371,10 @@ local check, _poll, wait_io, cancel_wait_io, create_socket, wrap_socket, waiting
 function socket:try_close()
 	if not self.s then return true end
 	_sock_unregister(self)
-	local ok, err = self:_close()
+	local s = self.s; self.s = nil --make closed() true.
+	--NOTE: it is unsafe to close a socket twice no matter the error.
+	local ok, err = check(C.close(s) == 0)
+	cancel_wait_io(self)
 	local ps = self.listen_socket
 	if ps then
 		ps.n = ps.n - 1
@@ -450,10 +389,10 @@ function socket:try_close()
 	if self._after_close then
 		self:_after_close()
 	end
-	if not ok then return false, err end
 	log('', 'sock', 'closed', '%-4s r:%d w:%d%s', self, self.r, self.w,
 		self.n and ' live:'..self.n or '')
 	live(self, nil)
+	if not ok then return false, err end
 	return true
 end
 
@@ -557,7 +496,7 @@ do
 
 	local flag_bits = {
 		passive     = 0x0001,
-		cannonname  = 0x0002,
+		canonname   = 0x0002,
 		numerichost = 0x0004,
 		numericserv = 0x0400,
 		all         = 0x0010,
@@ -590,6 +529,7 @@ do
 	end
 
 	function try_getaddrinfo(host, port, socket_type, family, protocol, flags)
+		assert(host, 'host required')
 		if host == '*' then host = '0.0.0.0' end --all.
 		if host:starts'unix:' then
 			local ai = addrinfo_ct(1)
@@ -754,14 +694,6 @@ local SOCK_CLOEXEC   = 0x080000 --close-on-exec
 	return s
 end
 
---NOTE: it is unsafe to close a socket twice no matter the error.
-function socket:_close()
-	local s = self.s; self.s = nil --make closed() true.
-	local ok, err = check(C.close(s) == 0)
-	cancel_wait_io(self)
-	return ok, err
-end
-
 local EAGAIN      = 11
 local EWOULDBLOCK = 11
 local EINPROGRESS = 115
@@ -814,37 +746,41 @@ end
 
 local function make_async(for_writing, returns_n, func, wait_errno)
 	return function(self, ...)
-		::again::
-		local ret = func(self, ...)
-		if ret >= 0 then
-			if returns_n then
+		while 1 do
+			local ret = func(self, ...)
+			if ret >= 0 then
+				if returns_n then
+					if for_writing then
+						self.w = self.w + ret
+					else
+						self.r = self.r + ret
+					end
+				end
+				return ret
+			end
+			local errno = errno()
+			if errno == wait_errno then
 				if for_writing then
-					self.w = self.w + ret
+					if self.send_expires then
+						send_expires_heap:push(self)
+					end
+					self.send_thread = currentthread()
 				else
-					self.r = self.r + ret
+					if self.recv_expires then
+						recv_expires_heap:push(self)
+					end
+					self.recv_thread = currentthread()
 				end
-			end
-			return ret
-		end
-		if errno() == wait_errno then
-			if for_writing then
-				if self.send_expires then
-					send_expires_heap:push(self)
+				local ok, err = wait_io()
+				if not ok then
+					return nil, err
 				end
-				self.send_thread = currentthread()
+				goto again
 			else
-				if self.recv_expires then
-					recv_expires_heap:push(self)
-				end
-				self.recv_thread = currentthread()
+				local ok, err = check(nil, errno)
+				return ok, err, errno
 			end
-			local ok, err = wait_io()
-			if not ok then
-				return nil, err
-			end
-			goto again
 		end
-		return check()
 	end
 end
 
@@ -951,14 +887,8 @@ local socket_send = make_async(true, true, function(self, buf, len, flags)
 	return C.send(self.s, buf, len, flags or MSG_NOSIGNAL)
 end, EWOULDBLOCK)
 
-function tcp:_send(buf, len, flags)
-	if not self.s then return nil, 'closed' end
-	len = len or #buf
-	if len == 0 then return 0 end --mask-out null-writes
-	return socket_send(self, buf, len, flags)
-end
-
 function udp:try_send(buf, len, flags)
+	if not self.s then return nil, 'closed' end
 	return socket_send(self, buf, len or #buf, flags)
 end
 
@@ -981,8 +911,8 @@ function udp:try_sendto(host, port, buf, len, flags, addr_flags)
 	local ai, ext_ai = self:addr(host, port, addr_flags)
 	if not ai then return nil, ext_ai end
 	local len, err = udp_sendto(self, ai, buf, len, flags)
-	if not len then return nil, err end
 	if not ext_ai then ai:free() end
+	if not len then return nil, err end
 	return len
 end
 
@@ -1194,7 +1124,7 @@ do
 	end
 end
 
---shutodnw() -----------------------------------------------------------------
+--shutdown() -----------------------------------------------------------------
 
 cdef[[
 int shutdown(SOCKET s, int how);
@@ -1246,7 +1176,7 @@ function tcp:try_listen(backlog, host, port, onaccept, addr_flags)
 	if not isnum(backlog) then
 		backlog, host, port, onaccept, addr_flags = 1/0, backlog, host, port, onaccept
 	end
-	log('', 'sock', 'listen?', '%-4s %s:%d', self, host, port)
+	log('', 'sock', 'listen?', '%-4s %s:%d', self, host or '*', port or	0)
 	if not self.bound_addr then
 		local ok, err = self:try_bind(host, port, addr_flags)
 		if not ok then return nil, err end
@@ -1328,158 +1258,71 @@ end
 
 local function nyi() error'NYI' end
 
-local get_protocol_info = nyi
-local set_linger = nyi
-local get_csaddr_info = nyi
-
 local OPT, get_opt, set_opt
 
 OPT = {
-	debug             = 1,
-	reuseaddr         = 2,
-	type              = 3,
-	error             = 4,
-	dontroute         = 5,
-	broadcast         = 6,
-	sndbuf            = 7,
-	rcvbuf            = 8,
-	sndbufforce       = 32,
-	rcvbufforce       = 33,
-	keepalive         = 9,
-	oobinline         = 10,
-	no_check          = 11,
-	priority          = 12,
-	linger            = 13,
-	bsdcompat         = 14,
-	reuseport         = 15,
-	passcred          = 16,
-	peercred          = 17,
-	rcvlowat          = 18,
-	sndlowat          = 19,
-	rcvtimeo          = 20,
-	sndtimeo          = 21,
-	security_authentication = 22,
-	security_encryption_transport = 23,
-	security_encryption_network = 24,
-	bindtodevice      = 25,
-	attach_filter     = 26,
-	detach_filter     = 27,
-	get_filter        = 26, --attach_filter
-	peername          = 28,
-	timestamp         = 29,
-	scm_timestamp     = 29, --timestamp
-	acceptconn        = 30, --socket is listening
-	peersec           = 31,
-	passsec           = 34,
-	timestampns       = 35,
-	scm_timestampns   = 35, --timestampns
-	mark              = 36,
-	timestamping      = 37,
-	scm_timestamping  = 37, --timestamping
-	protocol          = 38,
-	domain            = 39,
-	rxq_ovfl          = 40,
-	wifi_status       = 41,
-	scm_wifi_status   = 41, --wifi_status
-	peek_off          = 42,
-	nofcs             = 43,
-	lock_filter       = 44,
-	select_err_queue  = 45,
-	busy_poll         = 46,
-	max_pacing_rate   = 47,
-	bpf_extensions    = 48,
-	incoming_cpu      = 49,
-	attach_bpf        = 50,
-	detach_bpf        = 27, --detach_filter
-	attach_reuseport_cbpf = 51,
-	attach_reuseport_ebpf = 52,
-	cnx_advice        = 53,
-	scm_timestamping_opt_stats = 54,
-	meminfo           = 55,
-	incoming_napi_id  = 56,
-	cookie            = 57,
-	scm_timestamping_pktinfo = 58,
-	peergroups        = 59,
-	zerocopy          = 60,
+	--SOL_SOCKET options
+	debug             = 1,  --enable socket debugging
+	reuseaddr         = 2,  --allow local address reuse
+	type              = 3,  --get socket type (RO)
+	error             = 4,  --get and clear pending error (RO)
+	dontroute         = 5,  --bypass routing table
+	broadcast         = 6,  --allow sending broadcast datagrams
+	sndbuf            = 7,  --send buffer size
+	rcvbuf            = 8,  --receive buffer size
+	keepalive         = 9,  --enable keep-alive probes
+	oobinline         = 10, --receive OOB data inline
+	priority          = 12, --set packet priority
+	linger            = 13, --linger on close if data is present
+	reuseport         = 15, --allow multiple sockets to bind to same port
+	rcvlowat          = 18, --min bytes before socket is readable
+	sndlowat          = 19, --min bytes before socket is writable
+	rcvtimeo          = 20, --receive timeout (kernel-level)
+	sndtimeo          = 21, --send timeout (kernel-level)
+	bindtodevice      = 25, --bind to a specific network interface
+	acceptconn        = 30, --is socket listening (RO)
+	protocol          = 38, --get socket protocol (RO)
+	domain            = 39, --get socket domain/family (RO)
+	busy_poll         = 46, --busy-poll timeout in usec
+	zerocopy          = 60, --enable MSG_ZEROCOPY sends
 }
 
 get_opt = {
-	error             = get_error,
-	reuseaddr         = get_bool,
-	rcvbuf            = get_uint,
-	sndbuf            = get_uint,
 	debug             = get_bool,
-	--type              = ,
+	reuseaddr         = get_bool,
+	type              = get_int,
+	error             = get_error,
 	dontroute         = get_bool,
 	broadcast         = get_bool,
-	--sndbufforce       = ,
-	--rcvbufforce       = ,
+	sndbuf            = get_uint,
+	rcvbuf            = get_uint,
 	keepalive         = get_bool,
-	--oobinline         = ,
-	--no_check          = ,
-	--priority          = ,
-	--linger            = ,
-	--bsdcompat         = ,
-	--reuseport         = ,
-	--passcred          = ,
-	--peercred          = ,
-	--rcvlowat          = ,
-	--sndlowat          = ,
-	--rcvtimeo          = ,
-	--sndtimeo          = ,
-	--security_authentication       = ,
-	--security_encryption_transport = ,
-	--security_encryption_network   = ,
-	--bindtodevice      = ,
-	--attach_filter     = ,
-	--detach_filter     = ,
-	--get_filter        = , --attach_filter
-	--peername          = ,
-	--timestamp         = ,
-	--scm_timestamp     = , --timestamp
-	acceptconn        = get_bool, --socket is listening
-	--peersec           = ,
-	--passsec           = ,
-	--timestampns       = ,
-	--scm_timestampns   = , --timestampns
-	--mark              = ,
-	--timestamping      = ,
-	--scm_timestamping  = , --timestamping
-	--protocol          = ,
-	--domain            = ,
-	--rxq_ovfl          = ,
-	--wifi_status       = ,
-	--scm_wifi_status   = , --wifi_status
-	--peek_off          = ,
-	--nofcs             = ,
-	--lock_filter       = ,
-	--select_err_queue  = ,
-	--busy_poll         = ,
-	--max_pacing_rate   = ,
-	--bpf_extensions    = ,
-	--incoming_cpu      = ,
-	--attach_bpf        = ,
-	--detach_bpf        = , --detach_filter
-	--attach_reuseport_cbpf = ,
-	--attach_reuseport_ebpf = ,
-	--cnx_advice        = ,
-	--scm_timestamping_opt_stats = ,
-	--meminfo           = ,
-	--incoming_napi_id  = ,
-	--cookie            = ,
-	--scm_timestamping_pktinfo = ,
-	--peergroups        = ,
-	--zerocopy          = ,
+	oobinline         = get_bool,
+	priority          = get_int,
+	reuseport         = get_bool,
+	rcvlowat          = get_int,
+	sndlowat          = get_int,
+	acceptconn        = get_bool,
+	protocol          = get_int,
+	domain            = get_int,
+	busy_poll         = get_int,
+	zerocopy          = get_bool,
 }
 
 set_opt = {
-	reuseaddr         = set_bool,
-	rcvbuf            = set_uint,
-	sndbuf            = set_uint,
-	broadcast         = set_bool,
 	debug             = set_bool,
+	reuseaddr         = set_bool,
 	dontroute         = set_bool,
+	broadcast         = set_bool,
+	sndbuf            = set_uint,
+	rcvbuf            = set_uint,
 	keepalive         = set_bool,
+	oobinline         = set_bool,
+	priority          = set_int,
+	reuseport         = set_bool,
+	rcvlowat          = set_int,
+	busy_poll         = set_int,
+	zerocopy          = set_bool,
 }
 
 local function parse_opt(k)
@@ -1511,14 +1354,15 @@ end --do
 --tcp repeat I/O -------------------------------------------------------------
 
 function tcp:try_send(buf, sz)
+	if not self.s then return nil, 'closed' end
 	sz = sz or #buf
+	if sz == 0 then return true end --mask-out null-writes
 	local sz0 = sz
 	while true do
-		local len, err = self:_send(buf, sz)
+		local len, err = socket_send(self, buf, sz, flags)
 		if len == sz then
 			break
-		end
-		if not len then --short write
+		elseif not len then --short write
 			return nil, err, sz0 - sz
 		end
 		assert(len > 0)
@@ -1532,7 +1376,6 @@ function tcp:try_send(buf, sz)
 end
 
 function tcp:try_recvn(buf, sz)
-	local buf0, sz0 = buf, sz
 	local buf = cast(u8p, buf)
 	while sz > 0 do
 		local len, err = self:try_recv(buf, sz)
@@ -1544,15 +1387,16 @@ function tcp:try_recvn(buf, sz)
 		buf = buf + len
 		sz  = sz  - len
 	end
-	return buf0, sz0
+	return true
 end
 
 function tcp:try_recvall()
-	return readall(self.recv, self)
+	return readall(self.try_recv, self)
 end
+tcp.recvall = unprotect_io(tcp.try_recvall)
 
-function tcp:recvall_read()
-	return buffer_reader(self:recvall())
+function tcp:try_recvall_read()
+	return buffer_reader(self:try_recvall())
 end
 
 --sleeping & timers ----------------------------------------------------------
@@ -1658,8 +1502,7 @@ end
 
 --hi-level APIs --------------------------------------------------------------
 
-function socket:setexpires(rw, expires)
-	if not isstr(rw) then rw, expires = nil, rw end
+function socket:setexpires(expires, rw)
 	local r = rw == 'r' or not rw
 	local w = rw == 'w' or not rw
 	if r then self.recv_expires = expires end
@@ -2018,37 +1861,8 @@ function run(f, ...)
 	end
 end
 
-function chan() --golang-like unbuffered channels (untested)
-	local c = {}
-	local get_thread
-	local put_thread
-	local function reset(...)
-		get_thread = nil
-		return ...
-	end
-	function c:get()
-		assert(not get_thread)
-		get_thread = currentthread()
-		if put_thread then
-			return reset(transfer(put_thread))
-		end
-		return reset(suspend()) --wait for :put() to resume() us
-	end
-	function c:put(...)
-		assert(not put_thread)
-		if not get_thread then
-			put_thread = currentthread()
-			suspend() --wait for :get() to transfer() to us
-			put_thread = nil
-			assert(get_thread)
-		end
-		resume(get_thread, ...)
-	end
-	return c
-end
-
 --init stdin/out/err as async pipes ------------------------------------------
 
-stdin_async_pipe  = memoize(function() require'fs'; return file_wrap_fd(0, null, true, 'pipe', '<stdin>' ) end)
-stdout_async_pipe = memoize(function() require'fs'; return file_wrap_fd(1, null, true, 'pipe', '<stdout>') end)
-stderr_async_pipe = memoize(function() require'fs'; return file_wrap_fd(2, null, true, 'pipe', '<stderr>') end)
+stdin_async_pipe  = memoize(function() require'fs'; return file_wrap_fd(0, nil, 'pipe', true, '<stdin>' ) end)
+stdout_async_pipe = memoize(function() require'fs'; return file_wrap_fd(1, nil, 'pipe', true, '<stdout>') end)
+stderr_async_pipe = memoize(function() require'fs'; return file_wrap_fd(2, nil, 'pipe', true, '<stderr>') end)

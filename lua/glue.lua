@@ -2552,7 +2552,7 @@ function dynarray_loader(dynarr)
 	return get, put, collect
 end
 
---load up a dynarray with repeated reads given a read(self, buf, sz, expires) method.
+--load up a dynarray with repeated reads given a read(self, buf, sz, ...) method.
 function readall(try_read, self, ...)
 	local get, put, collect = dynarray_loader()
 	while true do
@@ -2634,7 +2634,10 @@ case-by-case in fs and sock. See try_accept() for how to fix it.
 
 local function io_error_init(self)
 	if self.target then
-		self.target:try_close()
+		local ok, err = self.target:try_close()
+		if not ok then
+			self.message = self.message..'\nclose() also failed: '..err
+		end
 	end
 end
 
