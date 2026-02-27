@@ -93,7 +93,7 @@ function logging:tofile(logfile, max_size, queue_size)
 		if max_size and size + len > max_size / 2 then
 			f:close()
 			f = nil
-			mv(logfile, logfile0)
+			rename(logfile, logfile0)
 			open_logfile()
 		end
 	end
