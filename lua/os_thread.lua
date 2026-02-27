@@ -101,8 +101,6 @@ NOTES ------------------------------------------------------------------------
 Creating hi-level threads is slow because Lua modules must be loaded
 every time for each thread. For best results, use a thread pool.
 
-On Windows, the current directory is per thread! Same goes for env vars.
-
 ]=]
 
 if not ... then require'os_thread_test'; return end

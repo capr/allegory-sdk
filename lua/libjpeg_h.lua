@@ -2,13 +2,8 @@
 --added a few new typedefs for useful structs and callbacks.
 local ffi = require'ffi'
 
-if ffi.os == 'Windows' then
-	ffi.cdef'typedef unsigned char boolean;' --can you believe it?
-else
-	ffi.cdef'typedef int boolean;'
-end
-
 ffi.cdef[[
+typedef int boolean;
 typedef struct FILE FILE;
 
 enum {

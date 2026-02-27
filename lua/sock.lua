@@ -349,7 +349,7 @@ local coro_safewrap = coro.safewrap
 local coro_transfer = coro.transfer
 local coro_finish   = coro.finish
 
-assert(Linux, 'unsupported platform')
+assert(Linux, 'platform not Linux')
 
 local C = C
 

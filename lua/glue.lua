@@ -3,6 +3,10 @@
 	Lua "assorted lengths of wire" library.
 	Written by Cosmin Apreutesei. Public domain.
 
+TYPES MATH VARARGS ARRAYS TABLES CACHING STRINGS STDOUT/ERR
+ITERATORS CALLBACKS OBJECTS PROCESS-CONTROL TIME DATES ERRORS MODULES
+EVAL BITS FFI ALLOCATION CONFIG DEBUGGING LOGGING SERIALIZATION
+
 TYPES
 	typeof                       = type
 	isstr(v)                       is v a string
@@ -126,7 +130,7 @@ STRINGS
 	capitalize(s) -> s             capitalize words
 	html_escape(s) -> s            escape HTML string
 	kbytes(x [,decimals]) -> s     format byte size in k/M/G/T-bytes
-STDOUT & STDERR
+STDOUT/ERR
 	print_function(write, [format], [newline]) -> f  create a print()-like function
 	printf(fmt, ...)               print with string formatting
 	say([fmt, ...])                print to stderr
@@ -147,13 +151,12 @@ OBJECTS
 	override(class, method_name, f)   override a method
 	gettersandsetters([gets], [sets], [super]) -> mt    add virtual properties
 PLATFORM
-	Windows, win                   true if platform is Windows
+	Windows                        true if platform is Windows
 	Linux                          true if platform is Linux
 	OSX                            true if platform is OSX
 PROCESS CONTROL
 	sleep(s)                       suspend process i.e. blocking sleep
 	exit                         = os.exit
-	env                          = os.getenv
 TIME & DATES
 	now() -> ts                    os.time() but more accurate
 	clock() -> x                   os.clock() but more accurate
@@ -195,10 +198,8 @@ MODULES
 	add_searchpath(searchpath, path, [index], [extension], [init], [prefix]) -> searchpath
 	luapath(path [,index [,ext]])  insert a path in package.path
 	luacpath(path [,index])        insert a path in package.cpath
-	sopath(path)                   set shared library path for ffi.load()
-LUA ALLOCATION
-	freelist([create], [destroy]) -> alloc,free   freelist allocation pattern
-INTERPRETER
+	sopath(path)                   add a search path for ffi.load()
+EVAL
 	[try_]eval(s) -> ...         = loadstring('return '..s)
 BITS
 	bit                          = require'bit'
@@ -233,7 +234,8 @@ FFI
 	ptr(p)                       = p ~= nil and p  or nil
 	ptr_serialize(p) -> n|s             store pointer address in Lua value
 	ptr_deserialize([ct,]n|s) -> p      convert address to pointer
-FFI ALLOCATION
+ALLOCATION
+	freelist([create], [destroy]) -> alloc,free   Lua freelist allocation pattern
 	buffer([ct]) -> alloc
 	  alloc(len) -> buf,len        alloc len and get a buffer
 	dynarray([ct][,cap]) -> alloc
@@ -252,7 +254,6 @@ FFI ALLOCATION
 	realloc(p, size) -> p          C realloc
 	free(p)                        C free
 	memcmp(p1, p2, sz) -> i        memcmp
-
 CONFIG
 	config(k[, default]) -> v      get/set global config value
 	with_config(conf, f, ...) -> ...    run f with custom config table
@@ -260,7 +261,7 @@ CONFIG
 	load_config_string(s)          load config from string
 DEBUGGING
 	traceback                    = debug.traceback
-   trace()                        print current stack trace to stderr
+	trace()                        print current stack trace to stderr
 	pr(...)                        print to stderr with logargs
 LOGGING
 	see logging.lua
@@ -1421,8 +1422,6 @@ function die(fmt, ...)
 	os.exit(1)
 end
 
-env = os.getenv --replaced by proc module.
-
 --iterators ------------------------------------------------------------------
 
 --run an iterator and collect the i-th return value into a list.
@@ -2102,18 +2101,15 @@ function autoload(t, k, v)
 	return t
 end
 
---portable way to get script's directory, based on arg[0].
+--get script's directory, based on arg[0].
 --NOTE: the path is not absolute, but relative to the starting current directory!
---NOTE: for bundled executables, this returns the executable's directory.
-local arg0 = rawget(_G, 'arg') and arg[0]
-local dir = arg0 and arg0:gsub('[/\\]?[^/\\]+$', '') or '' --remove file name
+local arg0 = rawget(_G, 'arg')[0]
+local dir = arg0:gsub('[/\\]?[^/\\]+$', '') --remove file name
 rel_scriptdir = dir == '' and '.' or dir
 
---portable way to get script's name without Lua file extension, based on arg[0].
+--get script's name without Lua file extension, based on arg[0].
 --NOTE: for bundled executables, this returns the executable's name.
-scriptname = arg0
-	and (win and arg0:gsub('%.exe$', '') or arg0)
-		:gsub('%.lua$', ''):match'[^/\\]+$'
+scriptname = arg0:gsub('%.lua$', ''):match'[^/\\]+$'
 
 function add_searchpath(searchpath, path, index, ext, init, prefix)
 	index = index or 1
@@ -2131,30 +2127,23 @@ function add_searchpath(searchpath, path, index, ext, init, prefix)
 	return concat(paths, tsep)
 end
 
---portable way to add more paths to package.path, at any place in the list.
+--add more paths to package.path, at any place in the list.
 --negative indices count from the end of the list like string.sub().
 --index 'after' means 0. `ext` specifies the file extension to use.
 function luapath(path, index, ext)
 	package.path = add_searchpath(package.path, path, index, ext or 'lua', true)
 end
 
---portable way to add more paths to package.cpath, at any place in the list.
+--add more paths to package.cpath, at any place in the list.
 --negative indices count from the end of the list like string.sub().
 --index 'after' means 0.
 function luacpath(path, index)
 	package.cpath = add_searchpath(package.cpath, path, index)
 end
 
---NOTE: unlike luapath() and luacpath(), calling this repeatedly doesn't add
---new paths to search, but replaces the path every time!
 function sopath(path)
-	if win then
-		require'winapi.winbase'
-		require'winapi'.SetDllDirectory(path)
-	else
-		require'proc'
-		env('LD_LIBRARY_PATH', path)
-	end
+	require'proc'
+	env('LD_LIBRARY_PATH', (env('LD_LIBRARY_PATH') or '')..';'..path)
 end
 
 --allocation -----------------------------------------------------------------
@@ -2320,7 +2309,6 @@ isctype = ffi.istype
 errno  = ffi.errno
 _G.str = str
 _G[ffi.os] = true --Windows, Linux, OSX
-win    = Windows
 
 local
 	C, cast, copy, ctype =
