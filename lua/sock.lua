@@ -228,7 +228,7 @@ tcp:[try_]recvall() -> buf,len | nil,err,buf,len
 	Receive until closed into an accumulating buffer. If an error occurs
 	before the socket is closed, the partial buffer and length is returned after it.
 
-tcp:recvall_read() -> read
+tcp:[try_]recvall_read() -> read
 
 	Receive all data into a buffer and make a `read` function that consumes it.
 	Useful for APIs that require an input `read` function that cannot yield.
@@ -365,7 +365,7 @@ function issocket(s)
 end
 
 --forward declarations
-local check, _poll, wait_io, cancel_wait_io, create_socket, wrap_socket, waiting
+local check, _poll, wait_io, cancel_wait_io, wrap_socket, waiting
 
 --NOTE: close() returns `false` on error but it should be ignored.
 function socket:try_close()
@@ -685,7 +685,7 @@ ssize_t write(int fd, const void *buf, size_t count);
 local SOCK_NONBLOCK  = 0x000800 --async I/O
 local SOCK_CLOEXEC   = 0x080000 --close-on-exec
 
---[[local]] function create_socket(opt, class, socktype, family, protocol)
+local function create_socket(opt, class, socktype, family, protocol)
 	local st, af, pr = socketargs(socktype, family or 'inet', protocol)
 	local s = C.socket(af, bor(st, SOCK_NONBLOCK, SOCK_CLOEXEC), pr)
 	assert(check(s ~= -1))
@@ -775,7 +775,6 @@ local function make_async(for_writing, returns_n, func, wait_errno)
 				if not ok then
 					return nil, err
 				end
-				goto again
 			else
 				local ok, err = check(nil, errno)
 				return ok, err, errno
@@ -789,6 +788,7 @@ local _connect = make_async(true, false, function(self, ai)
 end, EINPROGRESS)
 
 function tcp:try_connect(host, port, addr_flags)
+	if not self.s then return nil, 'closed' end
 	log('', 'sock', 'connect?', '%-4s %s:%s', self, host, port)
 	local ai, ext_ai = self:addr(host, port, addr_flags)
 	if not ai then return false, ext_ai end
@@ -835,6 +835,7 @@ do
 	end, EWOULDBLOCK)
 
 	function tcp:try_accept(opt)
+		if not self.s then return nil, 'closed' end
 		local s, err, errno = tcp_accept(self)
 		local retry =
 			   errno == ENETDOWN
@@ -907,6 +908,7 @@ local udp_sendto = make_async(true, true, function(self, ai, buf, len, flags)
 end, EWOULDBLOCK)
 
 function udp:try_sendto(host, port, buf, len, flags, addr_flags)
+	if not self.s then return nil, 'closed' end
 	len = len or #buf
 	local ai, ext_ai = self:addr(host, port, addr_flags)
 	if not ai then return nil, ext_ai end
@@ -927,6 +929,7 @@ do
 	end, EWOULDBLOCK)
 
 	function udp:try_recvnext(buf, len, flags)
+		if not self.s then return nil, 'closed' end
 		assert(len > 0)
 		local len, err = udp_recvnext(self, buf, len, flags)
 		if not len then return nil, err end
@@ -1258,78 +1261,141 @@ end
 
 local function nyi() error'NYI' end
 
+local SOL_SOCKET  = 1
+local IPPROTO_IP  = 0
+local IPPROTO_TCP = 6
+local IPPROTO_UDP = 17
+local IPPROTO_IPV6 = 41
+
 local OPT, get_opt, set_opt
 
 OPT = {
-	--SOL_SOCKET options
-	debug             = 1,  --enable socket debugging
+	--SOL_SOCKET options (no prefix)
 	reuseaddr         = 2,  --allow local address reuse
 	type              = 3,  --get socket type (RO)
 	error             = 4,  --get and clear pending error (RO)
-	dontroute         = 5,  --bypass routing table
 	broadcast         = 6,  --allow sending broadcast datagrams
 	sndbuf            = 7,  --send buffer size
 	rcvbuf            = 8,  --receive buffer size
 	keepalive         = 9,  --enable keep-alive probes
-	oobinline         = 10, --receive OOB data inline
 	priority          = 12, --set packet priority
-	linger            = 13, --linger on close if data is present
 	reuseport         = 15, --allow multiple sockets to bind to same port
-	rcvlowat          = 18, --min bytes before socket is readable
-	sndlowat          = 19, --min bytes before socket is writable
-	rcvtimeo          = 20, --receive timeout (kernel-level)
-	sndtimeo          = 21, --send timeout (kernel-level)
 	bindtodevice      = 25, --bind to a specific network interface
 	acceptconn        = 30, --is socket listening (RO)
 	protocol          = 38, --get socket protocol (RO)
 	domain            = 39, --get socket domain/family (RO)
-	busy_poll         = 46, --busy-poll timeout in usec
-	zerocopy          = 60, --enable MSG_ZEROCOPY sends
+	--IPPROTO_TCP options (tcp_ prefix)
+	tcp_nodelay       =  1, --disable Nagle's algorithm
+	tcp_maxseg        =  2, --max segment size
+	tcp_cork          =  3, --cork output (accumulate before sending)
+	tcp_keepidle      =  4, --idle time before keepalive probes (seconds)
+	tcp_keepintvl     =  5, --time between keepalive probes (seconds)
+	tcp_keepcnt       =  6, --max keepalive probes before drop
+	tcp_defer_accept  =  9, --wake listener only when data arrives (seconds)
+	tcp_quickack      = 12, --enable quickack mode
+	tcp_user_timeout  = 18, --max time for unacked data (ms)
+	tcp_fastopen      = 23, --max pending TFO SYNs on listener
+	tcp_fastopen_connect = 30, --defer connect until data is sent
+	--IPPROTO_IP options (ip_ prefix)
+	ip_tos            =  1, --type-of-service byte
+	ip_ttl            =  2, --time-to-live
+	ip_multicast_ttl  = 33, --multicast TTL
+	ip_multicast_loop = 34, --multicast loopback
+	ip_multicast_if   = 32, --multicast interface address
+	ip_freebind       = 15, --bind to nonlocal address
+	--IPPROTO_IPV6 options (ipv6_ prefix)
+	ipv6_v6only       = 26, --restrict to IPv6 only
+	--IPPROTO_UDP options (udp_ prefix)
+	udp_cork          =  1, --cork output (accumulate datagrams)
 }
 
 get_opt = {
-	debug             = get_bool,
+	--SOL_SOCKET
 	reuseaddr         = get_bool,
 	type              = get_int,
 	error             = get_error,
-	dontroute         = get_bool,
 	broadcast         = get_bool,
 	sndbuf            = get_uint,
 	rcvbuf            = get_uint,
 	keepalive         = get_bool,
-	oobinline         = get_bool,
 	priority          = get_int,
 	reuseport         = get_bool,
-	rcvlowat          = get_int,
-	sndlowat          = get_int,
 	acceptconn        = get_bool,
 	protocol          = get_int,
 	domain            = get_int,
-	busy_poll         = get_int,
-	zerocopy          = get_bool,
+	--IPPROTO_TCP
+	tcp_nodelay       = get_bool,
+	tcp_maxseg        = get_int,
+	tcp_cork          = get_bool,
+	tcp_keepidle      = get_int,
+	tcp_keepintvl     = get_int,
+	tcp_keepcnt       = get_int,
+	tcp_defer_accept  = get_int,
+	tcp_quickack      = get_bool,
+	tcp_user_timeout  = get_uint,
+	tcp_fastopen      = get_int,
+	tcp_fastopen_connect = get_bool,
+	--IPPROTO_IP
+	ip_tos            = get_int,
+	ip_ttl            = get_int,
+	ip_multicast_ttl  = get_int,
+	ip_multicast_loop = get_bool,
+	ip_freebind       = get_bool,
+	--IPPROTO_IPV6
+	ipv6_v6only       = get_bool,
+	--IPPROTO_UDP
+	udp_cork          = get_bool,
 }
 
 set_opt = {
-	debug             = set_bool,
+	--SOL_SOCKET
 	reuseaddr         = set_bool,
-	dontroute         = set_bool,
 	broadcast         = set_bool,
 	sndbuf            = set_uint,
 	rcvbuf            = set_uint,
 	keepalive         = set_bool,
-	oobinline         = set_bool,
 	priority          = set_int,
 	reuseport         = set_bool,
-	rcvlowat          = set_int,
-	busy_poll         = set_int,
-	zerocopy          = set_bool,
+	bindtodevice      = set_int,
+	--IPPROTO_TCP
+	tcp_nodelay       = set_bool,
+	tcp_maxseg        = set_int,
+	tcp_cork          = set_bool,
+	tcp_keepidle      = set_int,
+	tcp_keepintvl     = set_int,
+	tcp_keepcnt       = set_int,
+	tcp_defer_accept  = set_int,
+	tcp_quickack      = set_bool,
+	tcp_user_timeout  = set_uint,
+	tcp_fastopen      = set_int,
+	tcp_fastopen_connect = set_bool,
+	--IPPROTO_IP
+	ip_tos            = set_int,
+	ip_ttl            = set_int,
+	ip_multicast_ttl  = set_int,
+	ip_multicast_loop = set_bool,
+	ip_freebind       = set_bool,
+	--IPPROTO_IPV6
+	ipv6_v6only       = set_bool,
+	--IPPROTO_UDP
+	udp_cork          = set_bool,
 }
 
+local opt_levels = {
+	tcp_  = IPPROTO_TCP,
+	ip_   = IPPROTO_IP,
+	ipv6_ = IPPROTO_IPV6,
+	udp_  = IPPROTO_UDP,
+}
 local function parse_opt(k)
 	local opt = assertf(OPT[k], 'invalid socket option: %s', k)
-	local level =
-		(k:find('tcp_', 1, true) and 6) --TCP protocol number
-		or 1 --SOL_SOCKET
+	local level = SOL_SOCKET
+	for prefix, proto in pairs(opt_levels) do
+		if k:find(prefix, 1, true) == 1 then
+			level = proto
+			break
+		end
+	end
 	return opt, level
 end
 
@@ -1353,7 +1419,7 @@ end --do
 
 --tcp repeat I/O -------------------------------------------------------------
 
-function tcp:try_send(buf, sz)
+function tcp:try_send(buf, sz, flags)
 	if not self.s then return nil, 'closed' end
 	sz = sz or #buf
 	if sz == 0 then return true end --mask-out null-writes
@@ -1376,6 +1442,7 @@ function tcp:try_send(buf, sz)
 end
 
 function tcp:try_recvn(buf, sz)
+	local sz0 = sz
 	local buf = cast(u8p, buf)
 	while sz > 0 do
 		local len, err = self:try_recv(buf, sz)
@@ -1393,11 +1460,13 @@ end
 function tcp:try_recvall()
 	return readall(self.try_recv, self)
 end
-tcp.recvall = unprotect_io(tcp.try_recvall)
 
 function tcp:try_recvall_read()
-	return buffer_reader(self:try_recvall())
+	local buf, len = self:try_recvall()
+	if not buf then return nil, len end
+	return buffer_reader(buf, len)
 end
+tcp.recvall_read = unprotect_io(tcp.try_recvall_read)
 
 --sleeping & timers ----------------------------------------------------------
 
@@ -1557,9 +1626,9 @@ end
 	log('', 'sock', 'create', '%-4s', s)
 	return s
 end
-function _G.tcp        (opt, ...)  return create_socket(opt, tcp , 'tcp' , ...) end
-function _G.udp        (opt, ...)  return create_socket(opt, udp , 'udp' , ...) end
-function _G.rawsocket  (opt, ...)  return create_socket(opt, raw , 'raw' , ...) end
+function _G.tcp       (opt, ...) return create_socket(opt, tcp , 'tcp' , ...) end
+function _G.udp       (opt, ...) return create_socket(opt, udp , 'udp' , ...) end
+function _G.rawsocket (opt, ...) return create_socket(opt, raw , 'raw' , ...) end
 
 update(tcp, socket)
 update(udp, socket)
@@ -1573,9 +1642,14 @@ local create_tcp = _G.tcp
 
 function try_connect(self, host, port, timeout)
 	if not issocket(self) then
+		local host, port, timeout = self, host, port
 		local ai, err = try_getaddrinfo(host, port)
 		if not ai then return nil, err end
-		return try_connect(create_tcp(ai:family()), self, ai)
+		local s = create_tcp(ai:family())
+		local s, err = try_connect(s, ai, nil, timeout)
+		ai:free()
+		if not s then return nil, err end
+		return s
 	end
 	self:settimeout(timeout)
 	local ok, err = self:try_connect(host, port)
