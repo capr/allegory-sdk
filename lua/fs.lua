@@ -880,6 +880,7 @@ end
 file.write = unprotect_io(file.try_write)
 
 function file.try_readn(f, buf, sz)
+	local sz0 = sz
 	local buf = cast(u8p, buf)
 	while sz > 0 do
 		local len, err = f:try_read(buf, sz)
