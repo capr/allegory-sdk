@@ -18,7 +18,7 @@ FILE OBJECTS
 	[try_]open(opt | path,[mode]) -> f            open file
 	f:[try_]close()                               close file
 	f:closed() -> true|false                      check if file is closed
-	isfile(f [,'file'|'pipe']) -> true|false      check if f is a file or pipe
+	isfile(f [,type]) -> true|false               check if f is a file or pipe
 	f.fd -> fd                                    POSIX file descriptor
 PIPES
 	[try_]pipe([opt]) -> rf, wf                   create an anonymous pipe
@@ -30,16 +30,16 @@ FILE I/O
 	f:[try_]write(s | buf,len) -> true            write data to file
 	f:[try_]sync()                                sync kernel write buffer to disk
 	f:[try_]seek([whence] [, offset]) -> pos      get/set the file pointer
-	f:[try_]skip(n) -> n                          skip bytes
-	f:[try_]truncate(size, [opt])                 truncate file to current file pointer
+	f:[try_]skip(n) -> actual_n                   skip bytes
+	f:[try_]truncate(size, [opt])                 truncate file and set pointer to end
 	f:[un]buffered_reader([bufsize]) -> read(buf, sz)   get read(buf, sz)
 OPEN FILE ATTRIBUTES
 	f:[try_]attr([attr]) -> val|t                 get/set attribute(s) of open file
 	f:[try_]size() -> n                           get file size
 	f:set_inheritable(true|false)                 change O_CLOEXEC flag
 FILE LOCKING
-	f:[try_]lock(['sh'|'ex'], [async])
-	f:[try_]unlock([async])
+	f:[try_]lock(['sh'|'ex'], [nonblock])
+	f:[try_]unlock([nonblock])
 DIRECTORY LISTING
 	ls(dir, [opt]) -> iter() -> name,d | false,err   contents iterator
 	  d:next() -> name,d | false,err              call the iterator explicitly
@@ -61,7 +61,7 @@ DIRECTORY LISTING
 	  sc:depth([n]) -> n (from 1)
 FILE ATTRIBUTES
 	[try_]file_attr(path, [attr, ][deref]) -> t|val     get/set file attribute(s)
-	file_is(path, [type], [deref]) -> t|f,['not_found'] check if file exists or is of a certain type
+	[try_]file_is(path, [type], [deref]) -> t|f,['not_found'] check if file exists or is of a certain type
 	exists                                      = file_is
 	checkexists(path, [type], [deref])            assert that file exists
 	[try_]mtime(path, [deref]) -> ts              get file's modification time
@@ -92,7 +92,7 @@ COMMON PATHS
 	vardir() -> path                              get script's private r/w directory
 	varpath(...) -> path                          get vardir-relative path
 LOW LEVEL
-	file_wrap_fd(fd, ...) -> f                    wrap opened file descriptor
+	file_wrap_fd(fd, opt) -> f                    wrap opened file descriptor
 FILESYSTEM INFO
 	fs_info(path) -> {size=, free=}               get free/total disk space for a path
 HI-LEVEL APIs
@@ -166,7 +166,7 @@ mode:
 	'r'  : open; allow reading only (default)
 	'r+' : open; allow reading and writing
 	'w'  : open and truncate or create; allow writing only
-	'w+' : open or create; allow reading and writing
+	'w+' : open and truncate or create; allow reading and writing
 	'a'  : open or create; allow appending only
 	'a+' : open or create; allow reading and appending only
 
@@ -194,20 +194,9 @@ Pipes ------------------------------------------------------------------------
 		* `inheritable`, `read_inheritable`, `write_inheritable`: make one
 		or both pipes inheritable by sub-processes.
 
-[try_]pipe(path|{path=,...}) -> pf
-
-	Create and open a named pipe.
-
 [try_]mkfifo(path, [perms]) -> true[,'already_exists']
 
 	Create a named pipe.
-
-Stdio Streams ----------------------------------------------------------------
-
-f:stream(mode) -> fs
-
-	Open a `FILE*` object from a file. The file should not be used anymore while
-	a stream is open on it and `fs:close()` should be called to close the file.
 
 fs:[try_]close()
 
@@ -372,7 +361,7 @@ File attributes --------------------------------------------------------------
 
 	Get/set a file's attribute(s) given its path in utf8.
 
-file_is(path, [type], [deref]) -> true|false, ['not_found']
+[try_]file_is(path, [type], [deref]) -> true|false, ['not_found']
 
 	Check if file exists or if it is of a certain type.
 
@@ -471,7 +460,6 @@ local
 	cast, bor, band, bnot, shl, check, check_errno
 
 local file = {}; file.__index = file --file object methods
-local stream = {}; stream.__index = stream --FILE methods
 local dir = {}; dir.__index = dir --dir listing object methods
 
 --types, consts, utils -------------------------------------------------------
@@ -552,7 +540,7 @@ local FD_CLOEXEC = 1
 local function fcntl_set_flags_func(GET, SET)
 	return function(f, mask, bits)
 		local cur_bits = C.fcntl(f.fd, GET)
-		assert(check_errno(cur_bits != -1))
+		assert(check_errno(cur_bits ~= -1))
 		local bits = setbits(cur_bits, mask, bits)
 		assert(check_errno(C.fcntl(f.fd, SET, cast('int', bits)) == 0))
 	end
@@ -560,26 +548,18 @@ end
 local fcntl_set_fl_flags = fcntl_set_flags_func(F_GETFL, F_SETFL)
 local fcntl_set_fd_flags = fcntl_set_flags_func(F_GETFD, F_SETFD)
 
-function file_wrap_fd(fd, opt, file_type, async, path, quiet, debug_prefix)
-
-	--make `if f.seek then` the idiom for checking if a file is seekable.
-	local seek; if file_type ~= 'file' or async then seek = false end
+function file_wrap_fd(fd, opt)
 
 	local f = object(file, {
 		fd = fd,
 		s = fd, --for async use with sock
-		type = assert(file_type),
-		seek = seek,
-		debug_prefix = debug_prefix
-			or file_type == 'file' and 'F'
-			or file_type == 'pipe' and 'P'
-			or file_type == 'pidfile' and 'D',
+		seek = repl(opt.type == 'file' and not opt.async, true, nil),
+		debug_prefix = opt.debug_prefix
+			or opt.type == 'file' and 'F'
+			or opt.type == 'pipe' and 'P'
+			or opt.type == 'pidfile' and 'D',
 		w = 0, r = 0,
-		quiet = quiet,
-		path = path,
-		async = async,
 	}, opt)
-	live(f, f.path or '')
 
 	if f.async then
 		fcntl_set_fl_flags(f, O_NONBLOCK, O_NONBLOCK)
@@ -589,6 +569,8 @@ function file_wrap_fd(fd, opt, file_type, async, path, quiet, debug_prefix)
 			return nil, err
 		end
 	end
+
+	live(f, f.path or '')
 
 	return f
 end
@@ -632,47 +614,38 @@ function file.set_inheritable(f, inheritable)
 end
 
 function try_open(path, mode)
-	local opt
-	if istab(path) then --try_open{path=,...}
-		opt = path
-		path = opt.path
-		mode = opt.mode
+	local opt = istab(path) and update({}, path) or {path = path, mode = mode}
+	assert(isstr(opt.path), 'path required')
+	if opt.mode then
+		local mode_opt = assertf(open_mode_opt[opt.mode],
+			'invalid open mode: %s', opt.mode)
+		merge(opt, mode_opt)
 	end
-	assert(isstr(path), 'path required')
-	mode = repl(mode, nil, 'r') --use `false` for no mode.
-	if mode then
-		local mode_opt = assertf(open_mode_opt[mode], 'invalid open mode: %s', mode)
-		if opt then
-			merge(opt, mode_opt)
-		else
-			opt = mode_opt
-		end
-	end
-	opt = opt or empty
-	local file_type = opt.file_type or 'file'
-	local async = opt.async
-	assert(not (async and file_type == 'file'), 'files cannot be opened async')
+	opt.type = opt.type or 'file'
+	assert(not (opt.async and opt.type == 'file'),
+		'open(): files cannot be opened async')
 	local flags = bitflags(opt.flags or 'rdonly', o_bits)
-	flags = bor(flags, async and O_NONBLOCK or 0)
+	flags = bor(flags, opt.async and O_NONBLOCK or 0)
 	if not opt.inheritable then
 		flags = bor(flags, O_CLOEXEC)
 	end
 	local wo = getbit(flags, o_bits.wronly)
 	local rw = getbit(flags, o_bits.rdwr)
-	assert(not (wo and rw), 'open: conflicting flags: wronly + rdwr')
-	local quiet = repl(opt.quiet, nil, file_type == 'pipe' or not (wo or rw))
+	assert(not (wo and rw),
+		'open(): conflicting flags: wronly + rdwr')
+	opt.quiet = repl(opt.quiet, nil, opt.type == 'pipe' or not (wo or rw))
 	local perms = parse_perms(opt.perms) or default_file_perms
-	local open = opt.open or C.open
-	local fd = open(path, flags, perms)
+	local c_open = opt.open or C.open
+	local fd = c_open(opt.path, flags, perms)
 	if fd == -1 then
 		return check_errno()
 	end
-	local f, err = file_wrap_fd(fd, opt, file_type, async, path, quiet)
+	local f, err = file_wrap_fd(fd, opt)
 	if not f then
 		return nil, err
 	end
 	log(f.quiet and '' or 'note', 'fs', 'open',
-		'%-4s %s %s fd=%d', f, wo and 'wo' or rw and 'rw' or 'r', path, fd)
+		'%-4s %s %s fd=%d', f, wo and 'wo' or rw and 'rw' or 'r', opt.path, fd)
 	return f
 end
 
@@ -776,8 +749,8 @@ function try_pipe(opt) --unnamed pipe
 	local async = repl(opt.async, nil, true)
 	local r_async = repl(opt.async_read , nil, async)
 	local w_async = repl(opt.async_write, nil, async)
-	local rf, err1 = file_wrap_fd(fds[0], opt, 'pipe', r_async, 'pipe.r')
-	local wf, err2 = file_wrap_fd(fds[1], opt, 'pipe', w_async, 'pipe.w')
+	local rf, err1 = file_wrap_fd(fds[0], merge({type = 'pipe', async = r_async, debug_prefix = 'pipe.r'}, opt))
+	local wf, err2 = file_wrap_fd(fds[1], merge({type = 'pipe', async = w_async, debug_prefix = 'pipe.w'}, opt))
 	if not (rf and wf) then
 		if rf then rf:try_close() end
 		if wf then wf:try_close() end
@@ -830,6 +803,10 @@ function file.try_sync(f)
 end
 file.sync = unprotect_io(file.try_sync)
 
+--synonims for familiarity with Lua's io module.
+file.try_flush = file.try_sync
+file.flush = file.sync
+
 local whences = {set = 0, cur = 1, ['end'] = 2} --FILE_*
 function file.try_seek(f, whence, offset)
 	if f.fd == -1 then return nil, 'closed' end
@@ -855,7 +832,7 @@ function file.try_write(f, buf, sz)
 		if f.async then
 			len, err = _file_async_write(f, buf, sz)
 		else
-			len = C.write(f.fd, buf, sz or #buf)
+			len = C.write(f.fd, buf, sz)
 			if len == -1 then
 				len, err = check_errno()
 			else
@@ -897,17 +874,20 @@ end
 file.readn = unprotect_io(file.try_readn)
 
 function file.try_readall(f, ignore_file_size)
-	if f.type == 'pipe' or ignore_file_size then
+	if not f.seek or ignore_file_size then
 		return readall(f.try_read, f)
 	end
-	assert(f.type == 'file')
 	local size, err = f:try_attr'size'; if not size then return nil, err end
 	local offset, err = f:try_seek(); if not offset then return nil, err end
 	local sz = size - offset
 	local buf = u8a(sz)
-	local n, err = f:try_read(buf, sz)
-	if not n then return nil, err end
-	if n < sz then return nil, 'partial_read' end
+	local n, err, read_n = f:try_readn(buf, sz)
+	if not n then
+		if err == 'eof' then --short read from TOCTOU
+			return buf, read_n
+		end
+		return nil, err
+	end
 	return buf, n
 end
 file.readall = unprotect_io(file.try_readall)
@@ -944,8 +924,8 @@ end
 function file.try_truncate(f, size, opt)
 	assert(isnum(size), 'size expected')
 	if f.fd == -1 then return nil, 'closed' end
+	opt = opt or 'fallocate fail' --avoid creating a sparse file
 	if not f.shm then
-		opt = opt or 'fallocate fail' --avoid creating a sparse file
 		if opt:find'fallocate' then
 			local ok, err = fallocate(f, size)
 			if not ok and opt:find'fail' then
@@ -977,7 +957,7 @@ size_t readlink(const char *path, char *buf, size_t bufsize);
 ]]
 
 function cwd()
-	local ok, err = check_errno(C.getcwd(cbuf, 4096) == nil)
+	local ok, err = check_errno(C.getcwd(cbuf, 4096) ~= nil)
 	check('fs', 'cwd', ok, 'cwd: %s', err)
 	return str(cbuf)
 end
@@ -1052,7 +1032,10 @@ function try_mkdirs(filepath, perms)
 	return filepath
 end
 function mkdirs(filepath, perms)
-	mkdir(assert(dirname(filepath)), true, perms)
+	local dir = dirname(filepath)
+	if dir then
+		mkdir(dir, true, perms)
+	end
 	return filepath
 end
 
@@ -1152,11 +1135,11 @@ function try_symlink(link_path, target_path, replace)
 		if try_readlink(link_path) == target_path then
 			return true, err
 		end
-		local ok, err = try_rmfile(link_path)
-		if not ok then return false, err end
-		local ok, err = check_errno(C.symlink(target_path, link_path) == 0)
-		if not ok then return false, err end
-		err = 'replaced'
+		local ok1, err = try_rmfile(link_path)
+		if not ok1 then return false, err end
+		local ok1, err = check_errno(C.symlink(target_path, link_path) == 0)
+		if not ok1 then return false, err end
+		ok, err = true, 'replaced'
 	end
 	if ok then
 		log('note', 'fs', 'symlink', 'link:   %s\ntarget:  %s',
@@ -1193,7 +1176,11 @@ local EINVAL = 22
 
 function try_readlink(link, maxdepth)
 	maxdepth = maxdepth or 32
-	if not file_is(link, 'symlink') then
+	local is, err = try_file_is(link, 'symlink')
+	if is == nil then
+		return nil, err
+	end
+	if not is then
 		return link
 	end
 	if maxdepth == 0 then
@@ -1206,7 +1193,7 @@ function try_readlink(link, maxdepth)
 		end
 		return check_errno()
 	end
-	if len > 4096 then
+	if len >= 4096 then --max len is 4095 for ext4 and btrfs
 		return nil, 'path too long'
 	end
 	local target = str(cbuf, len)
@@ -1598,7 +1585,7 @@ function chown(path, uid, gid)
 	return path
 end
 
-function file_is(path, type, deref)
+function try_file_is(path, type, deref)
 	if type == 'symlink' then
 		deref = false
 	end
@@ -1608,11 +1595,17 @@ function file_is(path, type, deref)
 	elseif not type and ftype then
 		return true
 	elseif not ftype then
-		check('fs', 'file_is', nil, '%s: %s', path, err)
+		return nil, err
 	else
 		return ftype == type
 	end
 end
+function file_is(path, type, deref)
+	local is, err = try_file_is(path, type, deref)
+	check('fs', 'file_is', is ~= nil, '%s: %s', path, err)
+	return is, err
+end
+try_exists = try_file_is
 exists = file_is
 
 function checkexists(file, type, deref)
@@ -1630,18 +1623,22 @@ local LOCK_UN = 8
 
 local lock_ops = {sh = LOCK_SH, ex = LOCK_EX, un = LOCK_UN}
 
-function file.try_lock(f, op, async)
+function file.try_lock(f, op, nonblock)
 	if f.fd == -1 then return nil, 'closed' end
 	local flags = assertf(lock_ops[op or 'ex'], 'invalid lock op: %s', op)
-	if async then flags = bor(flags, LOCK_NB) end
+	if nonblock then flags = bor(flags, LOCK_NB) end
 	return check_errno(C.flock(f.fd, flags) == 0)
 end
-file.lock = unprotect_io(file.try_lock)
-
-function file.try_unlock(f, async)
-	return f:try_lock('un', async)
+function file.lock(f, op)
+	return check_io(f, f:try_lock(op))
 end
-file.unlock = unprotect_io(file.try_unlock)
+
+function file.try_unlock(f, nonblock)
+	return f:try_lock('un', nonblock)
+end
+function file.unlock(f, nonblock)
+	return check_io(f, f:try_unlock(nonblock))
+end
 
 --directory listing ----------------------------------------------------------
 
@@ -1666,6 +1663,7 @@ dir_ct = ctype[[
 		int  _errno;
 		int  _dirlen;
 		char _skip_dot_dirs;
+		bool tracebacks;
 		char _dir[?];
 	}
 ]]
@@ -1782,7 +1780,7 @@ function ls(p, opt)
 	if dir._dirp == nil then
 		dir._errno = errno()
 	end
-	return dir.next, dir
+	return dir.try_next, dir
 end
 
 function dir.path(dir)
@@ -1837,22 +1835,21 @@ function dir.is(dir, type, deref)
 end
 
 local function scandir1(path, dive)
-	local pds = {}
+	local ds = {}
 	local next, d = ls(path)
 	local name, err
 	local sc = {}
 	setmetatable(sc, sc)
 	function sc:close()
 		repeat
-			local ok, err = d:close()
-			if not ok then return nil, err end
-			d = pop(pds)
+			d:try_close()
+			d = pop(ds)
 		until not d
-		name, err = nil, 'closed'
+		name, err = nil
 	end
 	function sc:depth(n)
 		n = n or 0
-		local maxdepth = #pds + 1
+		local maxdepth = #ds + 1
 		return n > 0 and min(maxdepth, n) or max(1, maxdepth + n)
 	end
 	function sc:relpath(n)
@@ -1861,14 +1858,14 @@ local function scandir1(path, dive)
 	function sc:__index(k) --forward other method calls to a dir object.
 		local f
 		function f(self, depth, ...)
-			if not name then return nil, err end
+			if not name then return nil, 'closed' end
 			if not isnum(depth) then
 				return f(self, 0, depth, ...)
 			end
 			local d = d
 			if depth ~= 0 then
 				depth = self:depth(depth)
-				d = pds[depth] or d
+				d = ds[depth] or d
 			end
 			return d[k](d, ...)
 		end
@@ -1880,15 +1877,17 @@ local function scandir1(path, dive)
 		if name and d:is('dir', false) then
 			if not dive or dive(d) then
 				local next1, d1 = ls(d:path())
-				assert(next1 == next)
-				push(pds, d)
+				assert(next1 == next) --because we reuse next()
+				push(ds, d)
 				d = d1
 			end
 		end
-		--TODO: error reporting!
 		name, err = next(d)
-		if name == nil then
-			d = pop(pds)
+		if name == false then --error
+			d:close() --now d is nil so next call to iter() will return nil
+			return false, err
+		elseif name == nil then --end
+			d = pop(ds)
 			return iter()
 		end
 		return sc
@@ -1934,7 +1933,9 @@ function try_load_tobuffer(file, default_buf, default_len, ignore_file_size)
 		return nil, err
 	end
 	local buf, len = f:try_readall(ignore_file_size)
-	f:close()
+	if not buf then return nil, err end
+	local ok, err = f:try_close()
+	if not ok then return nil, err end
 	return buf, len
 end
 
@@ -2071,7 +2072,7 @@ function touch(file, mtime)
 end
 
 function gen_id(name, start)
-	local next_id_file = varpath'next_'..name
+	local next_id_file = varpath('next_'..name)
 	local f = open(next_id_file, 'rw')
 	check_io(f, f:try_lock'ex')
 	local s = check_io(f, f:try_readall())
@@ -2134,17 +2135,15 @@ end
 local PIDFD_NONBLOCK = 0x000800
 
 function pidfd_open(pid, opt)
-	local async = not (opt and opt.async == false)
-	local flags = async and PIDFD_NONBLOCK or 0
+	opt = update({}, opt)
+	opt.type = 'pidfile'
+	opt.async = repl(opt.async, nil, true)
+	local flags = opt.async and PIDFD_NONBLOCK or 0
 	local fd = C.syscall(434, pid, flags)
 	if fd == -1 then
 		return check_errno()
 	end
-	local f, err = file_wrap_fd(fd, opt, 'pidfile', async)
-	if not f then
-		return nil, err
-	end
-	return f
+	return file_wrap_fd(fd, opt)
 end
 
 metatype(dir_ct, dir)

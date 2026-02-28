@@ -273,7 +273,7 @@ local insert = table.insert
 local remove = table.remove
 local gsub   = string.gsub
 local io_stderr = io.stderr
-local floor = math.floor
+local math_floor = math.floor
 
 local table_sort = table.sort
 function sort(t, cmp)
@@ -296,7 +296,7 @@ end
 typeof   = type
 isstr    = function(v) return type(v) == 'string' end
 isnum    = function(v) return type(v) == 'number' end
-isint    = function(v) return type(v) == 'number' and floor(v) == v end
+isint    = function(v) return type(v) == 'number' and math_floor(v) == v end
 istab    = function(v) return type(v) == 'table'  end
 isbool   = function(v) return v == true or v == false end
 isempty  = function(v) return next(v) == nil end
