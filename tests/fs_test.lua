@@ -1,4 +1,4 @@
---go@ plink m1 -t sdk/bin/linux/luajit -lscite "sdk/tests/fs_test.lua ls"
+--go@ plink m1 -t sdk/bin/linux/luajit -lscite "sdk/tests/fs_test.lua symlink_replace"
 --#!../bin/linux/luajit
 require'glue'
 require'fs'
@@ -134,10 +134,34 @@ function test.read_write()
 end
 
 function test.open_modes()
-	local testfile = 'fs_test'
-	--TODO:
-	local f = open(testfile, 'w')
+	local testfile = 'fs_test_open_modes'
+
+	--table opts path: open with flags and custom perms
+	local f = open{path = testfile, flags = 'creat wronly trunc', perms = tonumber('600', 8)}
+	f:write('hello')
 	f:close()
+	assert(file_attr(testfile, 'perms', false) == tonumber('600', 8))
+
+	--mode string dispatch: all mode strings produce valid files
+	for _, mode in ipairs{'r', 'r+', 'w', 'w+', 'a', 'a+', 'rw'} do
+		local f, err = try_open(testfile, mode)
+		assert(f, mode..': '..tostring(err))
+		f:close()
+	end
+
+	--excl flag: already_exists error path
+	local f, err = try_open{path = testfile, flags = 'creat excl', mode = false}
+	assert(not f)
+	assert(err == 'already_exists')
+
+	--closed file detection
+	local f = open(testfile)
+	f:close()
+	assert(f:closed())
+	local ok, err = f:try_read(u8a(1), 1)
+	assert(not ok)
+	assert(err == 'closed')
+
 	rmfile(testfile)
 end
 
@@ -221,7 +245,7 @@ end
 
 function test.rm_rf()
 	local rootdir = 'fs_test_rmdir_rec/'
-	rm_rf(rootdir, true)
+	rm_rf(rootdir)
 	local fs_mkdir = mkdir
 	local function mkdir(dir)
 		fs_mkdir(rootdir..dir, true)
@@ -468,7 +492,30 @@ end
 --TODO: dir() with defer and symlink chain
 
 function test.attr_deref()
-	--
+	local f1 = 'fs_test_attr_deref_link'
+	local f2 = 'fs_test_attr_deref_target'
+	rmfile(f1)
+	rmfile(f2)
+	local f = open(f2, 'w')
+	f:write('hello')
+	f:close()
+	local ok, err = try_symlink(f1, f2)
+	if not ok then
+		rmfile(f2)
+		assert(ok, err)
+	end
+	--deref=true (default): get target attrs
+	local t = file_attr(f1)
+	assert(t.type == 'file')
+	assert(t.size == 5)
+	--deref=false: get symlink attrs
+	local t = file_attr(f1, false)
+	assert(t.type == 'symlink')
+	--single attr with deref
+	assert(file_attr(f1, 'type', true) == 'file')
+	assert(file_attr(f1, 'type', false) == 'symlink')
+	rmfile(f1)
+	rmfile(f2)
 end
 
 function test.symlink_attr_deref()
@@ -603,7 +650,20 @@ function test.attr()
 end
 
 function test.attr_set()
-	--TODO
+	local testfile = 'fs_test_attr_set'
+	local f = open(testfile, 'w')
+	f:write('hello')
+	f:close()
+	--set perms via file_attr
+	try_file_attr(testfile, {perms = tonumber('600', 8)})
+	local p = file_attr(testfile, 'perms', false)
+	assert(p == tonumber('600', 8))
+	--set mtime via file_attr
+	local t = math.floor(os.time()) - 3600
+	try_file_attr(testfile, {mtime = t})
+	local m = file_attr(testfile, 'mtime', false)
+	assert(math.abs(m - t) < 1)
+	rmfile(testfile)
 end
 
 --directory listing ----------------------------------------------------------
@@ -682,6 +742,464 @@ function test.ls_is_file()
 	assert(n == 0)
 	assert(#err > 0)
 	assert(err == 'not_found')
+end
+
+--readall, readn, skip -------------------------------------------------------
+
+function test.readall()
+	local testfile = 'fs_test_readall'
+	--non-empty file
+	local f = open(testfile, 'w')
+	f:write('hello world')
+	f:close()
+	local f = open(testfile)
+	local buf, len = f:readall()
+	assert(len == 11)
+	assert(str(buf, len) == 'hello world')
+	f:close()
+	--empty file
+	local f = open(testfile, 'w')
+	f:close()
+	local f = open(testfile)
+	local buf, len = f:readall()
+	assert(len == 0)
+	assert(str(buf, len) == '')
+	f:close()
+	rmfile(testfile)
+end
+
+function test.readn()
+	local testfile = 'fs_test_readn'
+	local f = open(testfile, 'w')
+	f:write('abcdefghij') --10 bytes
+	f:close()
+	local f = open(testfile)
+	local buf = u8a(10)
+	local ok = f:readn(buf, 10)
+	assert(ok)
+	assert(str(buf, 10) == 'abcdefghij')
+	--readn past EOF
+	f:seek('set', 0)
+	local ok, err, n = f:try_readn(buf, 20)
+	assert(not ok)
+	assert(err == 'eof')
+	assert(n == 10)
+	f:close()
+	rmfile(testfile)
+end
+
+function test.skip()
+	local testfile = 'fs_test_skip'
+	local f = open(testfile, 'w')
+	f:write('abcdefghij')
+	f:close()
+	local f = open(testfile)
+	local n = f:skip(3)
+	assert(n == 3)
+	assert(f:seek() == 3)
+	local n = f:skip(5)
+	assert(n == 5)
+	assert(f:seek() == 8)
+	f:close()
+	rmfile(testfile)
+end
+
+function test.truncate_opts()
+	local testfile = 'fs_test_truncate_opts'
+	--default opt: 'fallocate fail'
+	local f = open(testfile, 'w')
+	f:truncate(4096)
+	assert(f:seek() == 4096)
+	assert(f:attr'size' == 4096)
+	--shrink: fallocate skipped (size <= cursize)
+	f:truncate(1024)
+	assert(f:seek() == 1024)
+	assert(f:attr'size' == 1024)
+	--opt without fallocate: just ftruncate
+	f:truncate(2048, 'none')
+	assert(f:attr'size' == 2048)
+	f:close()
+	rmfile(testfile)
+end
+
+--buffered_reader ------------------------------------------------------------
+
+function test.buffered_reader()
+	local testfile = 'fs_test_bufread'
+	local data = ('abcdefghij'):rep(100) --1000 bytes
+	local f = open(testfile, 'w')
+	f:write(data)
+	f:close()
+	local f = open(testfile)
+	local read = f:buffered_reader(64) --small buffer
+	local parts = {}
+	local buf = u8a(37) --odd size
+	while true do
+		local n = read(buf, 37)
+		if not n or n == 0 then break end
+		parts[#parts+1] = str(buf, n)
+	end
+	local result = table.concat(parts)
+	assert(result == data)
+	f:close()
+	rmfile(testfile)
+end
+
+function test.unbuffered_reader()
+	local testfile = 'fs_test_unbufread'
+	local f = open(testfile, 'w')
+	f:write('abcdefghij')
+	f:close()
+	local f = open(testfile)
+	local read = f:unbuffered_reader()
+	local buf = u8a(5)
+	local n = read(buf, 5)
+	assert(n == 5)
+	assert(str(buf, 5) == 'abcde')
+	--skip bytes
+	local n = read(nil, 3)
+	assert(n == 3)
+	--read remaining
+	local n = read(buf, 5)
+	assert(n == 2)
+	assert(str(buf, 2) == 'ij')
+	f:close()
+	rmfile(testfile)
+end
+
+--load/save ------------------------------------------------------------------
+
+function test.load_save()
+	local testfile = 'fs_test_load_save'
+	rmfile(testfile)
+	--save and load string
+	save(testfile, 'hello world')
+	local s = load(testfile)
+	assert(s == 'hello world')
+	--save overwrites atomically
+	save(testfile, 'replaced')
+	local s = load(testfile)
+	assert(s == 'replaced')
+	--save empty string
+	save(testfile, '')
+	local s = load(testfile)
+	assert(s == '')
+	rmfile(testfile)
+end
+
+function test.load_not_found()
+	local ok, err = try_load('fs_test_nonexistent_file')
+	assert(not ok)
+	assert(err == 'not_found')
+end
+
+function test.load_default()
+	local s = load('fs_test_nonexistent_file', 'default_val')
+	assert(s == 'default_val')
+end
+
+function test.save_array()
+	local testfile = 'fs_test_save_array'
+	save(testfile, {'hello', ' ', 'world'})
+	local s = load(testfile)
+	assert(s == 'hello world')
+	rmfile(testfile)
+end
+
+function test.save_buffer()
+	local testfile = 'fs_test_save_buf'
+	local buf = u8a(5)
+	copy(buf, 'abcde', 5)
+	save(testfile, buf, 5)
+	local s = load(testfile)
+	assert(s == 'abcde')
+	rmfile(testfile)
+end
+
+--touch ----------------------------------------------------------------------
+
+function test.touch()
+	local testfile = 'fs_test_touch'
+	rmfile(testfile)
+	--touch creates file
+	touch(testfile)
+	assert(exists(testfile))
+	--touch updates mtime
+	local t = math.floor(os.time()) - 7200
+	touch(testfile, t)
+	local m = mtime(testfile)
+	assert(math.abs(m - t) < 1)
+	rmfile(testfile)
+end
+
+--file_is / exists -----------------------------------------------------------
+
+function test.file_is()
+	local testfile = 'fs_test_file_is'
+	local testdir = 'fs_test_file_is_dir'
+	rmfile(testfile)
+	rmdir(testdir)
+
+	--non-existent
+	local is, err = try_file_is(testfile)
+	assert(is == false)
+	assert(err == 'not_found')
+	assert(not exists(testfile))
+
+	--file exists
+	local f = open(testfile, 'w'); f:close()
+	assert(exists(testfile))
+	assert(file_is(testfile, 'file'))
+	assert(not file_is(testfile, 'dir'))
+
+	--dir exists
+	mkdir(testdir)
+	assert(file_is(testdir, 'dir'))
+	assert(not file_is(testdir, 'file'))
+
+	rmfile(testfile)
+	rmdir(testdir)
+end
+
+function test.isfile()
+	local testfile = 'fs_test_isfile'
+	local f = open(testfile, 'w')
+	assert(isfile(f))
+	assert(isfile(f, 'file'))
+	assert(not isfile(f, 'pipe'))
+	assert(not isfile('not a file'))
+	assert(not isfile(42))
+	f:close()
+	rmfile(testfile)
+end
+
+--locking --------------------------------------------------------------------
+
+function test.lock_unlock()
+	local testfile = 'fs_test_lock'
+	local f = open(testfile, 'w')
+	f:write('data')
+	--exclusive lock
+	f:lock('ex')
+	f:unlock()
+	--shared lock
+	f:lock('sh')
+	f:unlock()
+	--nonblocking lock
+	local ok, err = f:try_lock('ex', true)
+	assert(ok)
+	assert(not err)
+	--nonblocking: already locked, same process (flock allows re-locking)
+	local ok2, err2 = f:try_lock('ex', true)
+	assert(ok2)
+	f:unlock()
+	f:close()
+	rmfile(testfile)
+end
+
+
+--mkdirs ---------------------------------------------------------------------
+
+function test.mkdirs()
+	--mkdirs creates parent dirs for a file path
+	local filepath = 'fs_test_mkdirs/a/b/file.txt'
+	mkdirs(filepath)
+	assert(exists('fs_test_mkdirs/a/b', 'dir'))
+	--file itself is NOT created
+	assert(not exists(filepath))
+	rm_rf'fs_test_mkdirs/'
+	--mkdirs with no dir component
+	local r = mkdirs('justfile.txt')
+	assert(r == 'justfile.txt')
+end
+
+--symlink replace ------------------------------------------------------------
+
+function test.symlink_replace()
+	local link = 'fs_test_symlink_replace'
+	local t1 = 'fs_test_symlink_replace_t1'
+	local t2 = 'fs_test_symlink_replace_t2'
+	rmfile(link)
+	rmfile(t1)
+	rmfile(t2)
+	local f = open(t1, 'w'); f:close()
+	local f = open(t2, 'w'); f:close()
+	--create symlink
+	symlink(link, t1)
+	assert(readlink(link) == t1)
+	--replace symlink
+	local ok, err = try_symlink(link, t2, 'replace')
+	assert(ok)
+	assert(err == 'replaced')
+	assert(readlink(link) == t2)
+	--replace with same target: no-op
+	local ok, err = try_symlink(link, t2, 'replace')
+	assert(ok)
+	assert(err == 'already_exists')
+	rmfile(link)
+	rmfile(t1)
+	rmfile(t2)
+end
+
+--readlink branches ----------------------------------------------------------
+
+function test.readlink_non_symlink()
+	local testfile = 'fs_test_readlink_nonsym'
+	local f = open(testfile, 'w'); f:close()
+	--readlink on regular file returns the file itself
+	local target = readlink(testfile)
+	assert(target == testfile)
+	rmfile(testfile)
+end
+
+function test.readlink_chain()
+	--test relative symlink resolution: a -> b -> target
+	local dir = 'fs_test_readlink_chain'
+	rm_rf(dir..'/')
+	mkdir(dir)
+	local f = open(dir..'/target', 'w'); f:close()
+	--b points to target (relative)
+	symlink(dir..'/b', 'target')
+	--a points to b (relative)
+	symlink(dir..'/a', 'b')
+	--readlink resolves the full chain
+	local result = readlink(dir..'/a')
+	assert(result == dir..'/target', 'expected '..dir..'/target, got '..tostring(result))
+	rm_rf(dir..'/')
+end
+
+--hardlink already exists (same inode) ---------------------------------------
+
+function test.hardlink_already_exists()
+	local f1 = 'fs_test_hlink_ae'
+	local f2 = 'fs_test_hlink_ae_target'
+	rmfile(f1)
+	rmfile(f2)
+	local f = open(f2, 'w'); f:write('x'); f:close()
+	hardlink(f1, f2)
+	--hardlink again: same inode, should return true, 'already_exists'
+	local ok, err = try_hardlink(f1, f2)
+	assert(ok)
+	assert(err == 'already_exists')
+	rmfile(f1)
+	rmfile(f2)
+end
+
+--rm_rf edge cases -----------------------------------------------------------
+
+function test.rm_rf_nonexistent()
+	local ok, err = try_rm_rf('fs_test_rm_rf_nonexistent')
+	assert(ok)
+	assert(err == 'not_found')
+end
+
+function test.rm_rf_symlink()
+	--rm_rf on a symlink to a dir should remove the symlink, not the dir
+	local dir = 'fs_test_rm_rf_sym_dir'
+	local link = 'fs_test_rm_rf_sym_link'
+	rmfile(link)
+	rm_rf(dir..'/')
+	mkdir(dir)
+	local f = open(dir..'/file', 'w'); f:close()
+	local ok, err = try_symlink(link, dir)
+	if ok then
+		rm_rf(link) --should remove the symlink, not recurse into dir
+		assert(not exists(link))
+		assert(exists(dir, 'dir')) --dir should still exist
+		assert(exists(dir..'/file'))
+	end
+	rm_rf(dir..'/')
+end
+
+--fs_info --------------------------------------------------------------------
+
+function test.fs_info()
+	local info = fs_info('/')
+	assert(info)
+	assert(info.size > 0)
+	assert(info.free >= 0)
+	assert(info.free <= info.size)
+end
+
+--ls with '..' opt -----------------------------------------------------------
+
+function test.ls_dotdirs()
+	local d = 'fs_test_ls_dotdirs'
+	rmdir(d)
+	mkdir(d)
+	local found_dot, found_dotdot = false, false
+	for name, dir in ls(d, '..') do
+		if not name then break end
+		if name == '.' then found_dot = true end
+		if name == '..' then found_dotdot = true end
+	end
+	assert(found_dot, '. not found with .. opt')
+	assert(found_dotdot, '.. not found with .. opt')
+	rmdir(d)
+end
+
+--scandir with dive filter ---------------------------------------------------
+
+function test.scandir_dive()
+	local root = 'fs_test_scandir_dive/'
+	rm_rf(root)
+	mkdir(root..'a/b', true)
+	local f = open(root..'a/f1', 'w'); f:close()
+	local f = open(root..'a/b/f2', 'w'); f:close()
+	--dive filter that skips 'b' subdir
+	local names = {}
+	for sc in scandir(root..'a', function(d)
+		return d:name() ~= 'b'
+	end) do
+		names[#names+1] = sc:name()
+	end
+	assert(#names == 2) --f1 and b (listed but not dived into)
+	local has_f2 = false
+	for _, n in ipairs(names) do
+		if n == 'f2' then has_f2 = true end
+	end
+	assert(not has_f2, 'f2 should not be found when b is skipped')
+	rm_rf(root)
+end
+
+function test.scandir_multipath()
+	local d1 = 'fs_test_scandir_mp1/'
+	local d2 = 'fs_test_scandir_mp2/'
+	rm_rf(d1)
+	rm_rf(d2)
+	mkdir(d1)
+	mkdir(d2)
+	local f = open(d1..'f1', 'w'); f:close()
+	local f = open(d2..'f2', 'w'); f:close()
+	local names = {}
+	for sc in scandir{d1, d2} do
+		names[#names+1] = sc:name()
+	end
+	table.sort(names)
+	assert(#names == 2)
+	assert(names[1] == 'f1')
+	assert(names[2] == 'f2')
+	rm_rf(d1)
+	rm_rf(d2)
+end
+
+function test.scandir_depth_relpath()
+	local root = 'fs_test_scandir_dr/'
+	rm_rf(root)
+	mkdir(root..'a/b', true)
+	local f = open(root..'a/b/f', 'w'); f:close()
+	local found = false
+	for sc in scandir(root) do
+		if sc:name() == 'f' then
+			found = true
+			local rp = sc:relpath()
+			assert(rp, 'relpath should not be nil')
+			local depth = sc:depth()
+			assert(depth == 3) --root/a/b/f = depth 3
+		end
+	end
+	assert(found, 'f not found in scandir')
+	rm_rf(root)
 end
 
 --test cmdline ---------------------------------------------------------------

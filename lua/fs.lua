@@ -1131,10 +1131,10 @@ function try_symlink(link_path, target_path, replace)
 		if try_readlink(link_path) == target_path then
 			return true, err
 		end
-		local ok1, err = try_rmfile(link_path)
-		if not ok1 then return false, err end
-		local ok1, err = check_errno(C.symlink(target_path, link_path) == 0)
-		if not ok1 then return false, err end
+		local ok1, err1 = try_rmfile(link_path)
+		if not ok1 then return false, err1 end
+		local ok1, err1 = check_errno(C.symlink(target_path, link_path) == 0)
+		if not ok1 then return false, err1 end
 		ok, err = true, 'replaced'
 	end
 	if ok then
