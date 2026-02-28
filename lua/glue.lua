@@ -17,6 +17,7 @@ TYPES
 	isempty(v)                     is v a table and is it empty
 	isfunc(v)                      is v a function
 	iscdata(v)                     is v a cdata
+	isthread(v)                    is v a Lua thread
 	isctype(v, ct)               = ffi.istype
 	iserror(v[, classes])          is v a structured error
 	inherits(v, class)             is v an object that inherits from class
@@ -25,7 +26,6 @@ MATH
 	ceil                         = math.ceil
 	round(x) -> y                  math.floor(x + 0.5)
 	snap(x[, p]) -> y              round x to nearest multiple of p=1 half-up
-	snap                         = round
 	min                          = math.min
 	max                          = math.max
 	clamp(x, min, max) -> y        clamp x in range
@@ -59,16 +59,17 @@ ARRAYS
 	del                          = table.remove
 	add(t, v)                      insert(t, v)
 	push(t, v)                     insert(t, v)
-	pop(t, v)                      remove(t, v)
+	pop(t)                         remove(t)
 	clear                        = table.clear
 	sort(t, [cmp]) -> t          = table.sort
 	extend(dt, t1, ...) -> dt      extend an array with contents of other arrays
 	append(dt, v1, ...) -> dt      append non-nil values to an array
 	popn(dt, n) -> v1, ...         remove n values from the end and return them
+	remove_value(t, v) -> i|nil    find and remove value from array
 	shift(t, i, n) -> t            shift array elements
 	slice(t, [i], [j]) -> t        slice an array
 	imap(t, field|f,...) -> t      map f over ipairs of t or pluck field
-	indexof(v, t, [i], [j]) -> i   scan array for value
+	indexof(v, t, [eq], [i], [j]) -> i   scan array for value
 	cmp'KEY1[>] ...' -> f          create a cmp function for sort and binsearch
 	binsearch(v, t, [cmp], [i], [j]) -> i    bin search in sorted array
 	binsearch_insert(t, v, [cmp]) -> t       order-preserving insert in sorted array
@@ -97,7 +98,7 @@ CACHING
 	memoize[_multiret](f,opt...) -> mf,cache   memoize pattern
 	tuples(opt...) -> tuple(...) -> t          create a tuple space
 	istuple(t)                     is t a tuple
-	poison                         poision value to clear cache on memoized func
+	poison                         poison value to clear cache on memoized func
 STRINGS
 	format                       = string.format
 	fmt                          = string.format
@@ -113,7 +114,7 @@ STRINGS
 	split(s,sep[,start[,plain]]) => e[,captures...]  split a string on regex
 	words'name1 ... ' => 'name1'   iterate words in a string
 	lines(s, [opt], [i]) => s, i, j, k      iterate the lines of a string
-	outdent(s, [indent]) -> s, indent       outdent/reindent text
+	outdent(s, [newindent]) -> s, indent       outdent/reindent text
 	lineinfo(s, [i]) -> line, col  find text position at byte position
 	trim(s) -> s                   remove whitespace paddings
 	lpad(s, n, [c]) -> s           left-pad string
@@ -121,7 +122,7 @@ STRINGS
 	pad(s, n, [c], dir) -> s       pad string left or right
 	esc(s [,mode]) -> pat          escape string to use in regex
 	[to]hex(s|n [,upper]) -> s     string or number to hex
-	fromhex(s[, isvalid]) -> s     hex to string
+	fromhex(s) -> s                hex to string
 	hexblock(s)                    string to hex block
 	starts(s, prefix) -> t|f       find if string starts with prefix
 	ends(s, suffix) -> t|f         find if string ends with suffix
@@ -134,7 +135,7 @@ STDOUT/ERR
 	print_function(write, [format], [newline]) -> f  create a print()-like function
 	printf(fmt, ...)               print with string formatting
 	say([fmt, ...])                print to stderr
-	sayn(fmt, ...])                print to stderr without newline
+	sayn([fmt, ...])               print to stderr without newline
 	die([fmt, ...])                exit with abort message and exit code 1
 ITERATORS
 	collect([i,] iter) -> t        collect iterated values into an array
@@ -170,25 +171,11 @@ TIME & DATES
 	year   ([utc, ][t], [plus_years]) -> ts    time at year's beginning from t
 ERRORS
 	assertf(v[,fmt,...]) -> v      assert with error message formatting
-	errorf(,fmt,...)               raise with string formatting
 	fpcall(f, ...) -> ok,...       pcall with finally/onerror
 	fcall(f, ...) -> ...           same but re-raises errors
-	errortype([classname], [super]) -> E    create/get an error class
-	  E(...) -> e                           create an error object
-	  E:__call(...) -> e                    error class constructor
-	  E:__tostring() -> s                   to make `error(e)` work
-	  E.addtraceback                        add a traceback to errors
-	newerror(classname,... | e) -> e        create/wrap/pass-through an error object
-	  e.message                             formatted error message
-	  e.traceback                           traceback at error site
-	iserror(v[, classes]) -> true|false     check an error object type
-	raise([level, ]classname,... | e)      (create and) raise an error
-	check(errorclass, event, v, ...)        assert with structured errors and logging
-	catch([classes], f, ...) -> true,... | false,e    pcall `f` and catch errors
-	pcall(f, ...) -> ok,...                 pcall that stores traceback in `e.traceback`
-	lua_pcall(f, ...) -> ok,...             Lua's pcall renamed (no tracebacks)
-	protect([classes, ]f, [oncaught]) -> f  turn raising f into nil,err-returning
-	check{_io|p|np}(self, val, format, format_args...) -> val
+STRUCTURED EXCEPTIONS
+	see errors.lua
+	see errors_io.lua
 MODULES
 	module([name, ][parent]) -> M  create a module
 	autoload(t, submodules) -> M   autoload table keys from submodules
@@ -286,6 +273,7 @@ local insert = table.insert
 local remove = table.remove
 local gsub   = string.gsub
 local io_stderr = io.stderr
+local floor = math.floor
 
 local table_sort = table.sort
 function sort(t, cmp)
@@ -386,10 +374,10 @@ end
 
 function uuid() --don't forget to seed the randomizer!
 	return format('%08x-%04x-%04x-%04x-%08x%04x',
-		random(0xffffffff), random(0xffff),
+		random(0xffff) * 0x10000 + random(0xffff), random(0xffff),
 		0x4000 + random(0x0fff), --4xxx
 		0x8000 + random(0x3fff), --10bb-bbbb-bbbb-bbbb
-		random(0xffffffff), random(0xffff))
+		random(0xffff) * 0x10000 + random(0xffff), random(0xffff))
 end
 
 do
@@ -397,7 +385,7 @@ local u32a = ffi.typeof'uint32_t[?]'
 function random_string(n)
 	local buf = u32a(n/4+1)
 	for i=0,n/4 do
-		buf[i] = random(0, 2^32-1)
+		buf[i] = random(0, 2^31)
 	end
 	return str(buf, n)
 end
@@ -432,14 +420,13 @@ function add(t, v)
 end
 push = add
 
-function pop(t, v)
-	return remove(t, v)
+function pop(t)
+	return remove(t)
 end
 
 clear = table.clear
 
 --scan list for value. works with ffi arrays too given i and j.
---Works on ffi arrays too if i and j are provided.
 function indexof(v, t, eq, i, j)
 	i = i or 1
 	j = j or #t
@@ -513,7 +500,7 @@ function binsearch(v, t, cmp, lo, hi)
 end
 
 function binsearch_insert(t, v, cmp)
-	local i = binsearch(v, t, cmd) or #t + 1
+	local i = binsearch(v, t, cmp) or #t + 1
 	insert(t, i, v)
 	return i
 end
@@ -581,12 +568,12 @@ local function cmp_k_desc(k)
 	end
 end
 function cmp(keys) --true|false|'KEY1[>] ...'
-	if type(keys) ~= 'string' then
-		return keys
-	elseif keys == true then
+	if keys == true then
 		return cmp_asc
 	elseif keys == false then
-		return cmd_desc
+		return cmp_desc
+	elseif type(keys) ~= 'string' then
+		return keys
 	end
 	local f
 	for s in keys:gmatch'%S+' do
@@ -792,7 +779,7 @@ end
 
 --with vararg functions we can't just store the memoized value in the
 --leaf node because any leaf node can become a key node on future calls.
-local VAL = {} --special key to store the memozied value in the leaf node.
+local VAL = {} --special key to store the memoized value in the leaf node.
 local function memoize_vararg(f, minarg, maxarg, cache)
 	cache = cache or {}
 	return function(...)
@@ -896,12 +883,16 @@ end
 function append(dt,...)
 	local j = #dt
 	for i=1,select('#',...) do
-		dt[j+i] = select(i,...)
+		local v = select(i,...)
+		if v ~= nil then
+			j = j + 1
+			dt[j] = v
+		end
 	end
 	return dt
 end
 
---insert n elements at i, shifting elemens on the right of i (i inclusive)
+--insert n elements at i, shifting elements on the right of i (i inclusive)
 --to the right.
 local function insert_n(t, i, n)
 	if n == 1 then --shift 1
@@ -955,8 +946,8 @@ function slice(t, i, j) --TODO: not used. use it or scrape it.
 	local n = t.n or #t
 	i = i or 1
 	j = j or n
-	if i < 0 then i = n - i + 1 end
-	if j < 0 then j = n - i + 1 end
+	if i < 0 then i = n + i + 1 end
+	if j < 0 then j = n + j + 1 end
 	i = clamp(i, 1, n)
 	j = clamp(j, 1, n)
 	local dt = {}
@@ -1071,21 +1062,23 @@ string.words = words
   and the next-content-start indices.
 * the lines are split at '\r\n', '\r' and '\n' markers.
 * the line ending markers are included or excluded depending on the second
-  arg, which can be '*L' (include line endings; default) or '*l' (exclude).
+  arg, which can be '*L' (include line endings) or '*l' (exclude; default).
 * if the string is empty or doesn't contain a line ending marker, it is
   iterated once.
 * if the string ends with a line ending marker, one more empty string is
   iterated.
 * init tells it where to start parsing (default is 1).
 ]]
-function lines(s, opt, i)
-	local term = opt == '*L'
-	local patt = term and '()([^\r\n]*()\r?\n?())' or '()([^\r\n]*)()\r?\n?()'
+function lines(lines_s, opt, i)
+	opt = opt or '*l'
+	local patt = opt == '*L'
+		and '()([^\r\n]*()\r?\n?())'
+		 or '()([^\r\n]*)()\r?\n?()'
 	i = i or 1
 	local ended
 	return function()
 		if ended then return end
-		local i0, s, i1, i2 = s:match(patt, i)
+		local i0, s, i1, i2 = lines_s:match(patt, i)
 		ended = i1 == i2
 		i = i2
 		return s, i0, i1, i2
@@ -1095,12 +1088,12 @@ string.lines = lines
 
 --outdent lines based on the indentation of the first non-empty line.
 --bails out if a subsequent line is less indented than the first non-empty line.
---newindent is an optional indentation to prepended to each unindented line.
-function outdent(s, newindent)
+--newindent is an optional indentation to prepend to each unindented line.
+function outdent(lines_s, newindent)
 	newindent = newindent or ''
 	local indent
 	local t = {}
-	for s in lines(s) do
+	for s in lines(lines_s) do
 		local indent1 = s:match'^([\t ]*)[^%s]'
 		if not indent then
 			indent = indent1
@@ -1127,7 +1120,7 @@ function outdent(s, newindent)
 	end
 	indent = indent or ''
 	if indent == '' and newindent == '' then
-		return s
+		return lines_s, indent
 	end
 	for i=1,#t do
 		t[i] = newindent .. t[i]:sub(#indent + 1)
@@ -1234,16 +1227,8 @@ hex = tohex
 string.tohex = tohex
 string.hex = tohex
 
---convert hex string to its binary representation. returns nil on invalid
---input unless isvalid is given which makes it raise on invalid input.
-function fromhex(s, isvalid)
-	if not isvalid then
-		if s:find'[^0-9a-fA-F]' then
-			return nil
-		end
-	else
-		s = gsub(s, '[^0-9a-fA-F]', '')
-	end
+--convert hex string to its binary representation.
+function fromhex(s)
 	if #s % 2 == 1 then
 		return fromhex('0'..s)
 	end
@@ -1521,8 +1506,8 @@ local function install(self, combine, method_name, hook)
 	rawset(self, method_name, combine(self[method_name], hook))
 end
 function do_before(method, hook)
-	if repl(method, noop) then
-		if repl(hook, noop) then
+	if repl(method, noop, nil) then
+		if repl(hook, noop, nil) then
 			return function(self, ...)
 				hook(self, ...)
 				return method(self, ...)
@@ -1538,8 +1523,8 @@ function before(self, method_name, hook)
 	install(self, do_before, method_name, hook)
 end
 function do_after(method, hook)
-	if repl(method, noop) then
-		if repl(hook, noop) then
+	if repl(method, noop, nil) then
+		if repl(hook, noop, nil) then
 			return function(self, ...)
 				method(self, ...)
 				return hook(self, ...)
@@ -1604,7 +1589,7 @@ local date = date
 
 --compute timestamp diff. to UTC because os.time() has no option for UTC.
 function utc_diff(t)
-   local ld = date('*t', t)
+	local ld = date('*t', t)
 	ld.isdst = false --adjust for DST.
 	local ud = date('!*t', t)
 	local lt = os_time(ld)
@@ -1697,10 +1682,6 @@ function assertf(v, err, ...)
 	error(err, 2)
 end
 
-function errorf(err, fmt, ...)
-	error(fmt:format(...))
-end
-
 local function unprotect(ok, result, ...)
 	if not ok then return nil, result, ... end
 	if result == nil then result = true end --to distinguish from error.
@@ -1747,204 +1728,6 @@ local function assert_fpcall(ok, ...)
 end
 function fcall(...)
 	return assert_fpcall(_fpcall(...))
-end
-
---[=[ structured exceptions --------------------------------------------------
-
-Structured exceptions are an enhancement over string exceptions, adding
-selective catching and providing a context for the failure to help with
-recovery or logging. They're most useful in network protocols.
-
-In the API `classes` can be given as either 'classname1 ...' or {class1->true}.
-When given in table form, you must include all the superclasses in the table
-since they are not added automatically!
-
-raise() passes its varargs to newerror() which passes them to
-eclass() which passes them to eclass:__call() which interprets them
-as follows: `[err_obj, err_obj_options..., ][format, format_args...]`.
-So if the first arg is a table it is converted to the final error object.
-Any following table args are merged with this object. Any following args
-after that are passed to string.format() and the result is placed in
-err_obj.message (if `message` was not already set). All args are optional.
-
-A note on tracebacks: with string errors, when catching an error temporarily
-to free resources and then re-raising it, the original stack trace is lost.
-Catching errors with the pcall() that's reimplemented here instead of with
-the standard pcall() adds a traceback to all plain string errors. Structured
-errors are usually raised inside protected functions so they don't get a
-traceback by default unless they ask for it.
-
-]=]
-
-do
-local lua_error = error
-local lua_pcall = pcall
-
-local classes = {} --{name -> class}
-local class_sets = {} --{'name1 name2 ...' -> {class->true}}
-
-local function errortype(classname, super, default_error_message)
-	local class = classname and classes[classname]
-	if not class then
-		super = type(super) == 'string' and assert(classes[super]) or super or Error
-		class = object(super, {
-			type = classname and classname..'_error' or 'error',
-			errortype = classname, iserror = true,
-			default_error_message = default_error_message
-				or (classname and classname..' error') or 'error',
-		})
-		if classname then
-			classes[classname] = class
-			class_sets = {}
-		end
-	end
-	return class
-end
-
-local function newerror(arg, ...)
-	if type(arg) == 'string' then
-		local class = classes[arg] or errortype(arg)
-		return class(...)
-	end
-	return arg
-end
-
-local function class_table(s)
-	if type(s) == 'string' then
-		local t = class_sets[s]
-		if not t then
-			t = {}
-			class_sets[s] = t
-			for s in words(s) do
-				local class = classes[s]
-				while class do
-					t[class] = true
-					class = class.__index
-				end
-			end
-		end
-		return t
-	else
-		assert(type(s) == 'table')
-		return s --if given as table, must contain superclasses too!
-	end
-end
-
-local function iserror(e, classes)
-	local mt = getmetatable(e)
-	if type(mt) ~= 'table' then return false end
-	if not rawget(mt, 'iserror') then return false end
-	if not classes then return true end
-	return class_table(classes)[e.__index] or false
-end
-
-local function raise(level, ...)
-	if type(level) == 'number' then
-		lua_error(newerror(...), level)
-	else
-		lua_error((newerror(level, ...)))
-	end
-end
-
-local function fix_traceback(s)
-	return s:gsub('(.-:%d+: )([^\n])', '%1\n%2')
-end
-local function cont(classes, ok, ...)
-	if ok then return true, ... end
-	local e = ...
-	if not classes or iserror(e, classes) then
-		return false, e
-	end
-	lua_error(e, 3)
-end
-local function onerror(e)
-	if iserror(e) then
-		if e.addtraceback and not e.traceback then
-			e.traceback = fix_traceback(traceback(e.message, 2))
-		end
-	else
-		return fix_traceback(traceback(tostring(e), 2))
-	end
-	return e
-end
-local function pcall(f, ...)
-	return xpcall(f, onerror, ...)
-end
-local function catch(classes, f, ...)
-	return cont(classes, pcall(f, ...))
-end
-
-local function cont(oncaught, ok, ...)
-	if ok then return ... end
-	if oncaught then oncaught(...) end
-	return nil, ...
-end
-local function protect(classes, f, oncaught)
-	if type(classes) == 'function' then
-		return protect(nil, classes, f)
-	end
-	return function(...)
-		return cont(oncaught, catch(classes, f, ...))
-	end
-end
-
-_G.errortype = errortype
-_G.newerror = newerror
-_G.iserror = iserror
-_G.raise = raise
-_G.catch = catch
-_G.pcall = pcall
-_G.lua_pcall = lua_pcall
-_G.protect = protect
-
---base error class that all error types inherit from.
-
-Error = errortype()
-
-function Error.identify(e)
-	return iserror(e)
-end
-
-function Error:serialize()
-	return {errortype = self.errortype, message = tostring(self)}
-end
-
-function Error.deserialize(t)
-	return newerror(t.errortype, t)
-end
-
-local function merge_option_tables(e, arg1, ...)
-	if type(arg1) == 'table' then
-		for k,v in pairs(arg1) do e[k] = v end
-		return merge_option_tables(e, ...)
-	else
-		e.message = e.message or (arg1 and format(arg1, logargs(...)) or nil)
-		return e
-	end
-end
-function Error:__call(arg1, ...)
-	local e
-	if type(arg1) == 'table' then
-		e = merge_option_tables(object(self, arg1), ...)
-	else
-		e = object(self, {message = arg1 and format(arg1, logargs(...)) or nil})
-	end
-	e.iserror = true
-	e.__tostring = self.__tostring
-	if e.init then
-		e:init()
-	end
-	return e
-end
-
-function Error:__tostring()
-	local s = self.traceback or self.message or self.default_error_message
-	if self.errorcode then
-		s = s .. ' ['..self.errorcode..']'
-	end
-	return s
-end
-
 end
 
 --modules --------------------------------------------------------------------
@@ -2143,7 +1926,7 @@ end
 
 function sopath(path)
 	require'proc'
-	env('LD_LIBRARY_PATH', (env('LD_LIBRARY_PATH') or '')..';'..path)
+	env('LD_LIBRARY_PATH', (env('LD_LIBRARY_PATH') or '')..':'..path)
 end
 
 --allocation -----------------------------------------------------------------
@@ -2374,10 +2157,6 @@ int   memcmp  (const void * ptr1, const void * ptr2, size_t num);
 
 memcmp = C.memcmp
 
-local function ptr(p) --convert nulls to nil so that `if not p` works.
-	return p ~= nil and p or nil
-end
-
 local ptr = ptr
 function malloc(size) return ptr(C.malloc(size)) end
 function realloc(p, size) return ptr(C.realloc(p, size)) end
@@ -2433,7 +2212,7 @@ end
 local intptr_a1 = ctype'intptr_t[1]'
 function ptr_serialize(p)
 	local np = cast(intptr, cast(voidp, p))
-   local n = tonumber(np)
+	local n = tonumber(np)
 	if cast(intptr, n) ~= np then
 		--address too big (ASLR? tagged pointers?): convert to string.
 		return str(intptr_a1(np), 8)
@@ -2573,121 +2352,13 @@ end
 --see https://htmlpreview.github.io/?https://github.com/LuaJIT/LuaJIT/blob/v2.1/doc/ext_buffer.html
 string_buffer = require'string.buffer'.new
 
---[=[ error handling for network protocols and file decoders -----------------
-
-check{_io|p|np}(self, val, format, format_args...) -> val
-
-This is an error-handling discipline to use when writing TCP-based protocols
-as well as file decoders and encoders. Instead of using standard `assert()`
-and `pcall()`, use `check_io()`, `checkp()` and `checknp()` to raise errors
-inside protocol/decoder/encoder methods and then wrap those methods in
-`protect()` to convert them into `nil, err`-returning methods.
-
-You should distinguish between multiple types of errors:
-
-- Invalid API usage, i.e. bugs on this side, which should raise (but shouldn't
-  happen in production). Use `assert()` for those.
-
-- Response/format validation errors, i.e. bugs on the other side or corrupt
-  data which shouldn't raise but they put the connection/decoder in an
-  inconsistent state so the connection/file must be closed. Use `checkp()`
-  short for "check protocol" for those. Note that if your protocol is not meant
-  to work with a hostile or unstable peer, you can skip the `checkp()` checks
-  entirely because they won't guard against anything and just bloat the code.
-
-- Request or response content validation errors, which can be user-corrected
-  so they mustn't raise and mustn't close the connection/file. Use `checknp()`
-  short for "check non-protocol" for those.
-
-- I/O errors, i.e. network/pipe failures which can be temporary and thus make
-  the request retriable (in a new connection, this one must be closed), so they
-  must be distinguishable from other types of errors. Use `check_io()` for
-  those. On the call side then check the error class for implementing retries.
-
-Following this protocol should easily cut your network code in half, increase
-its readability (no more error-handling noise) and its reliability (no more
-confusion about when to raise and when not to or forgetting to handle an error).
-
-Your object must have a try_close() method which will be called by check_io()
-and checkp() (but not by checknp()) on failure.
-
-Note that protect_io() only catches errors raised by check*(), other Lua
-errors pass through and the connection isn't closed either.
-
-TODO: Currently try_*() methods on sock and fs modules do not break on usage
-errors coming from the OS except for EINVAL and EBADF, so some errors might
-come up as potentially retriable which is not correct. This must be fixed
-case-by-case in fs and sock. See try_accept() for how to fix it.
-]=]
-
-local function io_error_init(self)
-	if self.target then
-		local ok, err = self.target:try_close()
-		if not ok then
-			self.message = self.message..'\nclose() also failed: '..err
-		end
-	end
-end
-
-local io_error = errortype'io'
-io_error.init = io_error_init
-function check_io(self, v, ...)
-	if v then return v, ... end
-	raise(io_error({
-		target = self,
-		addtraceback = self and self.tracebacks,
-	}, ...))
-end
-
-local protocol_error = errortype'protocol'
-protocol_error.init = io_error_init
-function checkp(self, v, ...)
-	if v then return v, ... end
-	raise(protocol_error({
-		target = self,
-		addtraceback = self and self.tracebacks,
-	}, ...))
-end
-
-local content_error = errortype'content'
-function checknp(self, v, ...)
-	if v then return v, ... end
-	raise(content_error({
-		addtraceback = self and self.tracebacks,
-	}, ...))
-end
-
-function check(errorclass, event, v, ...)
-	if v then return v end
-	assert(typeof(errorclass) == 'string' or iserror(errorclass))
-	assert(typeof(event) == 'string')
-	local e = newerror(errorclass, ...)
-	if not e.logged then
-		log('ERROR', e.errortype, event, '%s', e.message)
-		e.logged = true
-	end
-	raise(e)
-end
-
-function protect_io(f, oncaught)
-	return protect('io protocol content', f, oncaught)
-end
-
-local check_io = check_io
-function unprotect_io(f)
-	assert(f)
-	return function(self, ...)
-		return check_io(self, f(self, ...))
-	end
-end
-
 --config ---------------------------------------------------------------------
 
 do
 	local conf = {}
 	function config(k, default)
-		if typeof(k) == 'table' then
-			for k, v in pairs(v) do
+		if istab(k) then
+			for k, v in pairs(k) do
 				config(k, v)
 			end
 		else
@@ -2719,6 +2390,7 @@ do
 	end
 
 	function load_config_file(file)
+		require'fs'
 		local s = load(file, false)
 		return s and load_config_string(s)
 	end
@@ -2753,4 +2425,6 @@ package.loaded.glue = {with = function(s)
 	end
 end}
 
+require'errors'
+require'errors_io'
 require'logging'
