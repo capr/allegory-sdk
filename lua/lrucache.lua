@@ -47,8 +47,6 @@ function _G.lrucache(t)
 	return self:clear()
 end
 
-setmetatable(lrucache, {__call = lrucache.new})
-
 function lrucache:free()
 	if self.keys then
 		for val in pairs(self.keys) do
@@ -112,7 +110,7 @@ function lrucache:put(key, val)
 	if old_val then
 		self.lru:remove(old_val)
 		self.keys[old_val] = nil
-		self.total_size = self.total_size - val_size
+		self.total_size = self.total_size - self:value_size(old_val)
 	end
 	while self.lru.last and self.total_size + val_size > self.max_size do
 		self:remove_last()

@@ -186,7 +186,7 @@ function pb:open(...)
 end
 
 function pb:try_connect(...)
-	local f = try_connect(...)
+	local f, err = try_connect(...)
 	if not f then return nil, err end
 	self.f = f
 	return true

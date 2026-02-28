@@ -277,19 +277,15 @@ local cc_parse = {
 	no_cache = no_value,          --"no-cache"
 	no_store = no_value,          --"no-store"
 	max_age = must_int,           --"max-age" "=" delta-seconds
+	s_maxage = must_int,          --"s-maxage" "=" delta-seconds
 	max_stale = opt_int,          --"max-stale" [ "=" delta-seconds ]
 	min_fresh = must_int,         --"min-fresh" "=" delta-seconds
 	no_transform = no_value,      --"no-transform"
 	only_if_cached = no_value,    --"only-if-cached"
 	public = no_value,            --"public"
-	private = opt_nameset,        --"private" [ "=" <"> 1#field-name <"> ]
-	no_cache = opt_nameset,       --"no-cache" [ "=" <"> 1#field-name <"> ]
-	no_store = no_value,          --"no-store"
 	no_transform = no_value,      --"no-transform"
 	must_revalidate = no_value,   --"must-revalidate"
 	proxy_revalidate = no_value,  --"proxy-revalidate"
-	max_age = must_int,           --"max-age" "=" delta-seconds
-	s_maxage = must_int,          --"s-maxage" "=" delta-seconds
 }
 
 function parse.cache_control(s)
@@ -516,42 +512,13 @@ function parse.cookie(s)
 end
 
 --security / modern headers (parsed as raw strings; structure is simple enough)
-parse.strict_transport_security = nil --max-age=<seconds>[; includeSubDomains][; preload]
-parse.content_security_policy   = nil --directive list; complex enough to leave raw
 parse.x_content_type_options    = name --"nosniff"
 parse.x_frame_options           = name --"deny" | "sameorigin"
 parse.referrer_policy           = name
-parse.permissions_policy        = nil  --leave raw
-
-function parse.strict_transport_security(s) --http://tools.ietf.org/html/rfc6797
-	--[[ --TODO
-	  Strict-Transport-Security = "Strict-Transport-Security" ":"
-                                 [ directive ]  *( ";" [ directive ] )
-
-     directive                 = directive-name [ "=" directive-value ]
-     directive-name            = token
-     directive-value           = token | quoted-string
-	]]
-	return s
-end
-
-function parse.content_disposition(s)
-	--[[ --TODO
-	 content-disposition = "Content-Disposition" ":"
-                              disposition-type *( ";" disposition-parm )
-        disposition-type = "attachment" | disp-extension-token
-        disposition-parm = filename-parm | disp-extension-parm
-        filename-parm = "filename" "=" quoted-string
-        disp-extension-token = token
-        disp-extension-parm = token "=" ( token | quoted-string )
-	]]
-	return s
-end
-
-parse.x_requested_with = name   --"XMLHttpRequest"
-parse.x_forwarded_for = nameset --client1, proxy1, proxy2
-parse.x_forwarded_proto = name  --"https" | "http"
-parse.x_forwarded_port = int
+parse.x_requested_with          = name   --"XMLHttpRequest"
+parse.x_forwarded_for           = nameset --client1, proxy1, proxy2
+parse.x_forwarded_proto         = name  --"https" | "http"
+parse.x_forwarded_port          = int
 
 --parsing API
 
@@ -758,20 +725,13 @@ format.accept_encoding = cilist
 format.accept_language = cilist
 format.authorization = ci --basic <password>
 format.expect = cilist --100-continue
-format.if_match = nil --<etag>
 format.if_modified_since = date
-format.if_none_match = nil --etag
-format.if_range = nil --etag
 format.if_unmodified_since	= date
 format.max_forwards = int
-format.proxy_authorization = nil --basic <password>
-format.referer = nil --it's an url but why parse it
 format.te = cilist --"trailers deflate"
-format.user_agent = nil --mozilla/5.0 (compatible; msie 9.0; windows nt 6.1; wow64; trident/5.0)
 
 --non-standard request headers
 format.x_requested_with = ci--xmlhttprequest
-format.x_forwarded_for = nil --client1 proxy1 proxy2
 
 --standard response headers
 format.accept_ranges = ci --"bytes"
@@ -781,21 +741,16 @@ format.content_disposition = params{filename = qstring} --attachment; ...
 format.content_encoding = cilist
 format.content_language = cilist
 format.content_location = url
-format.etag = nil
 format.expires = date
 format.last_modified = date
-format.link = nil --?
 format.location = url
 format.proxy_authenticate = ci --basic
 format.refresh = params{url = url} --seconds; ... (not standard but supported)
 format.retry_after = int --seconds
-format.strict_transport_security = nil --eg. max_age=16070400; includesubdomains
-format.vary = headernames
 format.www_authenticate = ci
 
 --non-standard response headers
 format.x_forwarded_proto = ci --https|http
-format.x_powered_by = nil --PHP/5.2.1
 
 function headers.format_header(k, v)
 	local k = k:lower()

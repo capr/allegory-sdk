@@ -583,10 +583,6 @@ function logging.rpc:reset_counts()
 	end
 end
 
-function logging.rpc:get_livelist()
-	self.logvar('livelist', self.livelist())
-end
-
 function logging.rpc:get_env()
 	self.logvar('env', env())
 end

@@ -111,6 +111,7 @@ STRINGS
 	char                         = string.char
 	byte                         = string.byte
 	num                          = tonumber
+	gsub                         = string.gsub
 	split(s,sep[,start[,plain]]) => e[,captures...]  split a string on regex
 	words'name1 ... ' => 'name1'   iterate words in a string
 	lines(s, [opt], [i]) => s, i, j, k      iterate the lines of a string
@@ -1006,12 +1007,13 @@ end
 --strings --------------------------------------------------------------------
 
 _G.format = format
-fmt  = format
-_    = format
-rep  = string.rep
-char = string.char
-byte = string.byte
-num  = tonumber
+_G.fmt    = format
+_G._      = format
+_G.rep    = string.rep
+_G.char   = string.char
+_G.byte   = string.byte
+_G.num    = tonumber
+_G.gsub   = string.gsub
 
 --split a string by a separator pattern (or plain string).
 --returns a stateless iterator for the pieces.

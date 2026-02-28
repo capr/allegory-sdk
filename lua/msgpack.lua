@@ -378,7 +378,6 @@ function mp:encoding_buffer(min_size)
 		return self
 	end
 	function buf:encode_ext(typ, n)
-		local n = n or #v
 		if n <= 0 then self.error'zero bytes ext' end
 		if n == 1 then
 			local p, i = b(2)
@@ -401,13 +400,13 @@ function mp:encoding_buffer(min_size)
 			p[i] = 0xd8
 			p[i+1] = typ
 		else
-			encode_len(0xc7, 0xc8, 0xc9)
+			encode_len(n, 0xc7, 0xc8, 0xc9)
 			local p, i = b(1)
 			p[i] = typ
 		end
 		return self
 	end
-	function buf:encode_ext_int(ct, x)
+	function buf:encode_ext_int(ct, v)
 		local n = sizeof(ct)
 		local p, i = b(n)
 		cast(ct, p+i)[0] = v

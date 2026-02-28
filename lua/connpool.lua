@@ -169,7 +169,6 @@ function connpool(opt)
 	end
 
 	function pools:setlimits(key, opt)
-		assert(limit >= 1)
 		pool(key):setlimits(opt)
 	end
 

@@ -38,7 +38,7 @@ end
 function rect_normalize(x, y, w, h) --make a box have positive size
 	local x1, x2 = normalize_seg(x, x+w)
 	local y1, y2 = normalize_seg(y, y+h)
-	return x1, x2-x1, y1, y2-y1
+	return x1, y1, x2-x1, y2-y1
 end
 
 --layouting

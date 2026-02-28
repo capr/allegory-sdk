@@ -187,7 +187,7 @@ end
 local function hsl_to_ansi_color(h, s, L)
 	if s > .5 then
 		local c = hue_to_ansi_color(h)
-		return c, l > .5
+		return c, L > .5
 	elseif L > .5 then --grayscale
 		return 7, L > .75 --white   97 107
 	else
@@ -238,7 +238,8 @@ local function rd_to(c1, c2, err)
 			return str(b, i+1)
 		end
 	end
-	assertf(false, '%s: "%s"', err or 'invalid sequence', term_esc(s))
+	assertf(false, '%s: "%s%s"', err or 'invalid sequence',
+		term_esc(char(c1, c2)))
 end
 
 local function rd_wait(timeout)

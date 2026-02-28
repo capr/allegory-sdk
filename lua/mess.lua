@@ -221,5 +221,3 @@ if not ... then
 	start()
 
 end
-
-return M

@@ -126,6 +126,7 @@ function events:off(s, fn)
 	if fn then
 		local t = t[ev]
 		local i = t and indexof(fn, t)
+		if i then remove(t, i) end
 	elseif ev and nss then
 		local t = t[ev]
 		if t then
@@ -165,7 +166,6 @@ end
 function events:once(ev, func)
 	local ev, nss = parse_event(ev)
 	local id = {}
-	local ev
 	if nss then
 		add(nss, 1, ev)
 		add(nss, id)
@@ -249,4 +249,3 @@ obj:fire('testing', 3, 5)
 assert(#t == 0)
 
 end
-

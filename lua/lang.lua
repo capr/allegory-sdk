@@ -602,7 +602,7 @@ local function mkapi(name, names, rows, cols, default_val)
 end
 mkapi('lang'     , 'langs'      , lang_rows     , lang_cols     , 'en' )
 mkapi('currency' , 'currencies' , currency_rows , currency_cols , 'USD')
-mkapi('country'  , 'cuntries'   , country_rows  , country_cols  , 'US' )
+mkapi('country'  , 'countries'  , country_rows  , country_cols  , 'US' )
 
 function multilang() return config('multilang', true) end
 
@@ -807,7 +807,7 @@ function duration(s, fmt) -- approx[+s] | long | nil
 			if d ~= 0 then return format('%dd%02dh%02dm%02ds', d, h, m, s) end
 			if h ~= 0 then return format('%dh%02dm%02ds', h, m, s) end
 			if m ~= 0 then return format('%dm%02ds', m, s) end
-			if 1 ~= 0 then return format('%ds', s) end
+			if s ~= 0 then return format('%ds', s) end
 		end
 	end
 end

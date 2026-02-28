@@ -5,7 +5,7 @@
 
 BUFFER API
 	lz4_compress(src, [#src], dst, [#dst], [accel], [level], [state], [filldest]) -> #dst
-	lz4_decompress(src, [#src] | true, dst, [#dst], [outlen]) -> #dst
+	lz4_decompress(src, [#src] | true, dst, [#dst], [outlen], [dict], [dictsize]) -> #dst
 
 STREAM API
 	lz4_compress_stream([hc]) -> cs
@@ -207,7 +207,7 @@ function lz4_compress(src, srclen, dst, dstlen, accel, level, state, filldest)
 	return dstlen
 end
 
-function lz4_decompress(src, srclen, dst, dstlen, outlen)
+function lz4_decompress(src, srclen, dst, dstlen, outlen, dict, dictsize)
 	srclen = srclen or #src
 	dstlen = dstlen or #dst
 	if dict then
@@ -242,8 +242,9 @@ end
 
 function enc:compress(src, srclen, dst, dstlen, accel)
 	local dstlen = C.LZ4_compress_fast_continue(self,
-		src, srclen or #src,
-		dst, dstlen or #dst,
+		src, dst,
+		srclen or #src,
+		dstlen or #dst,
 		accel or 1)
 end
 

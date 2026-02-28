@@ -156,7 +156,7 @@ end
 function linkedlist:copy()
 	local list = self:new()
 	for item in self:items() do
-		list:push(item)
+		list:insert_last(item)
 	end
 	return list
 end

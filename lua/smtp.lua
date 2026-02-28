@@ -107,7 +107,7 @@ function smtp_connect(t)
 		check_reply'2..'
 		local to = isstr(req.to) and {req.to} or req.to
 		for i,to in ipairs(to) do
-			 send_line('RCPT TO: %s', req.to)
+			 send_line('RCPT TO: %s', to)
 			 check_reply'2..'
 		end
 		send_line'DATA'
