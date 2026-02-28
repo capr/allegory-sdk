@@ -143,3 +143,32 @@ vfile.truncate = unprotect_io(vfile.try_truncate)
 vfile.seek     = unprotect_io(vfile.try_seek)
 vfile.skip     = unprotect_io(vfile.try_skip)
 
+--tests ----------------------------------------------------------------------
+
+function test.open_buffer()
+	local sz = 100
+	local buf = ffi.new('char[?]', sz)
+	ffi.fill(buf, sz, 42)
+	local f = open_buffer(buf, sz, 'w')
+	assert(f:seek(100) == 100)
+	assert(f:seek(100) == 200)
+	assert(f:seek() == 200)
+	assert(f:seek('end', 0) == 100)
+	assert(f:seek('set', 0) == 0)
+	local buf = ffi.new('char[?]', 100)
+	assert(f:seek(200) == 200)
+	assert(f:read(buf, 10) == 0)
+	assert(f:seek('set', 50) == 50)
+	assert(f:read(buf, 1000) == 50)
+	assert(str(buf, 50) == (char(42):rep(50)))
+	assert(f:write(buf, 1000) == 1000)
+	assert(f:seek('set', 0))
+	ffi.fill(buf, sz, 43)
+	assert(f:write(buf, 1000) == 1000)
+	assert(str(buf, 100) == (char(43):rep(100)))
+	f:close()
+	assert(f:closed())
+	assert(f:try_read(buf, 1000) == nil)
+	assert(f:try_write(buf, 1000) == nil)
+end
+
