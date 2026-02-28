@@ -57,7 +57,7 @@ DIRECTORY LISTING
 	  sc:dir([depth]) -> s
 	  sc:path([depth]) -> s
 	  sc:relpath([depth]) -> s
-	  sc:attr([attr, ][deref]) -> t|val
+	  sc:[try_]attr([attr, ][deref]) -> t|val
 	  sc:depth([n]) -> n (from 1)
 FILE ATTRIBUTES
 	[try_]file_attr(path, [attr, ][deref]) -> t|val     get/set file attribute(s)
@@ -198,10 +198,6 @@ Pipes ------------------------------------------------------------------------
 
 	Create a named pipe.
 
-fs:[try_]close()
-
-	Close the `FILE*` object and the underlying file object.
-
 File I/O ---------------------------------------------------------------------
 
 f:[try_]read(buf, len) -> readlen
@@ -266,7 +262,7 @@ f:[un]buffered_reader([bufsize]) -> read(buf, len)
 
 Open file attributes ---------------------------------------------------------
 
-f:attr([attr]) -> val|t
+f:[try_]attr([attr]) -> val|t
 
 	Get/set attribute(s) of open file. `attr` can be:
 	* nothing/nil: get the values of all attributes in a table.
@@ -322,7 +318,7 @@ ls([dir], [opt]) -> d, next
 
 		The full path of the current dir entry (`d:dir()` combined with `d:name()`).
 
-	d:attr([attr, ][deref]) -> t|val
+	d:[try_]attr([attr, ][deref]) -> t|val
 
 		Get/set dir entry attribute(s).
 
@@ -332,7 +328,7 @@ ls([dir], [opt]) -> d, next
 
 		Some attributes for directory entries are free to get (but not for symlinks
 		when `deref=true`) meaning that they don't require a system call for each
-		file, notably `type`, `atime`, `mtime`, `size` and `inode`.
+		file, notably `type` and `inode`.
 
 	d:is(type, [deref]) -> true|false
 
@@ -352,7 +348,7 @@ scandir(path|{path1,...}, [dive]) -> iter() -> sc
 	sc:dir([depth]) -> s
 	sc:path([depth]) -> s
 	sc:relpath([depth]) -> s
-	sc:attr([attr, ][deref]) -> t|val
+	sc:[try_]attr([attr, ][deref]) -> t|val
 	sc:depth([n]) -> n (from 1)
 
 File attributes --------------------------------------------------------------
@@ -881,14 +877,14 @@ function file.try_readall(f, ignore_file_size)
 	local offset, err = f:try_seek(); if not offset then return nil, err end
 	local sz = size - offset
 	local buf = u8a(sz)
-	local n, err, read_n = f:try_readn(buf, sz)
-	if not n then
-		if err == 'eof' then --short read from TOCTOU
+	local ok, err, read_n = f:try_readn(buf, sz)
+	if not ok then
+		if err == 'eof' then --short read from TOCTOU, still good
 			return buf, read_n
 		end
 		return nil, err
 	end
-	return buf, n
+	return buf, sz
 end
 file.readall = unprotect_io(file.try_readall)
 
@@ -1623,16 +1619,20 @@ local LOCK_UN = 8
 
 local lock_ops = {sh = LOCK_SH, ex = LOCK_EX, un = LOCK_UN}
 
+--NOTE: returns true, 'again' if nonblock is passed but lock not acquired,
+--as opposed to nil, err for genuine errors.
 function file.try_lock(f, op, nonblock)
 	if f.fd == -1 then return nil, 'closed' end
 	local flags = assertf(lock_ops[op or 'ex'], 'invalid lock op: %s', op)
 	if nonblock then flags = bor(flags, LOCK_NB) end
-	return check_errno(C.flock(f.fd, flags) == 0)
+	local ok, err = check_errno(C.flock(f.fd, flags) == 0)
+	if ok then return true end
+	if err == 'again' then return true, 'again' end
+	return ok, err
 end
-function file.lock(f, op)
-	return check_io(f, f:try_lock(op))
+function file.lock(f, op, nonblock)
+	return check_io(f, f:try_lock(op, nonblock))
 end
-
 function file.try_unlock(f, nonblock)
 	return f:try_lock('un', nonblock)
 end
@@ -1902,8 +1902,10 @@ function scandir(arg, dive)
 		local iter = scandir1(arg[i], dive)
 		return function()
 			::again::
-			local sc = iter()
-			if not sc then
+			local sc, err = iter()
+			if sc == false then --error
+				return false, err --sc will be nil in next iteration
+			elseif sc == nil then --end
 				if i == n then return nil end
 				i = i + 1
 				iter = scandir1(arg[i], dive)
@@ -1933,7 +1935,10 @@ function try_load_tobuffer(file, default_buf, default_len, ignore_file_size)
 		return nil, err
 	end
 	local buf, len = f:try_readall(ignore_file_size)
-	if not buf then return nil, err end
+	if not buf then
+		f:try_close()
+		return nil, len
+	end
 	local ok, err = f:try_close()
 	if not ok then return nil, err end
 	return buf, len
@@ -2123,7 +2128,7 @@ function fs_info(path)
 	if not buf then return nil, err end
 	local t = {}
 	t.size = tonumber(buf.f_blocks * buf.f_bsize)
-	t.free = tonumber(buf.f_bfree  * buf.f_bsize)
+	t.free = tonumber(buf.f_bavail * buf.f_bsize)
 	return t
 end
 

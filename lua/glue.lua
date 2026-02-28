@@ -2246,6 +2246,7 @@ local errno_msgs = {
 	[  4] = 'interrupted', --EINTR, epoll_wait()
 	[  5] = 'io_error', --EIO, readlink(), read()
 	[  9] = 'bad_file', --EBADF
+	[ 11] = 'again', --EAGAIN, EWOULDBLOCK
 	[ 13] = 'access_denied', --EACCESS, mkdir() etc.
 	[ 17] = 'already_exists', --EEXIST, open(), mkdir(), mkfifo()
 	[ 20] = 'not_found', --ENOTDIR, opendir()

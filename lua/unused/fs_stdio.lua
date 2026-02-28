@@ -14,8 +14,13 @@ f:stream(mode) -> fs
 	Open a `FILE*` object from a file. The file should not be used anymore while
 	a stream is open on it and `fs:close()` should be called to close the file.
 
+fs:[try_]close()
+
+	Close the `FILE*` object and the underlying file object.
 
 ]]
+
+local stream = {}; stream.__index = stream --FILE methods
 
 cdef[[
 int fileno(struct FILE *stream);
