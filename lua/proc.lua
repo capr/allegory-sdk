@@ -8,11 +8,13 @@
 	[try_]exec(opt | cmd,...) -> p                   spawn a child process in background
 	[try_]exec_luafile(opt | script,...) -> p        spawn a process running a Lua script
 	  p.pid                                    process ID
-	  p:kill()                                 kill process
+	  p:kill([signal=SIGTERM])                 kill process
 	  p:wait([expires]) -> status              wait for a process to finish
 	  p:status() -> active|finished|killed|forgotten    process status
 	  p:exit_code() -> code | nil,status       get process exit code
 	  p:forget()                               close process handles
+
+	[try_]kill(pid, [signal=SIGTERM])          kill a process
 
 	env(k) -> v                                get env. var
 	env(k, v)                                  set env. var
@@ -21,8 +23,6 @@
 
 	cmdline_escape(s) -> s                     escape string (but don't quote)
 	cmdline_quote_arg(s) -> s                  quote as cmdline arg
-	cmdline_quote_arg(s) -> s                  quote as cmdline arg
-	cmdline_quote_args(...) -> s               quote as cmdline args
 	cmdline_quote_args(...) -> s               quote as cmdline args
 	cmdline_quote_cmd(cmd) -> s                quote command
 	cmdline_quote_vars({k->v}, [format]) -> s  quote as var assignments
@@ -57,7 +57,7 @@
 proc_info([pid]) -> t
 proc:info() -> t
 
-	Get process info. On Linux, it parses `/proc/PID/stat`.
+	Get process info fro `/proc/PID/stat`.
 
 os_info() -> t
 
@@ -101,9 +101,8 @@ killed it, but not before you're done with all its redirected pipes if any
 
 #### Autkill caveats
 
-In Linux, if you start your autokilled process from a thread other than
-the main thread, the process is killed when the thread finishes, IOW
-autokill is only portable if you start processes from the main thread.
+If you start your autokilled process from a thread other than the main thread,
+the process is killed when that thread ends, not when the process ends.
 
 ]=]
 
@@ -112,6 +111,7 @@ if not ... then require'proc_test'; return end
 require'glue'
 require'fs'
 require'sock'
+require'signal'
 
 assert(Linux, 'platform not Linux')
 
@@ -161,11 +161,13 @@ int close(int fd);
 
 local F_GETFD = 1
 local F_SETFD = 2
+
 local FD_CLOEXEC = 1
+
 local PR_SET_PDEATHSIG = 1
-local SIGTERM = 15
-local SIGKILL = 9
+
 local WNOHANG = 1
+
 local EAGAIN = 11
 local EINTR  = 4
 local ERANGE = 34
@@ -214,10 +216,7 @@ local function close_fd(fd)
 	return C.close(fd) == 0
 end
 
-function _exec(t, env, dir, stdin, stdout, stderr, autokill, inherit_handles)
-
-	inherit_handles = repl(inherit_handles, nil, true)
-	assert(inherit_handles) --Linux only has leaky handles.
+function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 
 	local cmd, args
 	if istab(t) then
@@ -474,13 +473,23 @@ function proc:forget()
 	self.pid = false
 end
 
-function proc:kill()
+function try_kill(pid, sig)
+	return check_errno(C.kill(pid, sig or SIGTERM) == 0)
+end
+function kill(pid, sig)
+	local ok, err = try_kill(pid, sig)
+	check('proc', 'kill', ok, 'pid=%d sig=%d: %s', pid, sig, err)
+end
+
+getpid = C.getpid
+
+function proc:kill(sig)
 	if not self.pid then
 		return nil, 'forgotten'
 	elseif self:status() == 'killed' then
 		return nil, 'killed'
 	end
-	return check_errno(C.kill(self.pid, SIGKILL) == 0)
+	return try_kill(sig)
 end
 
 function proc:exit_code()
@@ -753,8 +762,7 @@ end
 --{cmd=cmd|{cmd,arg1,...}, env=, ...}
 function try_exec(t, ...)
 	if istab(t) and t.cmd then
-		return _exec(t.cmd, t.env, t.dir, t.stdin, t.stdout, t.stderr,
-			t.autokill, t.inherit_handles)
+		return _exec(t.cmd, t.env, t.dir, t.stdin, t.stdout, t.stderr, t.autokill)
 	else
 		return _exec(t, ...)
 	end

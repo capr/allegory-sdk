@@ -19,9 +19,10 @@
 
 ]]
 
-assert(Linux, 'not on Linux') --OSX and Windows don't have signalfd.
 require'sock'
 require'fs'
+
+assert(Linux, 'platform not Linux')
 
 cdef[[
 typedef struct {
@@ -34,7 +35,7 @@ struct signalfd_siginfo {
 	uint32_t pid;        /* PID of sender */
 	uint32_t uid;        /* Real UID of sender */
 	 int32_t fd;         /* File descriptor (SIGIO) */
-	uint32_t tid;        /* Kernel timer ID (POSIX timers)
+	uint32_t tid;        /* Kernel timer ID (POSIX timers) */
 	uint32_t band;       /* Band event (SIGIO) */
 	uint32_t overrun;    /* POSIX timer overrun count */
 	uint32_t trapno;     /* Trap number that caused signal */
@@ -49,7 +50,7 @@ struct signalfd_siginfo {
 	 int32_t syscall;
 	uint64_t call_addr;
 	uint32_t arch;
-	uint8_t __pad[28];       /* Pad size to 128 bytes (allow for additional fields in the future) */
+	uint8_t __pad[28];   /* Pad size to 128 bytes (allow for additional fields in the future) */
 };
 int sigemptyset (sigset_t*);
 int sigaddset   (sigset_t*, int);
@@ -82,10 +83,10 @@ SIGTTOU   = 22 --bg process tries to write to terminal
 SIGURG    = 23 --out-of-band data received on a socket
 SIGXCPU   = 24 --CPU RLIMIT exceeded
 SIGXFSZ   = 25 --file size limit exceeded
-SIGVTALRM = 26 --fd is ready for I/O (fcntl() with F_SETOWN and O_ASYNC)
+SIGVTALRM = 26 --virtual timer expired
 SIGPROF   = 27 --profiling timer
 SIGWINCH  = 28 --terminal window was resized
-SIGIO     = 29 --async I/O is complete (fcnt() with O_ASYNC)
+SIGIO     = 29 --fd is ready for I/O (fcntl() with F_SETOWN and O_ASYNC)
 
 SFD_CLOEXEC  = 0x80000
 SFD_NONBLOCK = 0x00800 --not needed since file_wrap_fd() calls ioctl().
@@ -93,7 +94,7 @@ SFD_NONBLOCK = 0x00800 --not needed since file_wrap_fd() calls ioctl().
 local function check_signal(signal)
 	return isstr(signal) and assertf(_G[signal], 'unknown signal %s', signal)
 		or isnum(signal) and signal
-		or assert(false, 'invalid signal type %s', typeof(signal))
+		or assertf(false, 'invalid signal type %s', typeof(signal))
 end
 
 local ss = new'sigset_t'
@@ -110,7 +111,11 @@ function signal_file(signals, async, flags, name)
 	local ss = sigset(signals)
 	local fd = C.signalfd(-1, ss, bor(async and SFD_NONBLOCK or 0, flags or 0))
 	assert(check_errno(fd ~= -1))
-	local f = file_wrap_fd(fd, nil, async, 'pipe', name or _("signalfd('%s')", signals), nil, 's')
+	local f = file_wrap_fd(fd, {
+		async = async, type = 'pipe',
+		name = name or _("signalfd('%s')", signals),
+		debug_prefix = 's',
+	})
 	local si = new'struct signalfd_siginfo'
 	assert(sizeof(si) == 128)
 	local psi = cast(u8p, si)
@@ -119,10 +124,7 @@ function signal_file(signals, async, flags, name)
 		if not buf then return nil, err end
 		return si
 	end
-	f.read_signal = function(f)
-		f:readn(psi, 128)
-		return si
-	end
+	f.read_signal = unprotect_io(f.try_read_signal)
 	return f
 end
 
@@ -170,9 +172,17 @@ end
 
 if not ... then --self-test
 
+	package.loaded.signal = true
+	require'proc'
+
 	local signals = 'SIGINT SIGTERM SIGUSR1'
 	signal_block(signals)
 	local f = signal_file(signals, true)
+
+	resume(thread(function()
+		kill(getpid(), SIGINT)
+	end))
+
 	resume(thread(function()
 		while 1 do
 			local s = f:read_signal()
@@ -187,6 +197,7 @@ if not ... then --self-test
 			end
 		end
 	end))
+
 	start()
 
 end
