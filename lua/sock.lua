@@ -5,22 +5,22 @@
 	TLS support in sock_libtls.lua.
 
 ADDRESS LOOKUP
-	[try_]getaddrinfo(...) -> ai               look-up a hostname
-	ai:free()                                  free the address list
-	ai:next() -> ai|nil                        get next address in list
-	ai:addrs() -> iter() -> ai                 iterate addresses
-	ai:type() -> s                             socket type: 'tcp', ...
-	ai:family() -> s                           address family: 'inet', ...
-	ai:protocol() -> s                         protocol: 'tcp', 'icmp', ...
-	ai:name() -> s                             canonical name
-	ai:tostring() -> s                         formatted address
-	ai.addr -> sa                              first address object
-	sa:family() -> s                           address family: 'inet', ...
-	sa:port() -> n                             address port
-	sa:tostring() -> s                         'ip:port'
-	sa:addr() -> ip                            IP address object
-	ip:tobinary() -> uint8_t[4|16], 4|16       IP address in binary form
-	ip:tostring() -> s                         IP address in string form
+	[try_]getaddrinfo(...) -> ai           look-up a hostname
+	ai:free()                              free the address list
+	ai:next() -> ai|nil                    get next address in list
+	ai:addrs() -> iter() -> ai             iterate addresses
+	ai:type() -> s                         socket type: 'tcp', ...
+	ai:family() -> s                       'inet', 'inet6', 'unix'
+	ai:protocol() -> s                     'tcp', 'udp', 'raw', 'ip', ...
+	ai:name() -> s                         canonical name
+	ai:tostring() -> s                     formatted address
+	ai.addr -> sa                          first address object
+	sa:family() -> s                       address family: 'inet', ...
+	sa:port() -> n                         address port
+	sa:tostring() -> s                     'ip:port'
+	sa:addr() -> ip                        IP address object
+	ip:tobinary() -> uint8_t[4|16], 4|16   IP address in binary form
+	ip:tostring() -> s                     IP address in string form
 
 SOCKETS
 	tcp([opt], [family], [protocol]) -> tcp         make a TCP socket
@@ -28,7 +28,7 @@ SOCKETS
 	issocket(s) -> t|f                              check if s is a socket
 	rawsocket([opt], [family], [protocol]) -> raw   make a raw socket
 	[try_]connect([tcp, ]host, port, [timeout]) -> tcp   (create tcp socket and) connect
-	listen([tcp, ]host, port, ...) -> tcp           (create tcp socket and) listen
+	listen([tcp, ]host, port, ...) -> tcp                (create tcp socket and) listen
 	s:socktype() -> s                               socket type: 'tcp', ...
 	s:family() -> s                                 address family: 'inet', ...
 	s:protocol() -> s                               protocol: 'tcp', 'icmp', ...
@@ -38,11 +38,11 @@ SOCKETS
 	s:[try_]bind([host], [port], [af])              bind socket to an address
 	s:[try_]bind(sa)                                bind socket to an address
 	s:[try_]bind('unix:FILE')                       bind socket to a unix domain socket
-	s:[try_]setopt(opt, val)                        set socket option (`'so_*'` or `'tcp_*'`)
+	s:[try_]setopt(opt, val)                        set socket option ('so_*', 'tcp_*', 'ip_*', etc.)
 	s:[try_]getopt(opt) -> val                      get socket option
 	tcp|udp:[try_]connect(host, port, [af], ...)    connect to an address
-	tcp:[try_]send(s|buf, [len]) -> true            send bytes to connected address
-	udp:[try_]send(s|buf, [len]) -> len             send bytes to connected address
+	tcp:[try_]send(s|buf, [len], [flags]) -> true   send bytes to connected address
+	udp:[try_]send(s|buf, [len], [flags]) -> len    send bytes to connected address
 	tcp|udp:[try_]recv(buf, maxlen) -> len          receive bytes
 	tcp:[try_]listen([backlog, ]host, port, [onaccept], [af])   put socket in listening mode
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
@@ -162,7 +162,7 @@ s:[try_]close()
 	Close the connection and free the socket.
 
 	For TCP sockets, if 1) there's unread incoming data (i.e. recv() hasn't
-	returned 0 yet), or 2) `so_linger` socket option was set with a zero timeout,
+	returned 0 yet), or 2) `linger` socket option was set with a zero timeout,
 	then a TCP RST packet is sent to the client, otherwise a FIN is sent.
 
 s:[try_]bind([host], [port], [af])
@@ -340,6 +340,8 @@ local coro = require'coro'
 coro.live  = live
 coro.pcall = pcall
 
+assert(Linux, 'platform not Linux')
+
 local
 	assert, isstr, clock, max, abs, min, bor, band, cast, u8p, fill, str, errno =
 	assert, isstr, clock, max, abs, min, bor, band, cast, u8p, fill, str, errno
@@ -348,8 +350,6 @@ local coro_create   = coro.create
 local coro_safewrap = coro.safewrap
 local coro_transfer = coro.transfer
 local coro_finish   = coro.finish
-
-assert(Linux, 'platform not Linux')
 
 local C = C
 
@@ -645,6 +645,9 @@ do
 	function socket:family   () return family_map     [self._af] end
 	function socket:protocol () return protocol_map   [self._pr] end
 
+	function socket:try_addr(host, port, flags)
+		return try_getaddrinfo(host, port, self._st, self._af, self._pr, flags)
+	end
 	function socket:addr(host, port, flags)
 		return getaddrinfo(host, port, self._st, self._af, self._pr, flags)
 	end
@@ -790,7 +793,7 @@ end, EINPROGRESS)
 function tcp:try_connect(host, port, addr_flags)
 	if not self.s then return nil, 'closed' end
 	log('', 'sock', 'connect?', '%-4s %s:%s', self, host, port)
-	local ai, ext_ai = self:addr(host, port, addr_flags)
+	local ai, ext_ai = self:try_addr(host, port, addr_flags)
 	if not ai then return false, ext_ai end
 	if not self.bound_addr then
 		local bind_host = ai:family() == 'unix' and 'unix:' or '*'
@@ -1017,8 +1020,6 @@ do
 		return true
 	end
 
-	local ENOENT = 2
-
 	function _sock_unregister(s)
 		local i = s._i
 		if not i then return end --closing before _sock_register() was called.
@@ -1053,7 +1054,7 @@ do
 			socket.recv_thread = nil
 		end
 		if has_err then
-			local err = socket:try_getopt'error' --NOTE: this clears the error!
+			local err = socket:try_getopt'so_error' --NOTE: this clears the error!
 			coro_transfer(thread, nil, err or 'socket error')
 		else
 			coro_transfer(thread, true)
@@ -1079,12 +1080,7 @@ do
 		end
 	end
 
-	--NOTE: If you think of making maxevents > 1 for a modest perf gain,
-	--note that epoll_wait() will coalesce multiple events affecting the same
-	--fd in a single epoll_event item, and it returns the number of events,
-	--not the number of epoll_event items that were filled, contrary to what
-	--the epoll man page says, so it's not trivial to parse the result.
-	local maxevents = 1
+	local maxevents = 64 --arbitrary default to minimize syscalls.
 	local events = new('struct epoll_event[?]', maxevents)
 	local RECV_MASK = EPOLLIN  + EPOLLERR + EPOLLHUP + EPOLLRDHUP
 	local SEND_MASK = EPOLLOUT + EPOLLERR + EPOLLHUP + EPOLLRDHUP
@@ -1098,32 +1094,31 @@ do
 		local expires = min(sx or 1/0, rx or 1/0)
 		local timeout = expires < 1/0 and max(0, expires - clock()) or 1/0
 
-		local timeout_ms = max(timeout * 1000, 100)
+		local timeout_ms = max(timeout * 1000, 50)
 		if timeout_ms > 0x7fffffff then timeout_ms = -1 end --infinite
 
 		local n = C.epoll_wait(epoll_fd(), events, maxevents, timeout_ms)
-		if n > 0 then
-			assert(n == 1)
-			local e = events[0].events
-			local si = events[0].data.u32
-			local socket = sockets[si]
-			--if EPOLLHUP/RDHUP/ERR arrives (and it'll arrive alone because maxevents == 1),
-			--we need to wake up all waiting threads because EPOLLIN/OUT might never follow!
-			local has_err = band(e, EPOLLERR) ~= 0
-			--NOTE: epoll_wait sets both RECV_MASK and SEND_MASK even when
-			--waiting for read or write but not both.
-			if band(e, RECV_MASK) ~= 0 then wake(socket, false, has_err) end
-			if band(e, SEND_MASK) ~= 0 then wake(socket, true , has_err) end
-			return true
+		if n == -1 then
+			return check()
 		elseif n == 0 then
 			--handle timed-out ops.
 			local t = clock()
 			check_heap(send_expires_heap, 'send_expires', 'send_thread', t)
 			check_heap(recv_expires_heap, 'recv_expires', 'recv_thread', t)
 			return true
-		else
-			return check()
 		end
+		for i = 0, n-1 do
+			local e = events[i].events
+			local si = events[i].data.u32
+			local socket = sockets[si]
+			--When EPOLL{HUP|RDHUP|ERR} arrives, we need to wake up all waiting
+			--threads because EPOLL{IN|OUT} might never follow, which is why
+			--we check {RECV|SEND}_MASK instead of EPOLL{IN|OUT} alone.
+			local has_err = band(e, EPOLLERR) ~= 0
+			if band(e, RECV_MASK) ~= 0 then wake(socket, false, has_err) end
+			if band(e, SEND_MASK) ~= 0 then wake(socket, true , has_err) end
+		end
+		return true
 	end
 end
 
@@ -1138,7 +1133,7 @@ function tcp:try_shutdown(which)
 	return check(C.shutdown(self.s,
 		   which == 'r' and 0
 		or which == 'w' and 1
-		or (not which or which == 'rw') and 2))
+		or (not which or which == 'rw') and 2) == 0)
 end
 
 --bind() ---------------------------------------------------------------------
@@ -1218,10 +1213,11 @@ do --getopt() & setopt() -----------------------------------------------------
 
 local buf = new[[
 	union {
-		char     c[4];
+		char     c[8];
 		uint32_t u;
 		uint16_t u16;
 		int32_t  i;
+		struct { int onoff; int linger; } linger;
 	}
 ]]
 
@@ -1230,17 +1226,13 @@ local function get_int    (buf) return buf.i end
 local function get_uint   (buf) return buf.u end
 local function get_uint16 (buf) return buf.u16 end
 
-local function get_str(buf, sz)
-	return str(C.strerror(buf.i))
-end
-
 local function get_error(buf)
 	local _, s = check_errno(nil, buf.i)
 	return s
 end
 
 local function set_bool(v) --BOOL aka DWORD
-	buf.u = v
+	buf.u = v and 1 or 0
 	return buf.c, 4
 end
 
@@ -1259,7 +1251,18 @@ local function set_uint16(v)
 	return buf.c, 2
 end
 
-local function nyi() error'NYI' end
+local function set_str(v)
+	return v, #v
+end
+
+local function get_linger()
+	return buf.linger.onoff ~= 0 and buf.linger.linger or false
+end
+local function set_linger(v)
+	buf.linger.onoff  = v and 1 or 0
+	buf.linger.linger = isnum(v) and v or 0
+	return buf.c, 8
+end
 
 local SOL_SOCKET  = 1
 local IPPROTO_IP  = 0
@@ -1270,20 +1273,21 @@ local IPPROTO_IPV6 = 41
 local OPT, get_opt, set_opt
 
 OPT = {
-	--SOL_SOCKET options (no prefix)
-	reuseaddr         = 2,  --allow local address reuse
-	type              = 3,  --get socket type (RO)
-	error             = 4,  --get and clear pending error (RO)
-	broadcast         = 6,  --allow sending broadcast datagrams
-	sndbuf            = 7,  --send buffer size
-	rcvbuf            = 8,  --receive buffer size
-	keepalive         = 9,  --enable keep-alive probes
-	priority          = 12, --set packet priority
-	reuseport         = 15, --allow multiple sockets to bind to same port
-	bindtodevice      = 25, --bind to a specific network interface
-	acceptconn        = 30, --is socket listening (RO)
-	protocol          = 38, --get socket protocol (RO)
-	domain            = 39, --get socket domain/family (RO)
+	--SOL_SOCKET options (so_ prefix)
+	so_reuseaddr      = 2,  --allow local address reuse
+	so_type           = 3,  --get socket type (RO)
+	so_error          = 4,  --get and clear pending error (RO)
+	so_broadcast      = 6,  --allow sending broadcast datagrams
+	so_sndbuf         = 7,  --send buffer size
+	so_rcvbuf         = 8,  --receive buffer size
+	so_keepalive      = 9,  --enable keep-alive probes
+	so_priority       = 12, --set packet priority
+	so_linger         = 13, --linger on close if data is present
+	so_reuseport      = 15, --allow multiple sockets to bind to same port
+	so_bindtodevice   = 25, --bind to a specific network interface
+	so_acceptconn     = 30, --is socket listening (RO)
+	so_protocol       = 38, --get socket protocol (RO)
+	so_domain         = 39, --get socket domain/family (RO)
 	--IPPROTO_TCP options (tcp_ prefix)
 	tcp_nodelay       =  1, --disable Nagle's algorithm
 	tcp_maxseg        =  2, --max segment size
@@ -1301,7 +1305,6 @@ OPT = {
 	ip_ttl            =  2, --time-to-live
 	ip_multicast_ttl  = 33, --multicast TTL
 	ip_multicast_loop = 34, --multicast loopback
-	ip_multicast_if   = 32, --multicast interface address
 	ip_freebind       = 15, --bind to nonlocal address
 	--IPPROTO_IPV6 options (ipv6_ prefix)
 	ipv6_v6only       = 26, --restrict to IPv6 only
@@ -1311,18 +1314,19 @@ OPT = {
 
 get_opt = {
 	--SOL_SOCKET
-	reuseaddr         = get_bool,
-	type              = get_int,
-	error             = get_error,
-	broadcast         = get_bool,
-	sndbuf            = get_uint,
-	rcvbuf            = get_uint,
-	keepalive         = get_bool,
-	priority          = get_int,
-	reuseport         = get_bool,
-	acceptconn        = get_bool,
-	protocol          = get_int,
-	domain            = get_int,
+	so_reuseaddr      = get_bool,
+	so_type           = get_int,
+	so_error          = get_error,
+	so_broadcast      = get_bool,
+	so_sndbuf         = get_uint,
+	so_rcvbuf         = get_uint,
+	so_keepalive      = get_bool,
+	so_priority       = get_int,
+	so_linger         = get_linger,
+	so_reuseport      = get_bool,
+	so_acceptconn     = get_bool,
+	so_protocol       = get_int,
+	so_domain         = get_int,
 	--IPPROTO_TCP
 	tcp_nodelay       = get_bool,
 	tcp_maxseg        = get_int,
@@ -1349,14 +1353,15 @@ get_opt = {
 
 set_opt = {
 	--SOL_SOCKET
-	reuseaddr         = set_bool,
-	broadcast         = set_bool,
-	sndbuf            = set_uint,
-	rcvbuf            = set_uint,
-	keepalive         = set_bool,
-	priority          = set_int,
-	reuseport         = set_bool,
-	bindtodevice      = set_int,
+	so_reuseaddr      = set_bool,
+	so_broadcast      = set_bool,
+	so_sndbuf         = set_uint,
+	so_rcvbuf         = set_uint,
+	so_keepalive      = set_bool,
+	so_priority       = set_int,
+	so_linger         = set_linger,
+	so_reuseport      = set_bool,
+	so_bindtodevice   = set_str,
 	--IPPROTO_TCP
 	tcp_nodelay       = set_bool,
 	tcp_maxseg        = set_int,
@@ -1382,6 +1387,7 @@ set_opt = {
 }
 
 local opt_levels = {
+	so_   = SOL_SOCKET,
 	tcp_  = IPPROTO_TCP,
 	ip_   = IPPROTO_IP,
 	ipv6_ = IPPROTO_IPV6,
@@ -1389,14 +1395,12 @@ local opt_levels = {
 }
 local function parse_opt(k)
 	local opt = assertf(OPT[k], 'invalid socket option: %s', k)
-	local level = SOL_SOCKET
 	for prefix, proto in pairs(opt_levels) do
 		if k:find(prefix, 1, true) == 1 then
-			level = proto
-			break
+			return opt, proto
 		end
 	end
-	return opt, level
+	assertf(false, 'invalid socket option prefix: %s', k)
 end
 
 local szbuf = i32a(1, 4)
@@ -1645,7 +1649,7 @@ function try_connect(self, host, port, timeout)
 		local host, port, timeout = self, host, port
 		local ai, err = try_getaddrinfo(host, port)
 		if not ai then return nil, err end
-		local s = create_tcp(ai:family())
+		local s = create_tcp(nil, ai:family())
 		local s, err = try_connect(s, ai, nil, timeout)
 		ai:free()
 		if not s then return nil, err end
@@ -1670,7 +1674,7 @@ function listen(self, ...)
 	end
 	--NOTE: reuseaddr doesn't work with unix sockets,
 	--you must remove the socket file first!
-	self:setopt('reuseaddr', true)
+	self:setopt('so_reuseaddr', true)
 	return self:listen(...)
 end
 
@@ -1869,74 +1873,81 @@ function threadset()
 	return ts
 end
 
-local _stop = false
-local running = false
-local term_sig_f
-function stop()
-	_stop = true
-	if term_sig_f then
-		term_sig_f:close()
-	end
-end
-function try_start(ignore_interrupts)
-	if running then
-		return
+do --scheduler loop
+
+	local _stop = false
+	local running = false
+	local term_sig_f
+
+	function stop()
+		_stop = true
+		if term_sig_f then
+			term_sig_f:close()
+		end
 	end
 
-	--NOTE: not creating the signal-catching thread if there are no waiting I/O
-	--threads otherwise there will not be no opportunity to ever close it.
-	if Linux and wait_count > 0 then
-		--signals thread to stop loop on SIGINT (Ctrl+C) and SIGTERM (kill) events.
+	function try_start(ignore_interrupts)
+		if running then
+			return
+		end
+
 		require'signal'
-		term_sig_f = on_signal('SIGINT SIGTERM', function()
-			stop()
-			return 'stop'
-		end)
+
+		--NOTE: not creating the signal-catching thread if there are no waiting I/O
+		--threads otherwise there will not be no opportunity to ever close it.
+		if wait_count > 0 then
+			--signals thread to stop loop on SIGINT (Ctrl+C) and SIGTERM (kill) events.
+			term_sig_f = on_signal('SIGINT SIGTERM', function()
+				stop()
+				return 'stop'
+			end)
+		end
+
+		poll_thread = currentthread()
+		repeat
+			running = true
+			local ret, err = poll(ignore_interrupts)
+			if not ret then
+				stop()
+				if err == 'interrupted' then
+					return true, err
+				end
+				if err ~= 'empty' then
+					running = false
+					_stop = false
+					return ret, err
+				end
+			end
+		until _stop
+		running = false
+		_stop = false
+		return true
+	end
+	function start(...)
+		assert(try_start(...))
 	end
 
-	poll_thread = currentthread()
-	repeat
-		running = true
-		local ret, err = poll(ignore_interrupts)
-		if not ret then
-			stop()
-			if err == 'interrupted' then
-				return true, err
+	function run(f, ...)
+		if running then
+			return f(...)
+		else
+			local ret
+			local function wrapper(...)
+				ret = pack(f(...))
+				if term_sig_f then
+					term_sig_f:close()
+				end
 			end
-			if err ~= 'empty' then
-				running = false
-				_stop = false
-				return ret, err
-			end
+			resume(thread(wrapper, 'sock-run'), ...)
+			start()
+			return ret and unpack(ret)
 		end
-	until _stop
-	running = false
-	_stop = false
-	return true
-end
-function start(...)
-	assert(try_start(...))
-end
-
-function run(f, ...)
-	if running then
-		return f(...)
-	else
-		local ret
-		local function wrapper(...)
-			ret = pack(f(...))
-			if term_sig_f then
-				term_sig_f:close()
-			end
-		end
-		resume(thread(wrapper, 'sock-run'), ...)
-		start()
-		return ret and unpack(ret)
 	end
+
 end
 
 --init stdin/out/err as async pipes ------------------------------------------
 
-stdin_async_pipe  = memoize(function() require'fs'; return file_wrap_fd(0, nil, 'pipe', true, '<stdin>' ) end)
-stdout_async_pipe = memoize(function() require'fs'; return file_wrap_fd(1, nil, 'pipe', true, '<stdout>') end)
-stderr_async_pipe = memoize(function() require'fs'; return file_wrap_fd(2, nil, 'pipe', true, '<stderr>') end)
+stdin_async_pipe  = memoize(function() require'fs'; return file_wrap_fd(0, {type = 'pipe', async = true, debug_prefix = '<stdin>' }) end)
+stdout_async_pipe = memoize(function() require'fs'; return file_wrap_fd(1, {type = 'pipe', async = true, debug_prefix = '<stdout>'}) end)
+stderr_async_pipe = memoize(function() require'fs'; return file_wrap_fd(2, {type = 'pipe', async = true, debug_prefix = '<stderr>'}) end)

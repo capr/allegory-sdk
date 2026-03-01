@@ -4,7 +4,6 @@ io.stdout:setvbuf'no'
 io.stderr:setvbuf'no'
 
 require'glue'
-require'os_thread'
 require'sock'
 
 local function test_addr()
@@ -14,15 +13,16 @@ local function test_addr()
 		end
 	end
 	dump('1234:2345:3456:4567:5678:6789:7890:8901', 0, 'tcp', 'inet6')
-	dump('123.124.125.126', 1234, 'tcp', 'inet', nil, {cannonname = true})
+	dump('123.124.125.126', 1234, 'tcp', 'inet', nil, {canonname = true})
 	dump('*', 0)
 end
 
 local function test_sockopt()
 	local s = tcp()
 	for _,k in ipairs{
-		'error             ',
-		'reuseaddr         ',
+		'so_type              ',
+		'so_error             ',
+		'so_reuseaddr         ',
 	} do
 		if k then
 			local sk, k = k, trim(k)
@@ -34,32 +34,32 @@ local function test_sockopt()
 	pr''
 
 	for _,k in ipairs{
-		'broadcast              ',
-		'conditional_accept     ',
-		'dontlinger             ',
-		'dontroute              ',
-		'exclusiveaddruse       ',
-		'keepalive              ',
-		'linger                 ',
-		'max_msg_size           ',
-		'oobinline              ',
-		'pause_accept           ',
-		'port_scalability       ',
-		'randomize_port         ',
-		'rcvbuf                 ',
-		'rcvlowat               ',
-		'rcvtimeo               ',
-		'reuseaddr              ',
-		'sndbuf                 ',
-		'sndlowat               ',
-		'sndtimeo               ',
-		'update_accept_context  ',
-		'update_connect_context ',
-		'tcp_bsdurgent          ',
-		'tcp_expedited_1122  	',
-		'tcp_maxrt           	',
-		'tcp_nodelay            ',
-		'tcp_timestamps      	',
+		'so_reuseaddr          ',
+		'so_broadcast          ',
+		'so_sndbuf             ',
+		'so_rcvbuf             ',
+		'so_keepalive          ',
+		'so_priority           ',
+		'so_linger             ',
+		'so_reuseport          ',
+		'tcp_nodelay           ',
+		'tcp_maxseg            ',
+		'tcp_cork              ',
+		'tcp_keepidle          ',
+		'tcp_keepintvl         ',
+		'tcp_keepcnt           ',
+		'tcp_defer_accept      ',
+		'tcp_quickack          ',
+		'tcp_user_timeout      ',
+		'tcp_fastopen          ',
+		'tcp_fastopen_connect  ',
+		'ip_tos                ',
+		'ip_ttl                ',
+		'ip_multicast_ttl      ',
+		'ip_multicast_loop     ',
+		'ip_freebind           ',
+		'ipv6_v6only           ',
+		'udp_cork              ',
 	} do
 		local sk, k = k, trim(k)
 		local canget, v, err = pcall(s.try_getopt, s, k)
@@ -69,58 +69,34 @@ local function test_sockopt()
 	end
 end
 
-local function start_server()
-	pr'server'
-	local server_thread = os_thread(function()
-		require'sock'
-		local s = tcp():listen('*', 8090)
+local function test_tcp()
+	pr'tcp'
+	run(function()
+		local server = listen('127.0.0.1', 8091)
 		resume(thread(function()
-			while true do
-				pr'...'
-				local cs = s:accept()
-				pr('accepted', cs,
-					cs.remote_addr, cs.remote_port,
-					cs. local_addr, cs. local_port)
-				pr('accepted_thread', currentthread())
-				thread(function()
-					pr'closing cs'
-					--cs:recv(buf, len)
-					cs:close()
-					pr('closed', currentthread())
-				end)
-				pr('backto accepted_thread', currentthread())
-			end
+			local cs = server:accept()
+			pr('accepted', cs,
+				cs.remote_addr, cs.remote_port,
+				cs. local_addr, cs. local_port)
+			local buf = ffi.new'char[256]'
+			local n = cs:recv(buf, 256)
+			pr('server recv', n, ffi.string(buf, n))
+			cs:close()
+			server:close()
+		end))
+		resume(thread(function()
+			local s = connect('127.0.0.1', 8091)
+			pr('client connected', s)
+			s:send'hello'
 			s:close()
 		end))
-		start()
 	end)
-
-	-- local s = tcp()
-	-- --s:bind('127.0.0.1', 8090)
-	-- pr(s:connect('127.0.0.1', '8080'))
-	-- --s:send'hello'
-	-- s:close()
-
-	server_thread:join()
-end
-
-local function start_client()
-	pr'client'
-	local s = tcp()
-	resume(thread(function()
-		pr'...'
-		s:connect('10.0.0.5', 8090, 1)
-		s:send'hello'
-		s:close()
-		stop()
-	end))
-	start()
 end
 
 local function test_http()
 	thread(function()
 		local s = tcp()
-		pr('connect', s:connect(ffi.abi'win' and '127.0.0.1' or '10.8.2.153', 80))
+		pr('connect', s:connect('127.0.0.1', 80))
 		pr('send', s:send'GET / HTTP/1.0\r\n\r\n')
 		local buf = ffi.new'char[4096]'
 		local n, err, ec = s:recv(buf, 4096)
@@ -151,10 +127,5 @@ end
 test_timers()
 test_addr()
 test_sockopt()
+test_tcp()
 --test_http()
-
-if win then
-	start_server()
-else
-	start_client()
-end
