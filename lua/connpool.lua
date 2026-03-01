@@ -113,7 +113,7 @@ function connpool(opt)
 		end
 
 		local function check_waitlist()
-			local wait_job = q and q:pop()
+			local wait_job = q and q:pull()
 			if not wait_job then return end
 			wait_job:resume(true)
 		end

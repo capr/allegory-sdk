@@ -14,24 +14,26 @@
 	q:full() -> t|f                check if the queue is full
 	q:empty() -> t|f               check if the queue is empty
 	q:push(v)                      add a value to the end of the queue
-	q:pop() -> v|nil               remove the first value from the queue (nil if empty)
+	q:pull() -> v|nil              remove the first value from the queue (nil if empty)
 	q:peek() -> v|nil              get the first value without popping
 	q:exists(v) -> true|false      check if value exists
 	q:first() -> v|nil             get the first value without popping
 	q:last() -> v|nil              get the last value wihtout popping
 	q:items() -> iter() -> v       iterate values
-	q:item_at(i) -> v|nil          get item at index i in 1..q:count() from tail
+	q:item_at(i) -> v|nil          get item at index i in 1..q:count()
 	q:remove(v) -> t|f             remove value (return `true` if found)
 
 ]=]
+
+if not ... then require'queue_test'; return end
 
 local assert = assert
 
 function queue(size, INDEX)
 
-	local head = size
-	local tail = 1
-	local n = 0
+	local head = size -- push position
+	local tail = 1 -- pull position
+	local n = 0 -- count
 	local t = {}
 	local q = {}
 
@@ -55,7 +57,7 @@ function queue(size, INDEX)
 		return true
 	end
 
-	function q:pop()
+	function q:pull()
 		if n == 0 then
 			return nil
 		end
@@ -110,13 +112,13 @@ function queue(size, INDEX)
 			from_head = false
 		end
 		if from_head then --move right of i to left.
-			for i = i, head-1 do t[i] = t[i+1]; if INDEX then t[i][INDEX] = i+1 end end
-			if INDEX ~= nil then t[head][INDEX] = nil end
+			if INDEX ~= nil then t[i][INDEX] = nil end
+			for i = i, head-1 do t[i] = t[i+1]; if INDEX then t[i][INDEX] = i end end
 			t[head] = false
 			head = mi(head - 1)
 		else --move left of i to right.
-			for i = i-1, tail, -1 do t[i+1] = t[i]; if INDEX then t[i+1][INDEX] = i end end
-			if INDEX ~= nil then t[tail][INDEX] = nil end
+			if INDEX ~= nil then t[i][INDEX] = nil end
+			for i = i-1, tail, -1 do t[i+1] = t[i]; if INDEX then t[i+1][INDEX] = i+1 end end
 			t[tail] = false
 			tail = mi(tail + 1)
 		end
