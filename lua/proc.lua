@@ -477,19 +477,26 @@ function try_kill(pid, sig)
 	return check_errno(C.kill(pid, sig or SIGTERM) == 0)
 end
 function kill(pid, sig)
+	sig = sig or SIGTERM
 	local ok, err = try_kill(pid, sig)
 	check('proc', 'kill', ok, 'pid=%d sig=%d: %s', pid, sig, err)
 end
 
 getpid = C.getpid
 
-function proc:kill(sig)
+function proc:try_kill(sig)
 	if not self.pid then
-		return nil, 'forgotten'
+		return false, 'forgotten'
 	elseif self:status() == 'killed' then
-		return nil, 'killed'
+		return true, 'already_killed'
 	end
-	return try_kill(sig)
+	return try_kill(self.pid, sig)
+end
+function proc:kill(sig)
+	sig = sig or SIGTERM
+	local ok, err = self:try_kill(sig)
+	check('proc', 'kill', ok, 'pid=%d sig=%d: %s', self.pid, sig, err)
+	return ok, err
 end
 
 function proc:exit_code()

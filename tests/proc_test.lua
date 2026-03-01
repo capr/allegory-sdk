@@ -62,7 +62,7 @@ function test.kill()
 	print'killing'
 	assert(p:kill())
 	sleep(.5)
-	assert(select(2, p:kill()) == 'killed')
+	assert(select(2, p:kill()) == 'already_killed')
 	sleep(.5)
 	print('exit code', p:exit_code())
 	print('exit code', p:exit_code())
@@ -180,8 +180,8 @@ function test.autokill()
 		sleep(1)
 	else
 		assert(exec{cmd = '/bin/sleep 123', autokill = true})
-		print'waiting 5s'
-		sleep(5)
+		print'waiting 2s'
+		sleep(2)
 	end
 	print'done'
 end
