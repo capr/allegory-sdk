@@ -43,8 +43,12 @@ local function print_table(opt)
 	local maxsizes = {}
 
 	for j=1,#cols do
-		maxsizes[j] = max(maxsizes[j] or minsize,
-			#cols[j], sd and #sd[1] or 0, sd and #sd[2] or 0)
+		maxsizes[j] = max(
+			maxsizes[j] or minsize,
+			#cols[j],
+			sumdefs and #sumdefs[1] or 0,
+			sumdefs and #sumdefs[2] or 0
+		)
 	end
 	for j=1,#cols do
 		local maxsize = opt.maxsizes and opt.maxsizes[cols[j]] or 1/0

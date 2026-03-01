@@ -475,7 +475,7 @@ end
 
 function thread.deserialize(t)
 	return setmetatable({
-		pthread = ptr_deserialize('pthread_t*', t.thread_addr),
+		pthread = ptr_deserialize('pthread_t*', t.pthread_addr),
 		state   = ptr_deserialize('lua_State*', t.state_addr),
 	}, thread)
 end

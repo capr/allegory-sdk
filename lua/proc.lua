@@ -249,7 +249,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill, inherit_handles)
 	end
 
 	--copy the args list to a char*[] buffer.
-	local arg_buf, arg_ptrs
+	local arg_buf, arg_ptr
 	if args then
 		local n = #cmd + 1
 		local m = #args + 1
@@ -271,7 +271,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill, inherit_handles)
 	end
 
 	--copy the env. table to a char*[] buffer.
-	local env_buf, env_ptrs
+	local env_buf, env_ptr
 	if env then
 		local n = 0
 		local m = 0

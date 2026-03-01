@@ -175,11 +175,11 @@ function rect_bounding_box(x1, y1, w1, h1, x3, y3, w2, h2)
 	local y2 = y1 + h1
 	local x4 = x3 + w2
 	local y4 = y3 + h2
-	return rect(
-		min(x1, x2, x3, x4),
-		min(y1, y2, y3, y4),
-		max(x1, x2, x3, x4),
-		max(y1, y2, y3, y4))
+	local rx = min(x1, x2, x3, x4)
+	local ry = min(y1, y2, y3, y4)
+	return rx, ry,
+		max(x1, x2, x3, x4) - rx,
+		max(y1, y2, y3, y4) - ry
 end
 
 --move box from (sx, sy) inside (pw, ph) so that it becomes fully visible.

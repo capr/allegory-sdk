@@ -203,7 +203,7 @@ local function parse_answer(q, ans, p, i, n)
 	elseif typ == 'SRV' then
 		ans.srv_priority , i =  u16(q, p, i, n)
 		ans.srv_weight   , i =  u16(q, p, i, n)
-		ans.srv_port     , i = ua16(q, p, i, n)
+		ans.srv_port     , i =  u16(q, p, i, n)
 		ans.srv_target   , i = name(q, p, i, n)
 	elseif typ == 'NS' then
 		ans.ns, i = name(q, p, i, n)
@@ -504,7 +504,7 @@ local function schedule(rs, ns)
 					else
 						q.lost = true
 						rs:dbgt(ns, q, 'TIMEOUT')
-						respond(q, nil, 'timeut')
+						respond(q, nil, 'timeout')
 					end
 				elseif now > q.expires + 120 then --safe to reuse this id.
 					rs:dbg(ns, q, 'REUSE')

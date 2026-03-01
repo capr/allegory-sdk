@@ -707,7 +707,7 @@ local function get_time(buf, time_format)
 		return {days = 0, hour = 0, min = 0, sec = 0}
 	end
 	local sign = get_u8(buf) == 1 and -1 or 1
-	local days = get_u4(buf) * sign
+	local days = get_u32(buf) * sign
 	local H    = get_u8(buf)
 	local M    = get_u8(buf)
 	local S    = get_u8(buf)
@@ -784,7 +784,7 @@ end
 
 local function set_i8(buf, x)
 	local p, i = buf(1)
-	assert(x >= -127 and x <= 128)
+	assert(x >= -128 and x <= 127)
 	cast(i8p, p+i)[0] = x
 end
 
@@ -804,19 +804,19 @@ end
 
 local function set_i32(buf, x)
 	local p, i = buf(4)
-	assert(x >= -(2^31-1) and x <= 2^31)
+	assert(x >= -2^31 and x <= 2^31-1)
 	cast(i32p, p+i)[0] = x
 end
 
 local function set_u64(buf, x)
 	local p, i = buf(8)
-	assert(x >= 0 and x <= 2^52)
+	assert(x >= 0 and x <= 2^53)
 	cast(u64p, p+i)[0] = x
 end
 
 local function set_i64(buf, x)
 	local p, i = buf(8)
-	assert(x >= -(2^51-1) and x <= 2^51)
+	assert(x >= -2^53 and x <= 2^53)
 	cast(i64p, p+i)[0] = x
 end
 
@@ -858,7 +858,7 @@ local function set_bytes(buf, s, len)
 end
 
 local function set_str(buf, s)
-	set_uint(#s)
+	set_uint(buf, #s)
 	set_bytes(buf, s)
 end
 
@@ -1389,8 +1389,8 @@ function conn.start_transaction(self)
 end
 
 function conn.end_transaction(self, with)
-	assert(with == 'commit' or 'rollback', '"commit" or "rollback" expected')
-	assert(self.in_transaction, 'not_started')
+	assert(with == 'commit' or with == 'rollback', '"commit" or "rollback" expected')
+	assert(self._in_transaction, 'not_started')
 	local res = self:query(with)
 	self._in_transaction = false
 	return res
@@ -1611,5 +1611,5 @@ function mysql_time_to_seconds(v)
 end
 
 function mysql_seconds_to_time(s)
-	return format('%02d:%02d:%02d', floor(s / 3600), floor(s / 60), s)
+	return format('%02d:%02d:%02d', floor(s / 3600), floor(s / 60) % 60, s % 60)
 end

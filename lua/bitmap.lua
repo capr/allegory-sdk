@@ -437,9 +437,9 @@ formats.cmyk8 = override_format('rgba8', 32, 'uint8_t', 'cmyk8')
 local function rr(s,i) return      shr(s[i], 11)      * (255 / 31) end
 local function rg(s,i) return band(shr(s[i],  5), 63) * (255 / 63) end
 local function rb(s,i) return band(    s[i],      31) * (255 / 31) end
-local function wr(d,i,v) d[i] = bor(band(d[i], 0x07ff), shl(shr(r, 3), 11)) end
-local function wg(d,i,v) d[i] = bor(band(d[i], 0xf81f), shl(shr(g, 2),  5)) end
-local function wb(d,i,v) d[i] = bor(band(d[i], 0xffe0), shr(b, 3)) end
+local function wr(d,i,r) d[i] = bor(band(d[i], 0x07ff), shl(shr(r, 3), 11)) end
+local function wg(d,i,g) d[i] = bor(band(d[i], 0xf81f), shl(shr(g, 2),  5)) end
+local function wb(d,i,b) d[i] = bor(band(d[i], 0xffe0), shr(b, 3)) end
 local function rrgba(s,i)
 	return rr(s,i), rg(s,i), rb(s,i), 0xff
 end
@@ -456,10 +456,10 @@ local function rr(s,i) return      shr(s[i], 12)      * (255 / 15) end
 local function rg(s,i) return band(shr(s[i],  8), 15) * (255 / 15) end
 local function rb(s,i) return band(shr(s[i],  4), 15) * (255 / 15) end
 local function ra(s,i) return band(    s[i],      15) * (255 / 15) end
-local function wr(d,i,v) d[i] = bor(band(d[i], 0x0fff), shl(shr(r, 4), 12)) end
-local function wg(d,i,v) d[i] = bor(band(d[i], 0xf0ff), shl(shr(g, 4),  8)) end
-local function wb(d,i,v) d[i] = bor(band(d[i], 0xff0f), shl(shr(b, 4),  4)) end
-local function wa(d,i,v) d[i] = bor(band(d[i], 0xfff0),     shr(a, 4)     ) end
+local function wr(d,i,r) d[i] = bor(band(d[i], 0x0fff), shl(shr(r, 4), 12)) end
+local function wg(d,i,g) d[i] = bor(band(d[i], 0xf0ff), shl(shr(g, 4),  8)) end
+local function wb(d,i,b) d[i] = bor(band(d[i], 0xff0f), shl(shr(b, 4),  4)) end
+local function wa(d,i,a) d[i] = bor(band(d[i], 0xfff0),     shr(a, 4)     ) end
 local function rrgba(s,i)
 	return rr(s,i), rg(s,i), rb(s,i), 0xff
 end
@@ -488,10 +488,10 @@ local function rr(s,i) return      shr(s[i], 11)      * (255 / 31) end
 local function rg(s,i) return band(shr(s[i],  6), 31) * (255 / 31) end
 local function rb(s,i) return band(shr(s[i],  1), 31) * (255 / 31) end
 local function ra(s,i) return band(    s[i],  1)      *  255       end
-local function wr(d,i,v) d[i] = bor(band(d[i], 0x07ff), shl(shr(r, 3), 11)) end
-local function wg(d,i,v) d[i] = bor(band(d[i], 0xf83f), shl(shr(g, 3),  6)) end
-local function wb(d,i,v) d[i] = bor(band(d[i], 0xffc1), shl(shr(b, 3),  1)) end
-local function wa(d,i,v) d[i] = bor(band(d[i], 0xfffe),     shr(a, 7)     ) end
+local function wr(d,i,r) d[i] = bor(band(d[i], 0x07ff), shl(shr(r, 3), 11)) end
+local function wg(d,i,g) d[i] = bor(band(d[i], 0xf83f), shl(shr(g, 3),  6)) end
+local function wb(d,i,b) d[i] = bor(band(d[i], 0xffc1), shl(shr(b, 3),  1)) end
+local function wa(d,i,a) d[i] = bor(band(d[i], 0xfffe),     shr(a, 7)     ) end
 local function rrgba(s,i)
 	return rr(s,i), rg(s,i), rb(s,i), 0xff
 end
@@ -520,10 +520,10 @@ local function rr(s,i) return band(shr(s[i], 10), 31) * (255 / 31) end
 local function rg(s,i) return band(shr(s[i],  5), 31) * (255 / 31) end
 local function rb(s,i) return band(    s[i],      31) * (255 / 31) end
 local function ra(s,i) return      shr(s[i], 15)      *  255       end
-local function wr(d,i,v) d[i] = bor(band(d[i], 0x83ff), shl(shr(r, 3), 10)) end
-local function wg(d,i,v) d[i] = bor(band(d[i], 0xfc1f), shl(shr(g, 3),  5)) end
-local function wb(d,i,v) d[i] = bor(band(d[i], 0xffe0),     shr(b, 3)     ) end
-local function wa(d,i,v) d[i] = bor(band(d[i], 0x7fff), shl(shr(a, 7), 15)) end
+local function wr(d,i,r) d[i] = bor(band(d[i], 0x83ff), shl(shr(r, 3), 10)) end
+local function wg(d,i,g) d[i] = bor(band(d[i], 0xfc1f), shl(shr(g, 3),  5)) end
+local function wb(d,i,b) d[i] = bor(band(d[i], 0xffe0),     shr(b, 3)     ) end
+local function wa(d,i,a) d[i] = bor(band(d[i], 0x7fff), shl(shr(a, 7), 15)) end
 local function rrgba(s,i)
 	return rr(s,i), rg(s,i), rb(s,i), 0xff
 end

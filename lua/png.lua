@@ -330,11 +330,10 @@ function try_png_open(opt)
 
 		return bmp
 	end
-	jit.off(img.load) --calls back into Lua through a ffi call.
-
 	function img:load(...)
 		return self:try_load(...)
 	end
+	jit.off(img.load) --calls back into Lua through a ffi call.
 
 	return img
 end
@@ -459,7 +458,7 @@ function try_png_save(opt)
 	}))
 
 	if opt.chunks then
-		for name, v in pairs(chunks) do
+		for name, v in pairs(opt.chunks) do
 			local encode = assert(chunk_encoders[name], 'unknown chunk '..name)
 			assert(encode(ctx, v), 'invalid chunk '..name)
 		end
