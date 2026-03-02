@@ -25,11 +25,11 @@ Config options (opt table)
 
 require'glue'
 require'sock'
-require'bearssl_ssl_h'
-
 local C = ffi.load(bearssl_libname or 'bearssl')
 
-ffi.cdef[[
+cdef[[
+
+/* pem */
 typedef struct {
 	struct { uint32_t *dp; uint32_t *rp; const unsigned char *ip; } cpu;
 	uint32_t dp_stack[32];
@@ -48,7 +48,506 @@ void br_pem_decoder_init(br_pem_decoder_context *ctx);
 size_t br_pem_decoder_push(br_pem_decoder_context *ctx,
 	const void *data, size_t len);
 int br_pem_decoder_event(br_pem_decoder_context *ctx);
+
+/* hash */
+typedef struct br_hash_class_ br_hash_class;
+typedef struct { const br_hash_class *vtable; unsigned char buf[64];  uint64_t count; uint32_t val[4]; } br_md5_context;
+typedef struct { const br_hash_class *vtable; unsigned char buf[64];  uint64_t count; uint32_t val[5]; } br_sha1_context;
+typedef struct { const br_hash_class *vtable; unsigned char buf[64];  uint64_t count; uint32_t val[8]; } br_sha224_context;
+typedef br_sha224_context br_sha256_context;
+typedef struct { const br_hash_class *vtable; unsigned char buf[128]; uint64_t count; uint64_t val[8]; } br_sha384_context;
+typedef br_sha384_context br_sha512_context;
+typedef struct { const br_hash_class *vtable; unsigned char buf[64];  uint64_t count; uint32_t val_md5[4]; uint32_t val_sha1[5]; } br_md5sha1_context;
+typedef union {
+	const br_hash_class *vtable;
+	br_md5_context md5; br_sha1_context sha1;
+	br_sha224_context sha224; br_sha256_context sha256;
+	br_sha384_context sha384; br_sha512_context sha512;
+	br_md5sha1_context md5sha1;
+} br_hash_compat_context;
+typedef struct {
+	unsigned char buf[128]; uint64_t count;
+	uint32_t val_32[25]; uint64_t val_64[16];
+	const br_hash_class *impl[6];
+} br_multihash_context;
+typedef void (*br_ghash)(void *y, const void *h, const void *data, size_t len);
+
+/* block */
+typedef struct br_block_cbcenc_class_ br_block_cbcenc_class;
+typedef struct br_block_cbcdec_class_ br_block_cbcdec_class;
+typedef struct br_block_ctr_class_    br_block_ctr_class;
+typedef struct br_block_ctrcbc_class_ br_block_ctrcbc_class;
+typedef struct { const br_block_cbcenc_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_big_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_big_cbcdec_keys;
+typedef struct { const br_block_ctr_class    *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_big_ctr_keys;
+typedef struct { const br_block_ctrcbc_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_big_ctrcbc_keys;
+typedef struct { const br_block_cbcenc_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_small_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_small_cbcdec_keys;
+typedef struct { const br_block_ctr_class    *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_small_ctr_keys;
+typedef struct { const br_block_ctrcbc_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_small_ctrcbc_keys;
+typedef struct { const br_block_cbcenc_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_ct_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_ct_cbcdec_keys;
+typedef struct { const br_block_ctr_class    *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_ct_ctr_keys;
+typedef struct { const br_block_ctrcbc_class *vtable; uint32_t skey[60]; unsigned num_rounds; } br_aes_ct_ctrcbc_keys;
+typedef struct { const br_block_cbcenc_class *vtable; uint64_t skey[30]; unsigned num_rounds; } br_aes_ct64_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; uint64_t skey[30]; unsigned num_rounds; } br_aes_ct64_cbcdec_keys;
+typedef struct { const br_block_ctr_class    *vtable; uint64_t skey[30]; unsigned num_rounds; } br_aes_ct64_ctr_keys;
+typedef struct { const br_block_ctrcbc_class *vtable; uint64_t skey[30]; unsigned num_rounds; } br_aes_ct64_ctrcbc_keys;
+typedef struct { const br_block_cbcenc_class *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_x86ni_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_x86ni_cbcdec_keys;
+typedef struct { const br_block_ctr_class    *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_x86ni_ctr_keys;
+typedef struct { const br_block_ctrcbc_class *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_x86ni_ctrcbc_keys;
+typedef struct { const br_block_cbcenc_class *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_pwr8_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_pwr8_cbcdec_keys;
+typedef struct { const br_block_ctr_class    *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_pwr8_ctr_keys;
+typedef struct { const br_block_ctrcbc_class *vtable; union { unsigned char skni[240]; } skey; unsigned num_rounds; } br_aes_pwr8_ctrcbc_keys;
+typedef union {
+	const br_block_cbcenc_class *vtable;
+	br_aes_big_cbcenc_keys c_big; br_aes_small_cbcenc_keys c_small;
+	br_aes_ct_cbcenc_keys c_ct;   br_aes_ct64_cbcenc_keys c_ct64;
+	br_aes_x86ni_cbcenc_keys c_x86ni; br_aes_pwr8_cbcenc_keys c_pwr8;
+} br_aes_gen_cbcenc_keys;
+typedef union {
+	const br_block_cbcdec_class *vtable;
+	br_aes_big_cbcdec_keys c_big; br_aes_small_cbcdec_keys c_small;
+	br_aes_ct_cbcdec_keys c_ct;   br_aes_ct64_cbcdec_keys c_ct64;
+	br_aes_x86ni_cbcdec_keys c_x86ni; br_aes_pwr8_cbcdec_keys c_pwr8;
+} br_aes_gen_cbcdec_keys;
+typedef union {
+	const br_block_ctr_class *vtable;
+	br_aes_big_ctr_keys c_big; br_aes_small_ctr_keys c_small;
+	br_aes_ct_ctr_keys c_ct;   br_aes_ct64_ctr_keys c_ct64;
+	br_aes_x86ni_ctr_keys c_x86ni; br_aes_pwr8_ctr_keys c_pwr8;
+} br_aes_gen_ctr_keys;
+typedef union {
+	const br_block_ctrcbc_class *vtable;
+	br_aes_big_ctrcbc_keys c_big; br_aes_small_ctrcbc_keys c_small;
+	br_aes_ct_ctrcbc_keys c_ct;   br_aes_ct64_ctrcbc_keys c_ct64;
+	br_aes_x86ni_ctrcbc_keys c_x86ni; br_aes_pwr8_ctrcbc_keys c_pwr8;
+} br_aes_gen_ctrcbc_keys;
+typedef struct { const br_block_cbcenc_class *vtable; uint32_t skey[96]; unsigned num_rounds; } br_des_tab_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; uint32_t skey[96]; unsigned num_rounds; } br_des_tab_cbcdec_keys;
+typedef struct { const br_block_cbcenc_class *vtable; uint32_t skey[96]; unsigned num_rounds; } br_des_ct_cbcenc_keys;
+typedef struct { const br_block_cbcdec_class *vtable; uint32_t skey[96]; unsigned num_rounds; } br_des_ct_cbcdec_keys;
+typedef union {
+	const br_block_cbcenc_class *vtable;
+	br_des_tab_cbcenc_keys tab; br_des_ct_cbcenc_keys ct;
+} br_des_gen_cbcenc_keys;
+typedef union {
+	const br_block_cbcdec_class *vtable;
+	br_des_tab_cbcdec_keys c_tab; br_des_ct_cbcdec_keys c_ct;
+} br_des_gen_cbcdec_keys;
+typedef uint32_t (*br_chacha20_run)(const void *key,
+	const void *iv, uint32_t cc, void *data, size_t len);
+typedef void (*br_poly1305_run)(const void *key, const void *iv,
+	void *data, size_t len, const void *aad, size_t aad_len,
+	void *tag, br_chacha20_run ichacha, int encrypt);
+
+/* rand */
+typedef struct br_prng_class_ br_prng_class;
+typedef struct {
+	const br_prng_class *vtable;
+	unsigned char K[64]; unsigned char V[64];
+	const br_hash_class *digest_class;
+} br_hmac_drbg_context;
+
+/* hmac */
+typedef struct {
+	const br_hash_class *dig_vtable;
+	unsigned char ksi[64], kso[64];
+} br_hmac_key_context;
+
+/* prf */
+typedef struct { const void *data; size_t len; } br_tls_prf_seed_chunk;
+typedef void (*br_tls_prf_impl)(void *dst, size_t len,
+	const void *secret, size_t secret_len, const char *label,
+	size_t seed_num, const br_tls_prf_seed_chunk *seed);
+
+/* ec */
+typedef struct { int curve; unsigned char *q; size_t qlen; } br_ec_public_key;
+typedef struct { int curve; unsigned char *x; size_t xlen; } br_ec_private_key;
+typedef struct br_ec_impl br_ec_impl;
+typedef size_t (*br_ecdsa_sign)(const br_ec_impl *impl,
+	const br_hash_class *hf, const void *hash_value,
+	const br_ec_private_key *sk, void *sig);
+typedef uint32_t (*br_ecdsa_vrfy)(const br_ec_impl *impl,
+	const void *hash, size_t hash_len,
+	const br_ec_public_key *pk, const void *sig, size_t sig_len);
+const br_ec_impl *br_ec_get_default(void);
+br_ecdsa_sign br_ecdsa_sign_asn1_get_default(void);
+
+/* rsa */
+typedef struct { unsigned char *n; size_t nlen; unsigned char *e; size_t elen; } br_rsa_public_key;
+typedef struct {
+	uint32_t n_bitlen;
+	unsigned char *p; size_t plen; unsigned char *q;  size_t qlen;
+	unsigned char *dp; size_t dplen; unsigned char *dq; size_t dqlen;
+	unsigned char *iq; size_t iqlen;
+} br_rsa_private_key;
+typedef uint32_t (*br_rsa_public)(unsigned char *x, size_t xlen,
+	const br_rsa_public_key *pk);
+typedef uint32_t (*br_rsa_pkcs1_vrfy)(const unsigned char *x, size_t xlen,
+	const unsigned char *hash_oid, size_t hash_len,
+	const br_rsa_public_key *pk, unsigned char *hash_out);
+typedef uint32_t (*br_rsa_private)(unsigned char *x, const br_rsa_private_key *sk);
+typedef uint32_t (*br_rsa_pkcs1_sign)(const unsigned char *hash_oid,
+	const unsigned char *hash, size_t hash_len,
+	const br_rsa_private_key *sk, unsigned char *x);
+br_rsa_pkcs1_sign br_rsa_pkcs1_sign_get_default(void);
+
+/* x509 */
+typedef struct {
+	unsigned char key_type;
+	union { br_rsa_public_key rsa; br_ec_public_key ec; } key;
+} br_x509_pkey;
+typedef struct { unsigned char *data; size_t len; } br_x500_name;
+typedef struct { br_x500_name dn; unsigned flags; br_x509_pkey pkey; } br_x509_trust_anchor;
+typedef struct br_x509_class_ br_x509_class;
+typedef struct { const unsigned char *oid; char *buf; size_t len; int status; } br_name_element;
+typedef struct {
+	const br_x509_class *vtable;
+	br_x509_pkey pkey;
+	struct { uint32_t *dp; uint32_t *rp; const unsigned char *ip; } cpu;
+	uint32_t dp_stack[32]; uint32_t rp_stack[32];
+	int err;
+	const char *server_name;
+	unsigned char key_usages;
+	uint32_t days, seconds;
+	uint32_t cert_length; uint32_t num_certs;
+	const unsigned char *hbuf; size_t hlen;
+	unsigned char pad[256];
+	unsigned char ee_pkey_data[520]; unsigned char pkey_data[520];
+	unsigned char cert_signer_key_type;
+	uint16_t cert_sig_hash_oid; unsigned char cert_sig_hash_len;
+	unsigned char cert_sig[512]; uint16_t cert_sig_len;
+	int16_t min_rsa_size;
+	const br_x509_trust_anchor *trust_anchors; size_t trust_anchors_num;
+	unsigned char do_mhash;
+	br_multihash_context mhash;
+	unsigned char tbs_hash[64];
+	unsigned char do_dn_hash;
+	const br_hash_class *dn_hash_impl;
+	br_hash_compat_context dn_hash;
+	unsigned char current_dn_hash[64]; unsigned char next_dn_hash[64];
+	unsigned char saved_dn_hash[64];
+	br_name_element *name_elts; size_t num_name_elts;
+	br_rsa_pkcs1_vrfy irsa;
+	br_ecdsa_vrfy iecdsa;
+	const br_ec_impl *iec;
+} br_x509_minimal_context;
+typedef struct {
+	br_x509_pkey pkey;
+	struct { uint32_t *dp; uint32_t *rp; const unsigned char *ip; } cpu;
+	uint32_t dp_stack[32]; uint32_t rp_stack[32];
+	int err;
+	unsigned char pad[256];
+	unsigned char decoded;
+	uint32_t notbefore_days, notbefore_seconds;
+	uint32_t notafter_days, notafter_seconds;
+	unsigned char isCA; unsigned char copy_dn;
+	void *append_dn_ctx;
+	void (*append_dn)(void *ctx, const void *buf, size_t len);
+	const unsigned char *hbuf; size_t hlen;
+	unsigned char pkey_data[520];
+	unsigned char signer_key_type; unsigned char signer_hash_id;
+} br_x509_decoder_context;
+void br_x509_decoder_init(br_x509_decoder_context *ctx,
+	void (*append_dn)(void *ctx, const void *buf, size_t len),
+	void *append_dn_ctx);
+void br_x509_decoder_push(br_x509_decoder_context *ctx,
+	const void *data, size_t len);
+typedef struct { unsigned char *data; size_t data_len; } br_x509_certificate;
+typedef struct {
+	union { br_rsa_private_key rsa; br_ec_private_key ec; } key;
+	struct { uint32_t *dp; uint32_t *rp; const unsigned char *ip; } cpu;
+	uint32_t dp_stack[32]; uint32_t rp_stack[32];
+	int err;
+	const unsigned char *hbuf; size_t hlen;
+	unsigned char pad[256];
+	unsigned char key_type;
+	unsigned char key_data[3 * 512];
+} br_skey_decoder_context;
+void br_skey_decoder_init(br_skey_decoder_context *ctx);
+void br_skey_decoder_push(br_skey_decoder_context *ctx,
+	const void *data, size_t len);
 ]]
+
+ffi.cdef[[
+
+/* ssl record layer */
+typedef struct br_sslrec_in_class_      br_sslrec_in_class;
+typedef struct br_sslrec_out_class_     br_sslrec_out_class;
+typedef struct br_sslrec_in_cbc_class_  br_sslrec_in_cbc_class;
+typedef struct br_sslrec_out_cbc_class_ br_sslrec_out_cbc_class;
+typedef struct br_sslrec_in_gcm_class_  br_sslrec_in_gcm_class;
+typedef struct br_sslrec_out_gcm_class_ br_sslrec_out_gcm_class;
+typedef struct br_sslrec_in_chapol_class_  br_sslrec_in_chapol_class;
+typedef struct br_sslrec_out_chapol_class_ br_sslrec_out_chapol_class;
+typedef struct br_sslrec_in_ccm_class_  br_sslrec_in_ccm_class;
+typedef struct br_sslrec_out_ccm_class_ br_sslrec_out_ccm_class;
+typedef struct { const br_sslrec_out_class *vtable; } br_sslrec_out_clear_context;
+typedef struct {
+	const br_sslrec_in_cbc_class *vtable;
+	uint64_t seq;
+	union { const br_block_cbcdec_class *vtable; br_aes_gen_cbcdec_keys aes; br_des_gen_cbcdec_keys des; } bc;
+	br_hmac_key_context mac;
+	size_t mac_len;
+	unsigned char iv[16];
+	int explicit_IV;
+} br_sslrec_in_cbc_context;
+typedef struct {
+	const br_sslrec_out_cbc_class *vtable;
+	uint64_t seq;
+	union { const br_block_cbcenc_class *vtable; br_aes_gen_cbcenc_keys aes; br_des_gen_cbcenc_keys des; } bc;
+	br_hmac_key_context mac;
+	size_t mac_len;
+	unsigned char iv[16];
+	int explicit_IV;
+} br_sslrec_out_cbc_context;
+typedef struct {
+	union { const void *gen; const br_sslrec_in_gcm_class *in; const br_sslrec_out_gcm_class *out; } vtable;
+	uint64_t seq;
+	union { const br_block_ctr_class *vtable; br_aes_gen_ctr_keys aes; } bc;
+	br_ghash gh;
+	unsigned char iv[4];
+	unsigned char h[16];
+} br_sslrec_gcm_context;
+typedef struct {
+	union { const void *gen; const br_sslrec_in_chapol_class *in; const br_sslrec_out_chapol_class *out; } vtable;
+	uint64_t seq;
+	unsigned char key[32];
+	unsigned char iv[12];
+	br_chacha20_run ichacha;
+	br_poly1305_run ipoly;
+} br_sslrec_chapol_context;
+typedef struct {
+	union { const void *gen; const br_sslrec_in_ccm_class *in; const br_sslrec_out_ccm_class *out; } vtable;
+	uint64_t seq;
+	union { const br_block_ctrcbc_class *vtable; br_aes_gen_ctrcbc_keys aes; } bc;
+	unsigned char iv[4];
+	size_t tag_len;
+} br_sslrec_ccm_context;
+
+/* ssl engine */
+typedef struct {
+	unsigned char session_id[32];
+	unsigned char session_id_len;
+	uint16_t version;
+	uint16_t cipher_suite;
+	unsigned char master_secret[48];
+} br_ssl_session_parameters;
+typedef struct {
+	int err;
+	unsigned char *ibuf, *obuf;
+	size_t ibuf_len, obuf_len;
+	uint16_t max_frag_len;
+	unsigned char log_max_frag_len;
+	unsigned char peer_log_max_frag_len;
+	size_t ixa, ixb, ixc;
+	size_t oxa, oxb, oxc;
+	unsigned char iomode;
+	unsigned char incrypt;
+	unsigned char shutdown_recv;
+	unsigned char record_type_in, record_type_out;
+	uint16_t version_in;
+	uint16_t version_out;
+	union {
+		const br_sslrec_in_class *vtable;
+		br_sslrec_in_cbc_context cbc;
+		br_sslrec_gcm_context gcm;
+		br_sslrec_chapol_context chapol;
+		br_sslrec_ccm_context ccm;
+	} in;
+	union {
+		const br_sslrec_out_class *vtable;
+		br_sslrec_out_clear_context clear;
+		br_sslrec_out_cbc_context cbc;
+		br_sslrec_gcm_context gcm;
+		br_sslrec_chapol_context chapol;
+		br_sslrec_ccm_context ccm;
+	} out;
+	unsigned char application_data;
+	br_hmac_drbg_context rng;
+	int rng_init_done;
+	int rng_os_rand_done;
+	uint16_t version_min;
+	uint16_t version_max;
+	uint16_t suites_buf[48];
+	unsigned char suites_num;
+	char server_name[256];
+	unsigned char client_random[32];
+	unsigned char server_random[32];
+	br_ssl_session_parameters session;
+	unsigned char ecdhe_curve;
+	unsigned char ecdhe_point[133];
+	unsigned char ecdhe_point_len;
+	unsigned char reneg;
+	unsigned char saved_finished[24];
+	uint32_t flags;
+	struct { uint32_t *dp; uint32_t *rp; const unsigned char *ip; } cpu;
+	uint32_t dp_stack[32];
+	uint32_t rp_stack[32];
+	unsigned char pad[512];
+	unsigned char *hbuf_in, *hbuf_out, *saved_hbuf_out;
+	size_t hlen_in, hlen_out;
+	void (*hsrun)(void *ctx);
+	unsigned char action;
+	unsigned char alert;
+	unsigned char close_received;
+	br_multihash_context mhash;
+	const br_x509_class **x509ctx;
+	const br_x509_certificate *chain;
+	size_t chain_len;
+	const unsigned char *cert_cur;
+	size_t cert_len;
+	const char **protocol_names;
+	uint16_t protocol_names_num;
+	uint16_t selected_protocol;
+	br_tls_prf_impl prf10;
+	br_tls_prf_impl prf_sha256;
+	br_tls_prf_impl prf_sha384;
+	const br_block_cbcenc_class *iaes_cbcenc;
+	const br_block_cbcdec_class *iaes_cbcdec;
+	const br_block_ctr_class *iaes_ctr;
+	const br_block_ctrcbc_class *iaes_ctrcbc;
+	const br_block_cbcenc_class *ides_cbcenc;
+	const br_block_cbcdec_class *ides_cbcdec;
+	br_ghash ighash;
+	br_chacha20_run ichacha;
+	br_poly1305_run ipoly;
+	const br_sslrec_in_cbc_class *icbc_in;
+	const br_sslrec_out_cbc_class *icbc_out;
+	const br_sslrec_in_gcm_class *igcm_in;
+	const br_sslrec_out_gcm_class *igcm_out;
+	const br_sslrec_in_chapol_class *ichapol_in;
+	const br_sslrec_out_chapol_class *ichapol_out;
+	const br_sslrec_in_ccm_class *iccm_in;
+	const br_sslrec_out_ccm_class *iccm_out;
+	const br_ec_impl *iec;
+	br_rsa_pkcs1_vrfy irsavrfy;
+	br_ecdsa_vrfy iecdsa;
+} br_ssl_engine_context;
+unsigned br_ssl_engine_current_state(const br_ssl_engine_context *cc);
+unsigned char *br_ssl_engine_sendapp_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_sendapp_ack(br_ssl_engine_context *cc, size_t len);
+unsigned char *br_ssl_engine_recvapp_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_recvapp_ack(br_ssl_engine_context *cc, size_t len);
+unsigned char *br_ssl_engine_sendrec_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_sendrec_ack(br_ssl_engine_context *cc, size_t len);
+unsigned char *br_ssl_engine_recvrec_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_recvrec_ack(br_ssl_engine_context *cc, size_t len);
+void br_ssl_engine_flush(br_ssl_engine_context *cc, int force);
+void br_ssl_engine_close(br_ssl_engine_context *cc);
+void br_ssl_engine_set_buffer(br_ssl_engine_context *cc,
+	void *iobuf, size_t iobuf_len, int bidi);
+
+/* ssl client */
+typedef struct br_ssl_client_context_ br_ssl_client_context;
+typedef struct br_ssl_client_certificate_class_ br_ssl_client_certificate_class;
+typedef struct {
+	const br_ssl_client_certificate_class *vtable;
+	const br_x509_certificate *chain; size_t chain_len;
+	const br_rsa_private_key *sk;
+	br_rsa_pkcs1_sign irsasign;
+} br_ssl_client_certificate_rsa_context;
+typedef struct {
+	const br_ssl_client_certificate_class *vtable;
+	const br_x509_certificate *chain; size_t chain_len;
+	const br_ec_private_key *sk;
+	unsigned allowed_usages; unsigned issuer_key_type;
+	const br_multihash_context *mhash;
+	const br_ec_impl *iec;
+	br_ecdsa_sign iecdsa;
+} br_ssl_client_certificate_ec_context;
+struct br_ssl_client_context_ {
+	br_ssl_engine_context eng;
+	uint16_t min_clienthello_len;
+	uint32_t hashes;
+	int server_curve;
+	const br_ssl_client_certificate_class **client_auth_vtable;
+	unsigned char auth_type; unsigned char hash_id;
+	union {
+		const br_ssl_client_certificate_class *vtable;
+		br_ssl_client_certificate_rsa_context single_rsa;
+		br_ssl_client_certificate_ec_context single_ec;
+	} client_auth;
+	br_rsa_public irsapub;
+};
+void br_ssl_client_init_full(br_ssl_client_context *cc,
+	br_x509_minimal_context *xc,
+	const br_x509_trust_anchor *trust_anchors, size_t trust_anchors_num);
+int br_ssl_client_reset(br_ssl_client_context *cc,
+	const char *server_name, int resume_session);
+void br_ssl_client_set_single_rsa(br_ssl_client_context *cc,
+	const br_x509_certificate *chain, size_t chain_len,
+	const br_rsa_private_key *sk, br_rsa_pkcs1_sign irsasign);
+void br_ssl_client_set_single_ec(br_ssl_client_context *cc,
+	const br_x509_certificate *chain, size_t chain_len,
+	const br_ec_private_key *sk, unsigned allowed_usages,
+	unsigned cert_issuer_key_type,
+	const br_ec_impl *iec, br_ecdsa_sign iecdsa);
+
+/* ssl server */
+typedef struct br_ssl_server_context_ br_ssl_server_context;
+typedef struct br_ssl_server_policy_class_ br_ssl_server_policy_class;
+typedef struct {
+	const br_ssl_server_policy_class *vtable;
+	const br_x509_certificate *chain; size_t chain_len;
+	const br_rsa_private_key *sk;
+	unsigned allowed_usages;
+	br_rsa_private irsacore;
+	br_rsa_pkcs1_sign irsasign;
+} br_ssl_server_policy_rsa_context;
+typedef struct {
+	const br_ssl_server_policy_class *vtable;
+	const br_x509_certificate *chain; size_t chain_len;
+	const br_ec_private_key *sk;
+	unsigned allowed_usages; unsigned cert_issuer_key_type;
+	const br_multihash_context *mhash;
+	const br_ec_impl *iec;
+	br_ecdsa_sign iecdsa;
+} br_ssl_server_policy_ec_context;
+typedef struct br_ssl_session_cache_class_ br_ssl_session_cache_class;
+typedef uint16_t br_suite_translated[2];
+struct br_ssl_server_context_ {
+	br_ssl_engine_context eng;
+	uint16_t client_max_version;
+	const br_ssl_session_cache_class **cache_vtable;
+	br_suite_translated client_suites[48];
+	unsigned char client_suites_num;
+	uint32_t hashes; uint32_t curves;
+	const br_ssl_server_policy_class **policy_vtable;
+	uint16_t sign_hash_id;
+	union {
+		const br_ssl_server_policy_class *vtable;
+		br_ssl_server_policy_rsa_context single_rsa;
+		br_ssl_server_policy_ec_context single_ec;
+	} chain_handler;
+	unsigned char ecdhe_key[70];
+	size_t ecdhe_key_len;
+	const br_x500_name *ta_names;
+	const br_x509_trust_anchor *tas;
+	size_t num_tas;
+	size_t cur_dn_index;
+	const unsigned char *cur_dn; size_t cur_dn_len;
+	unsigned char hash_CV[64];
+	size_t hash_CV_len; int hash_CV_id;
+};
+void br_ssl_server_init_full_rsa(br_ssl_server_context *cc,
+	const br_x509_certificate *chain, size_t chain_len,
+	const br_rsa_private_key *sk);
+void br_ssl_server_init_full_ec(br_ssl_server_context *cc,
+	const br_x509_certificate *chain, size_t chain_len,
+	unsigned cert_issuer_key_type, const br_ec_private_key *sk);
+int br_ssl_server_reset(br_ssl_server_context *cc);
+]]
+
+assert(sizeof'br_ssl_engine_context'   == 3616)
+assert(sizeof'br_ssl_client_context'   == 3720)
+assert(sizeof'br_ssl_server_context'   == 4128)
+assert(sizeof'br_x509_minimal_context' == 3168)
+assert(sizeof'br_x509_decoder_context' == 1168)
+assert(sizeof'br_skey_decoder_context' == 2192)
 
 local BR_PEM_BEGIN_OBJ = 1
 local BR_PEM_END_OBJ   = 2
