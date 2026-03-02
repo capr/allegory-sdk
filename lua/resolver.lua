@@ -386,7 +386,7 @@ q.authority_section = false
 q.additional_section = false
 q.tracebacks = false
 q.tcp_only = false
-q.try_close = noop --stub, for check_io()
+q.try_close = function() return true end --stub, for check_io()
 
 --NOTE: DNS servers don't support request pipelining so we use one-shot sockets.
 local function tcp_query(rs, ns, q)
