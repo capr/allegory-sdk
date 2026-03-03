@@ -389,9 +389,8 @@ function socket:try_close()
 	if self._after_close then
 		self:_after_close()
 	end
-	log('', 'sock', 'closed', '%-4s r:%d w:%d%s', self, self.r, self.w,
+	live(self, nil, '%-4s r:%d w:%d%s', self, self.r, self.w,
 		self.n and ' live:'..self.n or '')
-	live(self, nil)
 	if not ok then return false, err end
 	return true
 end
@@ -452,7 +451,7 @@ struct addrinfo {
 	struct sockaddr *addr;
 	char            *name_ptr;
 	struct addrinfo *next_ptr;
-	struct sockaddr addrs[?];
+	struct sockaddr  _addrs[?];
 };
 ]]
 
@@ -535,7 +534,7 @@ do
 			return host, true --pass-through and return "not owned" flag
 		elseif host:starts'unix:' then
 			local ai = addrinfo_ct(1)
-			local sa = ai.addrs[0]
+			local sa = ai._addrs[0]
 			local path = host:sub(6)
 			sa.family_num = AF_UNIX
 			assert(#path < sizeof(sa.addr_un.path))
@@ -1625,7 +1624,6 @@ end
 		protect = protect,
 		_st = st, _af = af, _pr = pr, r = 0, w = 0,
 	}, opt)
-	log('', 'sock', 'create', '%-4s', s)
 	return s
 end
 function _G.tcp       (opt, ...) return create_socket(opt, tcp , 'tcp' , ...) end
@@ -1718,8 +1716,12 @@ end
 end
 _sock_cancel_wait_io = cancel_wait_io
 
+local term_sig_f
+
 function poll(ignore_interrupts)
 	if wait_count == 0 then
+		return nil, 'empty'
+	elseif wait_count == 1 and term_sig_f then --nobody left to kill this guy
 		return nil, 'empty'
 	end
 	local ok, err = _poll()
@@ -1875,12 +1877,12 @@ do --scheduler loop
 
 	local _stop = false
 	local running = false
-	local term_sig_f
 
 	function stop()
 		_stop = true
 		if term_sig_f then
 			term_sig_f:close()
+			term_sig_f = nil
 		end
 	end
 
@@ -1934,6 +1936,7 @@ do --scheduler loop
 				ret = pack(f(...))
 				if term_sig_f then
 					term_sig_f:close()
+					term_sig_f = nil
 				end
 			end
 			resume(thread(wrapper, 'sock-run'), ...)

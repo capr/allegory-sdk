@@ -338,6 +338,8 @@ complex flows it's up to you to provide the answer and the guarantee.
 
 local rs = {} --resolver class
 
+rs.timeout = 5 --arbitrary default
+
 rs.hosts = {
 	localhost = '127.0.0.1',
 }
@@ -380,7 +382,6 @@ end
 
 local q = {} --query class
 
-q.timeout = 5
 q.recurse = true
 q.authority_section = false
 q.additional_section = false
@@ -596,6 +597,7 @@ function rs.try_query(rs, qname, qtype, timeout)
 	if t then
 		qname, qtype, timeout = t.name, t.type, t.timeout
 	end
+	timeout = timeout or rs.timeout
 	qtype = qtype or 'A'
 	rs:dbg(nil, {name = qname}, 'LOOKUP')
 	local key = qtype..' '..qname
@@ -738,9 +740,12 @@ end
 
 if not ... then
 
+	--logging.debug = true
+
 	randomseed(clock())
 
 	local r = resolver{
+		timeout = 1,
 		servers = {
 			'127.0.0.1',
 			'10.0.0.1',
@@ -753,7 +758,9 @@ if not ... then
 		--debug = true,
 	}
 
+	local n = 0
 	local function lookup(q)
+		n = n + 1
 
 		local s = isstr(q) and q or pp(q)
 
@@ -764,7 +771,7 @@ if not ... then
 		else
 			for i, ans in ipairs(answers) do
 
-				printf('L %d: %-30s %-30s %-8s  ttl: %6d',
+				printf('L %d: %-36s %-36s %-8s  ttl: %6d',
 					i,
 					ans.name,
 					ans.a or ans.cname,
@@ -774,14 +781,19 @@ if not ... then
 				if ans.a then
 					local names, err = r:try_reverse_lookup(ans.a)
 					if not names then
-						printf('R E: %-30s %s', isstr(q) and q or q.name, err)
+						printf('R E: %-36s (%s)', isstr(q) and q or q.name, err)
 					else
 						for i,name in ipairs(names) do
-							printf('R %d: %-30s %s', i, ans.a, name)
+							printf('R %d: %-36s %s', i, ans.a, name)
 						end
 					end
 				end
 			end
+		end
+
+		n = n - 1
+		if n == 0 then
+			pr'DONE'
 		end
 	end
 

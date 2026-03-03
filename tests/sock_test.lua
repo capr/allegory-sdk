@@ -78,9 +78,9 @@ local function test_tcp()
 			pr('accepted', cs,
 				cs.remote_addr, cs.remote_port,
 				cs. local_addr, cs. local_port)
-			local buf = ffi.new'char[256]'
+			local buf = new'char[256]'
 			local n = cs:recv(buf, 256)
-			pr('server recv', n, ffi.string(buf, n))
+			pr('server recv', n, str(buf, n))
 			cs:close()
 			server:close()
 		end))
@@ -98,10 +98,10 @@ local function test_http()
 		local s = tcp()
 		pr('connect', s:connect('127.0.0.1', 80))
 		pr('send', s:send'GET / HTTP/1.0\r\n\r\n')
-		local buf = ffi.new'char[4096]'
+		local buf = new'char[4096]'
 		local n, err, ec = s:recv(buf, 4096)
 		if n then
-			pr('recv', n, ffi.string(buf, n))
+			pr('recv', n, str(buf, n))
 		else
 			pr(n, err, ec)
 		end
