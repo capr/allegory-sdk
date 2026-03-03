@@ -17,7 +17,7 @@ require'glue'
 require'pbuffer'
 require'base64'
 require'sock'
-require'sock_libtls'
+require'sock_bearssl'
 require'multipart'
 
 local client = {

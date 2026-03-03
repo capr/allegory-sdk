@@ -389,8 +389,9 @@ function socket:try_close()
 	if self._after_close then
 		self:_after_close()
 	end
-	live(self, nil, '%-4s r:%d w:%d%s', self, self.r, self.w,
+	log('', 'sock', 'close', '%-4s r:%d w:%d%s', self, self.r, self.w,
 		self.n and ' live:'..self.n or '')
+	live(self, nil)
 	if not ok then return false, err end
 	return true
 end

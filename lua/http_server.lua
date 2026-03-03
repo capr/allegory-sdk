@@ -64,7 +64,7 @@ if not ... then require'http_server_test'; return end
 
 require'glue'
 require'sock'
-require'sock_libtls'
+require'sock_bearssl'
 require'gzip'
 require'fs'
 require'http'
@@ -259,7 +259,7 @@ function http_server(...)
 		end
 
 		local tcp = tcp(nil, listen_opt.unix_socket and 'unix')
-		tcp:setopt('reuseaddr', true)
+		tcp:setopt('so_reuseaddr', true)
 		local addr =
 			listen_opt.unix_socket and 'unix:'..listen_opt.unix_socket
 			or listen_opt.addr or '*'
@@ -295,7 +295,7 @@ function http_server(...)
 		push(self.sockets, tcp)
 
 		local function accept_connection()
-			local ctcp, err = tcp:accept()
+			local ctcp, err = tcp:try_accept()
 			if not ctcp then
 				if tcp:closed() then --stop() called.
 					return

@@ -15,9 +15,9 @@ API
 
 Config options (opt table)
 
-	ca                     CA certificate PEM data (string) for server verification
-	cert                   certificate PEM data (for server or mutual TLS)
-	key                    private key PEM data (for server or mutual TLS)
+	ca[_file]              CA certificate PEM data or file for server verification
+	cert[_file]            certificate PEM data or file (for server or mutual TLS)
+	key[_file]             private key PEM data or file (for server or mutual TLS)
 	cert_issuer_rsa        hint: server EC cert was issued by RSA CA (default: EC)
 	insecure_noverifycert  skip server certificate verification (client only)
 
@@ -25,7 +25,9 @@ Config options (opt table)
 
 require'glue'
 require'sock'
-local C = ffi.load(bearssl_libname or 'bearssl')
+require'fs'
+
+local C = ffi.load'bearssl'
 
 cdef[[
 
@@ -779,6 +781,18 @@ end
 
 --SSL context builders -------------------------------------------------------
 
+local load_once = memoize(load)
+
+local function cert_key_opt(opt, required)
+	local cert = opt and (opt.cert or opt.cert_file and load_once(opt.cert_file))
+	local key  = opt and (opt.key  or opt.key_file  and load_once(opt.key_file))
+	if required or (cert or key) then
+		assert(cert, 'tls_client: cert or cert_file required')
+		assert(key , 'tls_client: key or key_file required')
+		return cert, key
+	end
+end
+
 -- Returns (sc, eng_ptr, keepalive) or (nil, err).
 -- eng_ptr is br_ssl_engine_context* (== sc cast, since eng is first field).
 local function make_client_ctx(opt)
@@ -792,8 +806,9 @@ local function make_client_ctx(opt)
 	keepalive[#keepalive + 1] = buf
 
 	if not (opt and opt.insecure_noverifycert) then
-		if not (opt and opt.ca) then return nil, 'ca_required' end
-		local ta, ta_n, ta_kp = load_trust_anchors(opt.ca)
+		local ca = opt and (opt.ca or opt.ca_file and load_once(opt.ca_file))
+		assert(ca, 'tls_client: ca or ca_file required')
+		local ta, ta_n, ta_kp = load_trust_anchors(ca)
 		if not ta then return nil, ta_n end
 		for _, v in ipairs(ta_kp) do keepalive[#keepalive + 1] = v end
 		C.br_ssl_client_init_full(sc, xc, ta, ta_n)
@@ -803,7 +818,8 @@ local function make_client_ctx(opt)
 
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
 
-	if opt and opt.cert and opt.key then
+	local cert, key = cert_key_opt(opt)
+	if cert then
 		local chain, chain_n, chain_kp = load_cert_chain(opt.cert)
 		if not chain then return nil, chain_n end
 		for _, v in ipairs(chain_kp) do keepalive[#keepalive + 1] = v end
@@ -828,9 +844,7 @@ local function make_client_ctx(opt)
 end
 
 local function make_server_ctx(opt)
-	if not opt then return nil, 'opt_required' end
-	if not opt.cert then return nil, 'cert_required' end
-	if not opt.key  then return nil, 'key_required'  end
+	local cert, key = cert_key_opt(opt, true)
 
 	local keepalive = {}
 	local sc  = new('br_ssl_server_context')
@@ -839,11 +853,11 @@ local function make_server_ctx(opt)
 	keepalive[#keepalive + 1] = sc
 	keepalive[#keepalive + 1] = buf
 
-	local chain, chain_n, chain_kp = load_cert_chain(opt.cert)
+	local chain, chain_n, chain_kp = load_cert_chain(cert)
 	if not chain then return nil, chain_n end
 	for _, v in ipairs(chain_kp) do keepalive[#keepalive + 1] = v end
 
-	local skdc, kt, key_kp = load_private_key(opt.key)
+	local skdc, kt, key_kp = load_private_key(key)
 	if not skdc then return nil, kt end
 	for _, v in ipairs(key_kp) do keepalive[#keepalive + 1] = v end
 
@@ -1013,7 +1027,7 @@ local function wrap_conn_stcp(tcp, eng, keepalive)
 		checkp     = checkp,
 		r = 0, w = 0,
 	})
-	live(s, client_stcp.type, 'socket=', tcp)
+	live(s, client_stcp.type, 'tcp=', tcp)
 	return s
 end
 
@@ -1045,7 +1059,7 @@ function _G.server_stcp(tcp, opt)
 		checkp   = checkp,
 		r = 0, w = 0,
 	})
-	live(s, server_stcp.type, 'socket=', tcp)
+	live(s, server_stcp.type, 'tcp=', tcp)
 	return s
 end
 
@@ -1070,6 +1084,9 @@ function server_stcp:try_accept()
 		cs:try_close()
 		return nil, err, true --retriable
 	end
+	log('', 'tls', 'accepted', '%-4s tcp=%s', cs, ctcp)
+	liveadd(cs, 'accepted', 'tcp=', ctcp)
+
 	return cs
 end
 
