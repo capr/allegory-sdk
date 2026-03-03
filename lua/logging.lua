@@ -119,7 +119,7 @@ function logging:tofile(logfile, max_size, queue_size)
 
 	function self:logtofile(s)
 		if not queue:push(s) then
-			queue:pop()
+			queue:pull()
 			queue:push(s)
 		end
 	end
@@ -129,7 +129,7 @@ function logging:tofile(logfile, max_size, queue_size)
 			local s = queue:peek()
 			if s then
 				if try_save_message(s) then
-					queue:pop()
+					queue:pull()
 				else --wait for user to fix the fs issue.
 					save_wait_job = wait_job()
 					save_wait_job:wait(5)
@@ -149,7 +149,7 @@ function logging:tofile(logfile, max_size, queue_size)
 	function self:tofile_flush()
 		if not self.logtofile then return end
 		while 1 do
-			local s = queue:pop()
+			local s = queue:pull()
 			if not s then break end
 			if not try_save_message(s) then break end
 			if f and self.autoflush then
@@ -259,7 +259,7 @@ function logging:toserver(host, port, queue_size, timeout)
 			if msg then
 				if connect() and chan then
 					if check_io(chan:try_send(msg)) then
-						queue:pop()
+						queue:pull()
 					end
 				end
 			else
@@ -273,7 +273,7 @@ function logging:toserver(host, port, queue_size, timeout)
 
 	function self:logtoserver(msg)
 		if not queue:push(msg) then
-			queue:pop()
+			queue:pull()
 			queue:push(msg)
 		end
 	end

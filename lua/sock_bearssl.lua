@@ -1013,7 +1013,7 @@ local function wrap_conn_stcp(tcp, eng, keepalive)
 		checkp     = checkp,
 		r = 0, w = 0,
 	})
-	live(s, client_stcp.type)
+	live(s, client_stcp.type, 'socket=', tcp)
 	return s
 end
 
@@ -1045,13 +1045,13 @@ function _G.server_stcp(tcp, opt)
 		checkp   = checkp,
 		r = 0, w = 0,
 	})
-	live(s, server_stcp.type)
+	live(s, server_stcp.type, 'socket=', tcp)
 	return s
 end
 
 function server_stcp:try_accept()
-	local ctcp, err = self.tcp:try_accept()
-	if not ctcp then return nil, err end
+	local ctcp, err, retry = self.tcp:try_accept()
+	if not ctcp then return nil, err, retry end
 
 	local sc, eng, keepalive = make_server_ctx(self._opt)
 	if not sc then
@@ -1065,10 +1065,10 @@ function server_stcp:try_accept()
 	end
 
 	local cs = wrap_conn_stcp(ctcp, eng, keepalive)
-	local ok, herr = engine_run(cs, bor(BR_SSL_SENDAPP, BR_SSL_RECVAPP))
+	local ok, err = engine_run(cs, bor(BR_SSL_SENDAPP, BR_SSL_RECVAPP))
 	if not ok then
 		cs:try_close()
-		return nil, herr
+		return nil, err, true --retriable
 	end
 	return cs
 end

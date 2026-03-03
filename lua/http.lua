@@ -763,7 +763,7 @@ function _G.http(t)
 	end
 
 	--NOTE: 128k on Debian 10, 64k on Windows 10.
-	self.recv_buffer_size = self.recv_buffer_size or self.f:getopt'rcvbuf'
+	self.recv_buffer_size = self.recv_buffer_size or self.f:getopt'so_rcvbuf'
 
 	self.b = pbuffer{
 		f = self.f,
