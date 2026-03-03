@@ -1,6 +1,6 @@
 --[=[
 
-	HTTP 1.1 coroutine-based async server (based on sock.lua, sock_libtls.lua).
+	HTTP 1.1 coroutine-based async server (based on sock.lua, sock_bearssl.lua).
 	Written by Cosmin Apreutesei. Public Domain.
 
 	Features, https, gzip compression, persistent connections, pipelining,

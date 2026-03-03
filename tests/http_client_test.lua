@@ -5,17 +5,6 @@ logging.verbose = true
 --config('getpage_debug', 'protocol stream')
 logging.filter.tls = true
 
-local function search_page_url(pn)
-	return 'https://luapower.com/'
-end
-
-function test_update_ca_file()
-	resume(thread(function()
-		update_ca_file()
-	end))
-	start()
-end
-
 function test_getpage(url, n)
 	local b = 0
 	for i=1,n do
@@ -31,6 +20,4 @@ function test_getpage(url, n)
 	pr(kbytes(b / (t1 - t0))..'/s')
 end
 
---test_update_ca_file()
---test_getpage('http://luapower.com/', 1)
-test_getpage('https://mm.allegory.ro', 1)
+test_getpage('https://google.com', 1)

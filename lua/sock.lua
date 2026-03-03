@@ -2,7 +2,7 @@
 
 	Portable async socket API Linux (epoll).
 	Written by Cosmin Apreutesei. Public Domain.
-	TLS support in sock_libtls.lua.
+	TLS support in sock_bearssl.lua.
 
 ADDRESS LOOKUP
 	[try_]getaddrinfo(...) -> ai           look-up a hostname

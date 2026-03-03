@@ -5,7 +5,7 @@
 
 API
 
-	client_stcp(tcp, servername, opt) -> cstcp   create a secure client socket
+	client_stcp(tcp, host, opt) -> cstcp         create a secure client socket
 	server_stcp(tcp, opt) -> sstcp               create a secure server socket
 	cstcp:[try_]recv(buf, sz) -> n               receive decrypted bytes
 	cstcp:[try_]send(buf, sz) -> true            send bytes (encrypted)
@@ -571,6 +571,22 @@ local BR_SSL_BUFSIZE_BIDI = (16384 + 325) + (16384 + 85)
 
 local min = math.min
 
+local function P(s)
+	return exists(s) and s or nil
+end
+function ca_file_path()
+	return config'ca_file'
+		or P(varpath'cacert.pem')
+		or P'/etc/ssl/certs/ca-certificates.crt'                --Debian/Ubuntu/Gentoo etc.
+		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --Fedora/RHEL 7
+		or P'/etc/pki/tls/certs/ca-bundle.crt'                  --Fedora/RHEL 6
+		or P'/etc/ssl/ca-bundle.pem'                            --OpenSUSE
+		or P'/etc/pki/tls/cacert.pem'                           --OpenELEC
+		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --CentOS/RHEL 7
+		or P'/etc/ssl/cert.pem'                                 --Alpine Linux
+		or P(indir(exedir(), '../../etc/ca-certificates.crt'))  --bundled (outdated)
+end
+
 --PEM parsing ----------------------------------------------------------------
 
 local _pem_acc     -- uint8_t* write head
@@ -1033,11 +1049,11 @@ end
 
 --Public API -----------------------------------------------------------------
 
-function _G.client_stcp(tcp, servername, opt)
+function _G.client_stcp(tcp, host, opt)
 	local sc, eng, keepalive = make_client_ctx(opt)
 	if not sc then return nil, eng end
 
-	if C.br_ssl_client_reset(sc, servername, 0) == 0 then
+	if C.br_ssl_client_reset(sc, host, 0) == 0 then
 		return nil, 'ssl_client_reset_failed'
 	end
 

@@ -22,7 +22,7 @@ http_client(opt) -> client
 		max_retries             number of retries before giving up
 		max_redirects           number of redirects before giving up
 		debug                   true to enable client-level debugging
-		tls_options             options to pass to sock_libtls
+		tls_options             options to pass to sock_bearssl
 
 	NOTE: A target is a combination of (vhost, port, client_ip) on which
 	one or more HTTP connections can be created subject to per-target limits.
@@ -63,7 +63,7 @@ require'glue'
 require'json'
 require'url'
 require'sock'
-require'sock_bearsl'
+require'sock_bearssl'
 require'gzip'
 require'fs'
 require'resolver'
@@ -202,17 +202,6 @@ function client:can_connect_now(target)
 	return can
 end
 
-function client:stcp_options(host, port)
-	if not self._tls_config then
-		local t = {}
-		for k,v in pairs(self.tls_options) do
-			t[k] = call(v, self, k)
-		end
-		self._tls_config = tls_config(t)
-	end
-	return self._tls_config
-end
-
 function client:connect_now(target)
 	local host, port, client_ip = target()
 	local tcp = tcp()
@@ -234,7 +223,7 @@ function client:connect_now(target)
 		return nil, err
 	end
 	if target.http_args.https then
-		local stcp, err = client_stcp(tcp, host, self:stcp_options(host, port))
+		local stcp, err = client_stcp(tcp, host, self.tls_options)
 		self:dp(target, ' TLS', '%s %s %s', stcp, http, err or '')
 		if not stcp then
 			return nil, err
