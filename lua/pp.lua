@@ -420,7 +420,11 @@ function try_pp_save(write, v, ...)
 		require'fs'
 		local write_protected = assert(file_saver(write))
 		function write(s)
-			assert(write_protected(s))
+			if s == nil then
+				assert(write_protected('', 0))
+			else
+				assert(write_protected(s))
+			end
 		end
 	elseif type(write) ~= 'function' then --assume io or fs file object
 		local f = write
