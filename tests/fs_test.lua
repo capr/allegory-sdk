@@ -1,5 +1,4 @@
---go@ plink m1 -t sdk/bin/linux/luajit -lscite "sdk/tests/fs_test.lua symlink_replace"
---#!../bin/linux/luajit
+--#!../bin/luajit
 require'glue'
 require'fs'
 require'logging'

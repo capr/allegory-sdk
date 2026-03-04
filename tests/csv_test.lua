@@ -1,6 +1,9 @@
 pcall(require, "strict")
 require"csv"
 
+require'fs'
+chdir(rel_scriptdir)
+
 local errors = 0
 
 local function testhandle(handle, correct_result)

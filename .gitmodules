@@ -31,9 +31,6 @@
 [submodule "c/bearssl/src"]
 	path = c/bearssl/src
 	url = ../allegory-sdk-bearssl.git
-[submodule "c/libtls_bearssl/src"]
-	path = c/libtls_bearssl/src
-	url = ../allegory-sdk-libtls-bearssl.git
 [submodule "c/lz4/src"]
 	path = c/lz4/src
 	url = ../allegory-sdk-lz4.git
@@ -64,6 +61,6 @@
 [submodule "c/utf8proc/src"]
 	path = c/utf8proc/src
 	url = ../allegory-sdk-utf8proc.git
-[submodule "c/mir"]
-	path = c/mir
+[submodule "c/mir/src"]
+	path = c/mir/src
 	url = ../allegory-sdk-mir.git

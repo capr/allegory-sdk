@@ -43,13 +43,13 @@ run(function()
 					cid = 'img1',
 					filename = 'progressive.jpg',
 					content_type = 'image/jpeg',
-					contents = load'jpeg_test/progressive.jpg',
+					contents = load(exedir()..'/../../tests/jpeg_test/progressive.jpg'),
 				},
 				{
 					cid = 'img2',
 					filename = 'birds.jpg',
 					content_type = 'image/jpeg',
-					contents = load'resize_image_test/birds.jpg',
+					contents = load(exedir()..'/../../tests/resize_image_test/birds.jpg'),
 				},
 			},
 			attachments = {

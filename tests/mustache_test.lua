@@ -2,6 +2,9 @@
 require'glue'
 require'mustache'
 require'json'
+require'fs'
+
+chdir(rel_scriptdir)
 
 local function test_spec(t)
 	print(t.desc)

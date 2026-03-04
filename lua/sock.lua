@@ -1064,7 +1064,7 @@ do
 			if not socket then
 				break
 			end
-			if socket[EXPIRES] - t <= .05 then --arbitrary threshold.
+			if socket[EXPIRES] - t <= 0.01 then --arbitrary threshold.
 				assert(heap:pop())
 				socket[EXPIRES] = nil
 				local thread = socket[THREAD]

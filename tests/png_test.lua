@@ -3,6 +3,8 @@ require'glue'
 require'png'
 require'fs'
 
+chdir(rel_scriptdir)
+
 local function load(file)
 	local f = open(file)
 	local img = png_open{read = f:buffered_reader()}

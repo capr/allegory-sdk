@@ -1,9 +1,8 @@
-#!/bin/sh
+#go@ plink m1 -t ~/sdk/tests/test-all
+#!/bin/bash
 cd "${0%test-all}" || exit 1
-
-[ "$OSTYPE" = "msys" ] && P=windows || P=linux
 
 for f in *_test.lua; do
 	echo "$f"
-	AUTO=1 ../bin/$P/luajit -e"require'glue'.luapath'.'" "$f"
+	AUTO=1 ../bin/debian12/luajit -e"require'glue';luapath'.'" "$f" >/dev/null
 done
