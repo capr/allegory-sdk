@@ -2,6 +2,9 @@
 require'glue'
 require'sha2'
 
+require'fs'
+chdir(rel_scriptdir)
+
 sha = {
 	SHA256 = function(s) return tohex(sha256(s)) end,
 	SHA384 = function(s) return tohex(sha384(s)) end,

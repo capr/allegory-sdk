@@ -1992,6 +1992,7 @@ function try_save(file, s, sz, perms)
 			local s, sz
 			ok, s, sz = pcall(read, true)
 			if not ok then err = s; break end
+			pr(ok, s, sz)
 			if sz == 0 then break end --eof
 			if s == nil then --nil, err
 				ok, err = false, assert(sz)
@@ -2043,14 +2044,66 @@ function save(file, s, sz, perms)
 	check('fs', 'save', ok, '%s: %s', file, err)
 end
 
---return a `try_write(v | buf,len | t | nil) -> true | false,err` function.
-function file_saver(file, thread_name)
-	require'sock'
-	local write = cowrap(function(yield)
-		return try_save(file, yield)
-	end, thread_name or 'file-saver %s', file)
-	local ok, err = write()
-	if not ok then return nil, err end
+--return a `try_write(s | buf,len) -> true | false,err` function.
+function file_saver(file)
+
+	local opened, open_err
+	local function write(buf, sz)
+
+		if not opened then
+			opened = true
+			local tmpfile = file..'.tmp'
+
+			local dir = assert(dirname(tmpfile))
+			local ok, err = try_mkdir(dir, true, perms)
+			if not ok then
+				open_err = _('could not create dir %s: %s', dir, err)
+				return false, err
+			end
+
+			local f, err = try_open{path = tmpfile, mode = 'w', perms = perms, quiet = true}
+			if not f then
+				open_err = _('could not open file %s: %s', tmpfile, err)
+				return false, err
+			end
+		end
+
+		local ok, err = true --eof
+		if buf then --not eof
+			sz = sz or #buf
+			if sz > 0 then --not eof
+				ok, err = f:try_write(buf, sz)
+				if ok then return true end --not eof
+			end
+		end
+
+		local close_ok, close_err = f:close()
+		if ok then --I/O errors can also be reported by close().
+			ok, err = close_ok, close_err
+		end
+
+		if not ok then
+			local err_msg = 'could not write to file %s: %s'
+			local ok, rm_err = try_rmfile(tmpfile)
+			if not ok then
+				err_msg = err_msg..'\nremoving it also failed: %s'
+			end
+			return false, _(err_msg, tmpfile, err, rm_err)
+		end
+
+		local ok, err = try_rename(tmpfile, file)
+		if not ok then
+			local err_msg = 'could not rename file %s -> %s: %s'
+			local ok, rm_err = try_rmfile(tmpfile)
+			if not ok then
+				err_msg = err_msg..'\nremoving it also failed: %s'
+			end
+			return false, _(err_msg, tmpfile, file, err, rm_err)
+		end
+
+		log('note', 'fs', 'save', '%s%s', file, sz and _(' (%s)', kbytes(sz)) or '')
+		return true
+	end
 	return write
 end
 

@@ -1331,4 +1331,4 @@ end
 
 require'errors_test'
 
-pr'glue tests passed'
+print'glue tests passed'

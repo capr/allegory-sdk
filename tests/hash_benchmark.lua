@@ -24,7 +24,6 @@ local function benchmark(s, hash, iter)
 end
 
 require'blake3'
-require'md5'
 require'gzip'
 require'xxhash'
 require'sha1'
@@ -32,7 +31,6 @@ require'sha2'
 
 benchmark('BLAKE3         ', function(s, sz) return blake3(s, sz) end)
 benchmark('sha1 Lua       ', function(s, sz) return sha1(str(s, sz)) end, 4)
-benchmark('md5 C          ', md5, 128)
 benchmark('crc32 C        ', crc32, 256)
 benchmark('xxHash32 C     ', xxhash32, 2048)
 benchmark('xxHash64 C     ', xxhash64, 2048)

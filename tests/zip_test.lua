@@ -2,6 +2,8 @@ require'glue'
 require'zip'
 require'fs'
 
+chdir(rel_scriptdir)
+
 local function dump(z)
 	print('dir', 'comp', 'mtime', 'atime', 'btime', 'crc',
 		'usize', 'csize', 'disknum', 'diskoff', 'ifa', 'efa', 'zip64', 'zipcd',

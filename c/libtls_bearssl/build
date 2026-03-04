@@ -1,8 +1,0 @@
-#!/bin/sh
-cd "${0%build}" || exit 1
-
-gcc -shared -o ../../bin/libtls_bearssl.so -g \
-	src/*.c src/compat/*.c -Isrc -I../bearssl/src/inc -O2 -fPIC \
-	-DHAVE_STRSEP -DHAVE_STPCPY -DHAVE_EXPLICIT_BZERO \
-	-Wall -D_GNU_SOURCE -D_POSIX_SOURCE \
-	-L../../bin -lbearssl -s -static-libgcc

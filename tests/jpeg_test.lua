@@ -2,6 +2,8 @@ require'glue'
 require'jpeg'
 require'fs'
 
+chdir(rel_scriptdir)
+
 local function test_load_save()
 	local infile = 'jpeg_test/progressive.jpg'
 	local outfile = 'jpeg_test/test.jpg'

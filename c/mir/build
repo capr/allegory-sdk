@@ -1,0 +1,11 @@
+#!/bin/sh
+cd "${0%build}/src" || exit 1
+
+gcc -fPIC -std=gnu11 -Wno-abi -fsigned-char -fno-tree-sra -fno-ipa-cp-clone \
+  -O3 -DNDEBUG -DC2MIR_PARALLEL \
+  -DGITCOMMIT=$(git log -1 --pretty='%H') \
+  -I. \
+  mir.c mir-gen.c c2mir/c2mir.c \
+  -shared -Wl,-soname,libmir.so.1 \
+  -o ../../../bin/debian12/libmir.so \
+  -lm -ldl -lpthread
