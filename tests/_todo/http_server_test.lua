@@ -19,8 +19,8 @@ local server = http_server{
 			tls_options = {
 				keypairs = {
 					{
-						cert_file = exedir()..'/../../tests/localhost.crt',
-						key_file  = exedir()..'/../../tests/localhost.key',
+						cert_file = exedir()..'/../tests/localhost.crt',
+						key_file  = exedir()..'/../tests/localhost.key',
 					},
 				},
 			},

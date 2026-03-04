@@ -2,7 +2,7 @@
 require'glue'
 require'fs'
 
-assert(chdir(exedir()..'/../../tests'))
+assert(chdir(exedir()..'/../tests'))
 
 local tostr = pp
 local function _test(t1, t2, prefix, level)

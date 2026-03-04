@@ -4,5 +4,5 @@ cd "${0%test-all}" || exit 1
 
 for f in *_test.lua; do
 	echo "$f"
-	AUTO=1 ../bin/debian12/luajit -e"require'glue';luapath'.'" "$f" >/dev/null
+	AUTO=1 ../bin/luajit -e"require'glue';luapath'.'" "$f" >/dev/null
 done

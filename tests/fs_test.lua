@@ -7,7 +7,7 @@ require'sock'
 --if luapower sits on a VirtualBox shared folder on a Windows host
 --we can't mmap files, create symlinks or use locking on that, so we'll use
 --$HOME, which is usually a disk mount.
-local tests_dir = exedir()..'/../../tests'
+local tests_dir = exedir()..'/../tests'
 local fs_test_lua = tests_dir..'/fs_test.lua'
 
 local test = setmetatable({}, {__newindex = function(t, k, v)

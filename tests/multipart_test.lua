@@ -1,4 +1,5 @@
 require'multipart'
+require'fs'
 
 local req = multipart_mail{
 	from = 'thedude@dude.com',

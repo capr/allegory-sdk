@@ -5,7 +5,7 @@ require'sock'
 require'logging'
 require'multipart'
 logging.filter.tls = true
-config('ca_file', exedir()..'/../../tests/cacert.pem')
+config('ca_file', exedir()..'/../tests/cacert.pem')
 
 logging.debug = true
 
@@ -43,13 +43,13 @@ run(function()
 					cid = 'img1',
 					filename = 'progressive.jpg',
 					content_type = 'image/jpeg',
-					contents = load(exedir()..'/../../tests/jpeg_test/progressive.jpg'),
+					contents = load(exedir()..'/../tests/jpeg_test/progressive.jpg'),
 				},
 				{
 					cid = 'img2',
 					filename = 'birds.jpg',
 					content_type = 'image/jpeg',
-					contents = load(exedir()..'/../../tests/resize_image_test/birds.jpg'),
+					contents = load(exedir()..'/../tests/resize_image_test/birds.jpg'),
 				},
 			},
 			attachments = {
