@@ -1,19 +1,6 @@
 #!/bin/sh
 cd "${0%build}" || exit 1
 
-build() {
-	${X}gcc -c -O2 -fno-strict-aliasing -Wall -Winline -I. -I../mdbx/src $C mdbx_schema.c
-	${X}gcc *.o -shared -o ../../bin/$P/$D $L
-	rm -f      ../../bin/$P/$A
-	${X}ar rcs ../../bin/$P/$A *.o
-	rm *.o
-}
-
-if [ "$OSTYPE" = "msys" ]; then
-	P=windows L="-s -static-libgcc" D=mdbx_schema.dll A=mdbx_schema.a build
-elif [ "${OSTYPE#darwin}" != "$OSTYPE" ]; then
-	P=osx C="-arch x86_64" L="-arch x86_64 -install_name @rpath/libmdbx_schema.dylib" \
-	D=libmdbx_schema.dylib A=libmdbx_schema.a build
-else
-	P=debian12 C="-fPIC" L="-s -static-libgcc" D=libmdbx_schema.so A=libmdbx_schema.a build
-fi
+gcc -shared -o ../../bin/libmdbx_schema.so \
+	-O2 -fPIC -fno-strict-aliasing -Wall -Winline -I. -I../mdbx/src mdbx_schema.c \
+	-s -static-libgcc

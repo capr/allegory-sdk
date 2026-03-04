@@ -1,22 +1,7 @@
 #!/bin/sh
 cd "${0%build}" || exit 1
 
-build() {
-	${X}gcc -c -O3 $C -DXXH_SSE2 -msse2 src/*.c -Isrc \
-		-std=c99 -Wall -Wextra -Wshadow -Wcast-qual -Wcast-align \
-		-Wstrict-prototypes -Wstrict-aliasing=1 -Wswitch-enum -Wundef -pedantic
-	${X}gcc *.o -shared -o ../../bin/$P/$D $L
-	rm -f      ../../bin/$P/$A
-	${X}ar rcs ../../bin/$P/$A *.o
-	rm *.o
-}
-
-if [ "$OSTYPE" = "msys" ]; then
-	C="-fno-asynchronous-unwind-tables" P=windows L="-s -static-libgcc" \
-	D=xxhash.dll A=xxhash.a build
-elif [ "${OSTYPE#darwin}" != "$OSTYPE" ]; then
-	P=osx C="-arch x86_64" L="-arch x86_64 -install_name @rpath/libxxhash.dylib" \
-	D=libxxhash.dylib A=libxxhash.a build
-else
-	P=linux C="-fPIC" L="-s -static-libgcc" D=libxxhash.so A=libxxhash.a build
-fi
+gcc -shared -o ../../bin/libxxhash.so -O3 -fPIC -DXXH_SSE2 -msse2 src/*.c -Isrc \
+	-std=c99 -Wall -Wextra -Wshadow -Wcast-qual -Wcast-align \
+	-Wstrict-prototypes -Wstrict-aliasing=1 -Wswitch-enum -Wundef -pedantic \
+	-s -static-libgcc

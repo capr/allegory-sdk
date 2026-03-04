@@ -2,6 +2,6 @@ io.stdout:setvbuf'no'
 io.stderr:setvbuf'no'
 require'glue'
 require'fs'
-local tests_dir = exedir()..'/../../tests'
+local tests_dir = exedir()..'/../tests'
 luapath(tests_dir)
 --chdir(tests_dir)

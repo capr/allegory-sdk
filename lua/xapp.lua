@@ -33,7 +33,7 @@ CONFIG
 require'glue'
 require'webb'
 
-local sdkdir = dirname(exedir(), 2)
+local sdkdir = dirname(exedir())
 wwwdir'www'
 wwwdir(indir(sdkdir, 'www'))
 wwwdir(indir(sdkdir, 'canvas-ui/www'))

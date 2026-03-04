@@ -21,6 +21,8 @@
 
 ]=]
 
+if not ... then require'multipart_test'; return end
+
 require'glue'
 require'base64'
 
@@ -175,41 +177,4 @@ function multipart_mail(msg)
 	req.headers.content_type = mix.content_type
 	req.message = mix:finish()
 	return req
-end
-
-
-if not ... then
-
-	local req = multipart_mail{
-		from = 'thedude@dude.com',
-		text = 'Hello Dude!',
-		html = '<h1>Hello</h1><p>Hello Dude</p>',
-		inlines = {
-			{
-				cid = 'img1',
-				filename = 'progressive.jpg',
-				contents = load'../tests/jpeg_test/progressive.jpg',
-			},
-			{
-				cid = 'img2',
-				filename = 'birds.jpg',
-				contents = load'../tests/resize_image_test/birds.jpg',
-			},
-		},
-		attachments = {
-			{
-				filename = 'att1.txt',
-				content_type = 'text/plain',
-				contents = 'att1!',
-			},
-			{
-				filename = 'att2.txt',
-				content_type = 'text/plain',
-				contents = 'att2!',
-			},
-		},
-	}
-	pr(req.headers)
-	pr((req.message:gsub('\r', '')))
-
 end

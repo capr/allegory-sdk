@@ -72,15 +72,13 @@ to see what's missing, broken or wanted.
 
 # Compatibility
 
- * Operating Systems: **Debian 12+**
+ * Operating Systems: **Linux**
  * Browsers: Desktop **Chrome**, **Firefox**, **Edge**, **Safari 16.3+**
  * CPUs: x86-64 with SSE 4.2 (AVX2 used if found).
 
 # Binaries
 
-Binaries are included in a separate repo that is kept in sync with the Lua code.
-
-	git submodule update --init bin/linux
+Binaries are included for Debian 12. Use `c/build-all` to rebuild for your distro.
 
 # Building
 

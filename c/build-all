@@ -1,8 +1,36 @@
 #!/bin/sh
 cd "${0%build-all}" || exit 1
-for d in *; do
-	if [ -f "$d/build" ]; then
-		echo "$d:"
-		$d/build
-	fi
+
+for t in gcc cmake nasm; do
+	command -v "$t" >/dev/null || { echo "$t missing"; exit 1; }
 done
+
+# deps
+xxhash/build
+zlib-ng/build
+
+# big
+luajit/build
+bearssl/build
+libjpeg/build
+mdbx/build
+#mir/build
+
+# small
+bcrypt/build
+blake3/build
+cjson/build
+cpu_supports/build
+expat/build
+genx/build
+jsmin/build
+ldecNumber/build
+libspng/build
+lpeglabel/build
+lz4/build
+md5/build
+mdbx_schema/build
+minizip2/build
+pillow_simd/build
+sha2/build
+utf8proc/build

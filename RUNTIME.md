@@ -10,7 +10,7 @@ extensions:
    from [Lua 5.2](http://www.lua.org/manual/5.2/manual.html),
    including those enabled with `DLUAJIT_ENABLE_LUA52COMPAT`
  * [LuaJIT's string.buffer module](https://htmlpreview.github.io/?https://github.com/LuaJIT/LuaJIT/blob/v2.1/doc/ext_buffer.html)
- * `!` can be used in `package.path` and `package.cpath` on Linux and OSX too.
+ * `!` can be used in `package.path` and `package.cpath` on Linux too.
 
 ## How it was built
 
@@ -20,8 +20,7 @@ extensions:
 
 ## How to run Lua scripts with it
 
-	$ path-to-sdk/bin/linux/luajit        myapp.lua
-	> path-to-sdk\bin\windows\luajit.exe  myapp.lua
+	$ path-to-sdk/bin/luajit  myapp.lua
 
 ## How to make portable apps with it
 
@@ -44,7 +43,7 @@ because if your shared libraries also depend on (that is, are dynamically
 linked to) other shared libraries, it's the OS that has to load those,
 not LuaJIT. The fix is to either call `sopath()` before loading shared
 libraries from your app dir, or call `ffi.load` with absolute paths on
-all dependencies to preload them.
+all dependencies _first_ to preload them.
 
 As for other files that you load explicitly, just make sure to only use paths
 that are relative to `scriptdir()` (eg. use `indir(scriptdir(), 'rel path')`).

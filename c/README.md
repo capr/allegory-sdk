@@ -13,51 +13,28 @@ C sources are included as git submodules so you need to clone them first:
 Building is based on bash scripts most of which invoke gcc directly.
 To (re)build a library, type:
 
-	sh <lib>/build
+	<lib>/build
 
 To (re)build all libraries, type:
 
-	sh build-all
+	./build-all
 
-## Building on Windows for Windows
-
-1. Download and install [MSYS2].
-
-2. Add to PATH (in this order):
-
-		<msys2-path>\mingw64\bin
-		<msys2-path>\usr\bin
-
-3. Install the toolchain:
-
-		pacman -S mingw-w64-x86_64-gcc
-		pacman -S mingw-w64-x86_64-cmake
-		pacman -S make nasm
-
-[MSYS2]: https://repo.msys2.org/distrib/x86_64/msys2-x86_64-20211130.exe
-
-## Building on Linux for Linux
-
-The current stack is built on a **Debian 10 x64 Server**
-and it's the only supported way to build it. To install the toolchain, type:
+The current stack is built on a **Debian 12 x64 Server**.
+To install the toolchain, type:
 
 	sudo apt-get install gcc cmake nasm
-	sudo apt-get install libssl-dev
 
 Note that Linux binaries are not very backwards compatible because of glibc's
-"versioned symbols", and because of OpenSSL. If you need backwards-compatible
-binaries you'll have to build them on the _oldest_ Linux that you care to support,
-but using the _newest_ GCC that you can install on that system. Good luck!
+"versioned symbols". If you need backwards-compatible binaries you'll have to
+build them on the _oldest_ Linux that you care to support, but using the
+_newest_ GCC that you can install on that system. Good luck with that!
 
 ## Binary facts
 
-* both dynamic libraries (stripped) and static libraries are created.
-* static libraries can be [bundled](docs/bundle.md) into your app executable.
+* only dynamic libraries (stripped) are created.
 * libgcc is statically linked.
 * libstdc++ is statically linked.
-* binaries on Windows are linked to msvcrt.dll.
 * the luajit exe on Linux sets `rpath` to `$ORIGIN`
-* Lua/C modules on Windows are linked to lua51.dll.
 
 ------------------------------------------------------------------------------
 
@@ -78,23 +55,16 @@ starting point so that you retain some desirable properties of the script:
 
 The build script must generate binaries as follows:
 
-	bin/windows/foo.dll             C library, Windows
-	bin/windows/foo.a               C library, Windows, static version
-	bin/windows/clib/foo.dll        Lua/C library, Windows
-	bin/windows/foo.a               Lua/C library, Windows, static version
-	bin/linux/libfoo.so             C library, Linux
-	bin/linux/libfoo.a              C library, Linux, static version
-	bin/linux/clib/foo.so           Lua/C library, Linux
-	bin/linux/libfoo.a              Lua/C library, Linux, static version
+	bin/libfoo.so             C library, Linux
+	bin/clib/foo.so           Lua/C library, Linux
 
-So prefix everything with `lib` except for Windows and except for dynamic
-Lua/C libs; put dynamic Lua/C libs in the `clib` subdirectory but put static
-Lua/C libs in the platform directory along with the normal C libs.
+So prefix everything with `lib` except for dynamic Lua/C libs.
+Put dynamic Lua/C libs in the `clib` subdirectory.
 
 ## Building with GCC
 
-Building with gcc is a 2-step process, compilation and linking,
-because we want to build both static and dynamic versions the libraries.
+Building with gcc is a 1-step process unless you want to build static
+libraries too (we don't), which turns it into a 2-step process.
 
 ### Compiling with gcc/g++
 

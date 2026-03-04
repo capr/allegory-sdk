@@ -53,8 +53,8 @@ CONFIG
 	https_unix_socket_perms
 	https_unix_socket_user
 	https_unix_socket_group
-	https_crt_file                 ../../tests/localhost.crt
-	https_key_file                 ../../tests.localhost.key
+	https_crt_file                 ../tests/localhost.crt
+	https_key_file                 ../tests.localhost.key
 	http_compress                  nil, means enabled (set to false to disable)
 	http_debug                     nil (set to true to enable)
 
@@ -133,8 +133,8 @@ function http_server(...)
 			and not exists(crt_file)
 			and not exists(key_file)
 		then
-			crt_file = indir(exedir(), '..', '..', 'tests', 'localhost.crt')
-			key_file = indir(exedir(), '..', '..', 'tests', 'localhost.key')
+			crt_file = exedir()..'/../tests/localhost.crt'
+			key_file = exedir()..'/../tests/localhost.key'
 		end
 		add(listen, {
 			host = host,

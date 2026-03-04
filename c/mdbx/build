@@ -16,9 +16,9 @@ C="
 
 "
 
-SO=../../../bin/debian12${DEBUG:+-debug}/libmdbx.so
+SO=../../../bin/${DEBUG:+debug/}libmdbx.so
 gcc -shared -o $SO mdbx.c \
-	${DEBUG:+-g -O0}
+	${DEBUG:+-g -O0} \
 	${DEBUG:+-DMDBX_DEBUG=2} \
 	-DLIBMDBX_EXPORTS=1 \
 	-DMDBX_BUILD_SHARED_LIBRARY=1 \
