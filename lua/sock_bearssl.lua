@@ -643,11 +643,11 @@ end
 local function copy_rsa_sk(src, keepalive)
 	local sk = new('br_rsa_private_key[1]')
 	sk[0].n_bitlen = src.n_bitlen
-	sk[0].p     = src.p;  sk[0].plen  = src.plen
-	sk[0].q     = src.q;  sk[0].qlen  = src.qlen
-	sk[0].dp    = src.dp; sk[0].dplen = src.dplen
-	sk[0].dq    = src.dq; sk[0].dqlen = src.dqlen
-	sk[0].iq    = src.iq; sk[0].iqlen = src.iqlen
+	sk[0].p  = src.p;  sk[0].plen  = src.plen
+	sk[0].q  = src.q;  sk[0].qlen  = src.qlen
+	sk[0].dp = src.dp; sk[0].dplen = src.dplen
+	sk[0].dq = src.dq; sk[0].dqlen = src.dqlen
+	sk[0].iq = src.iq; sk[0].iqlen = src.iqlen
 	keepalive[#keepalive + 1] = sk
 	return sk
 end
@@ -820,11 +820,11 @@ local function make_client_ctx(opt)
 
 	local cert, key = cert_key_opt(opt)
 	if cert then
-		local chain, chain_n, chain_kp = load_cert_chain(opt.cert)
+		local chain, chain_n, chain_kp = load_cert_chain(cert)
 		if not chain then return nil, chain_n end
 		for _, v in ipairs(chain_kp) do keepalive[#keepalive + 1] = v end
 
-		local skdc, kt, key_kp = load_private_key(opt.key)
+		local skdc, kt, key_kp = load_private_key(key)
 		if not skdc then return nil, kt end
 		for _, v in ipairs(key_kp) do keepalive[#keepalive + 1] = v end
 
@@ -843,42 +843,22 @@ local function make_client_ctx(opt)
 	return sc, eng, keepalive
 end
 
-local function make_server_ctx(opt)
-	local cert, key = cert_key_opt(opt, true)
-
-	local keepalive = {}
+local function make_server_ctx(chain, chain_n, sk, kt, issuer_kt)
 	local sc  = new('br_ssl_server_context')
 	local buf = new('uint8_t[?]', BR_SSL_BUFSIZE_BIDI)
 	local eng = cast('br_ssl_engine_context*', sc) -- eng is first field
-	keepalive[#keepalive + 1] = sc
-	keepalive[#keepalive + 1] = buf
-
-	local chain, chain_n, chain_kp = load_cert_chain(cert)
-	if not chain then return nil, chain_n end
-	for _, v in ipairs(chain_kp) do keepalive[#keepalive + 1] = v end
-
-	local skdc, kt, key_kp = load_private_key(key)
-	if not skdc then return nil, kt end
-	for _, v in ipairs(key_kp) do keepalive[#keepalive + 1] = v end
-
 	if kt == BR_KEYTYPE_RSA then
-		local sk = copy_rsa_sk(skdc.key.rsa, keepalive)
 		C.br_ssl_server_init_full_rsa(sc, chain, chain_n, sk)
-	elseif kt == BR_KEYTYPE_EC then
-		local sk        = copy_ec_sk(skdc.key.ec, keepalive)
-		local issuer_kt = opt.cert_issuer_rsa and BR_KEYTYPE_RSA or BR_KEYTYPE_EC
-		C.br_ssl_server_init_full_ec(sc, chain, chain_n, issuer_kt, sk)
 	else
-		return nil, 'unsupported_key_type_'..kt
+		C.br_ssl_server_init_full_ec(sc, chain, chain_n, issuer_kt, sk)
 	end
-
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
-	return sc, eng, keepalive
+	return sc, eng, {sc, buf}
 end
 
 --Push-pull engine driver ----------------------------------------------------
 
-local _szp = new('size_t[1]') -- shared; safe because reads are captured before yields
+local _szp = new'size_t[1]' -- shared; safe because reads are captured before yields
 
 -- Drive the engine until `target` state bits are set.
 -- Returns true, or nil+err on error/closed.
@@ -896,15 +876,16 @@ local function engine_run(self, target)
 		end
 		if band(state, BR_SSL_SENDREC) ~= 0 then
 			local buf = C.br_ssl_engine_sendrec_buf(eng, _szp)
-			local n   = tonumber(_szp[0])
-			local ok, serr = tcp:try_send(buf, n)
-			if not ok then return nil, serr end
+			local n = tonumber(_szp[0])
+			local ok, err = tcp:try_send(buf, n)
+			if not ok then return nil, err end
 			C.br_ssl_engine_sendrec_ack(eng, n)
 		elseif band(state, BR_SSL_RECVREC) ~= 0 then
 			local buf = C.br_ssl_engine_recvrec_buf(eng, _szp)
-			local n   = tonumber(_szp[0])
-			local len, rerr = tcp:try_recv(buf, n)
-			if not len then return nil, rerr end
+			local n = tonumber(_szp[0])
+			local len, err = tcp:try_recv(buf, n)
+			if len == 0 then return nil, 'eof' end
+			if not len then return nil, err end
 			C.br_ssl_engine_recvrec_ack(eng, len)
 		else
 			return nil, 'ssl_stall'
@@ -927,7 +908,7 @@ local server_stcp = merge({type = 'server_tls_socket'}, tcp_class)
 -- client methods (connected TLS socket, both sides)
 
 function client_stcp:try_recv(buf, sz)
-	if self._closed then return nil, 'closed' end
+	if not self.tcp then return nil, 'closed' end
 	local ok, err = engine_run(self, BR_SSL_RECVAPP)
 	if not ok then return nil, err end
 	local app_buf = C.br_ssl_engine_recvapp_buf(self.eng, _szp)
@@ -938,7 +919,7 @@ function client_stcp:try_recv(buf, sz)
 end
 
 function client_stcp:try_send(buf, sz)
-	if self._closed then return nil, 'closed' end
+	if not self.tcp then return nil, 'closed' end
 	sz = sz or #buf
 	local bp   = cast('const uint8_t*', buf)
 	local sent = 0
@@ -959,8 +940,7 @@ function client_stcp:try_send(buf, sz)
 end
 
 function client_stcp:try_close()
-	if self._closed then return true end
-	self._closed = true
+	if not self.tcp then return true end
 	C.br_ssl_engine_close(self.eng)
 	-- best-effort TLS close_notify
 	while true do
@@ -968,14 +948,15 @@ function client_stcp:try_close()
 		if band(state, BR_SSL_CLOSED) ~= 0 then break end
 		if band(state, BR_SSL_SENDREC) ~= 0 then
 			local buf = C.br_ssl_engine_sendrec_buf(self.eng, _szp)
-			local n   = tonumber(_szp[0])
+			local n = tonumber(_szp[0])
 			if not self.tcp:try_send(buf, n) then break end
 			C.br_ssl_engine_sendrec_ack(self.eng, n)
 		elseif band(state, BR_SSL_RECVREC) ~= 0 then
 			local buf = C.br_ssl_engine_recvrec_buf(self.eng, _szp)
-			local n   = tonumber(_szp[0])
+			local n = tonumber(_szp[0])
 			local len = self.tcp:try_recv(buf, n)
 			if not len then break end
+			if len == 0 then break end
 			C.br_ssl_engine_recvrec_ack(self.eng, len)
 		else
 			break
@@ -983,8 +964,8 @@ function client_stcp:try_close()
 	end
 	live(self, nil)
 	local ok, err = self.tcp:try_close()
-	self.tcp        = nil
-	self.eng        = nil
+	self.tcp = nil
+	self.eng = nil
 	self._keepalive = nil
 	return ok, err
 end
@@ -992,26 +973,28 @@ end
 -- server (listening) socket -- no TLS context, just wraps the TCP listener
 
 function server_stcp:try_close()
-	if self._closed then return true end
-	self._closed = true
+	if not self.tcp then return true end
 	live(self, nil)
 	local ok, err = self.tcp:try_close()
 	self.tcp = nil
+	self.eng = nil
+	self._keepalive = nil
 	return ok, err
 end
 
 -- shared stcp methods
 
 function stcp:onclose(fn)
-	if self._closed then return end
+	if not self.tcp then return end
 	after(self.tcp, '_after_close', fn)
 end
 
 function stcp:closed()
-	return self._closed or false
+	return not self.tcp
 end
 
 function stcp:try_shutdown(mode)
+	if not self.tcp then return nil, 'closed' end
 	return self.tcp:try_shutdown(mode)
 end
 
@@ -1051,12 +1034,29 @@ function _G.client_stcp(tcp, servername, opt)
 end
 
 function _G.server_stcp(tcp, opt)
+	local cert, key = cert_key_opt(opt, true)
+	local keepalive = {}
+	local chain, chain_n, chain_kp = load_cert_chain(cert)
+	assert(chain, chain_n)
+	for _, v in ipairs(chain_kp) do keepalive[#keepalive + 1] = v end
+	local skdc, kt, key_kp = load_private_key(key)
+	assert(skdc, kt)
+	for _, v in ipairs(key_kp) do keepalive[#keepalive + 1] = v end
+	local sk
+	if kt == BR_KEYTYPE_RSA then
+		sk = copy_rsa_sk(skdc.key.rsa, keepalive)
+	elseif kt == BR_KEYTYPE_EC then
+		sk = copy_ec_sk(skdc.key.ec, keepalive)
+	else
+		error('unsupported_key_type_'..kt)
+	end
+	local issuer_kt = opt and opt.cert_issuer_rsa and BR_KEYTYPE_RSA or BR_KEYTYPE_EC
 	local s = object(server_stcp, {
-		tcp      = tcp,
-		s        = tcp.s,
-		_opt     = opt,
-		check_io = check_io,
-		checkp   = checkp,
+		tcp = tcp, s = tcp.s,
+		_chain = chain, _chain_n = chain_n,
+		_sk = sk, _kt = kt, _issuer_kt = issuer_kt,
+		_keepalive = keepalive,
+		check_io = check_io, checkp = checkp,
 		r = 0, w = 0,
 	})
 	live(s, server_stcp.type, 'tcp=', tcp)
@@ -1064,14 +1064,12 @@ function _G.server_stcp(tcp, opt)
 end
 
 function server_stcp:try_accept()
+	if not self.tcp then return nil, 'closed' end
 	local ctcp, err, retry = self.tcp:try_accept()
 	if not ctcp then return nil, err, retry end
 
-	local sc, eng, keepalive = make_server_ctx(self._opt)
-	if not sc then
-		ctcp:try_close()
-		return nil, eng
-	end
+	local sc, eng, keepalive = make_server_ctx(
+		self._chain, self._chain_n, self._sk, self._kt, self._issuer_kt)
 
 	if C.br_ssl_server_reset(sc) == 0 then
 		ctcp:try_close()

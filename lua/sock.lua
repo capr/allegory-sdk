@@ -190,7 +190,6 @@ tcp|udp:[try_]connect(host, port, [af], ...)
 tcp:[try_]send(s|buf, [len], [flags]) -> true
 
 	Send bytes to the connected address.
-	Partial writes are signaled with `nil, err, writelen`.
 	Trying to send zero bytes is allowed but it's a no-op (doesn't go to the OS).
 
 udp:[try_]send(s|buf, [len], [flags]) -> len
@@ -1431,7 +1430,7 @@ function tcp:try_send(buf, sz, flags)
 		if len == sz then
 			break
 		elseif not len then --short write
-			return nil, err, sz0 - sz
+			return nil, err
 		end
 		assert(len > 0)
 		if isstr(buf) then --only make pointer on the rare second pass.
