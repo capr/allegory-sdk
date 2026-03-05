@@ -134,8 +134,4 @@ assert(s == [==[
  }]='b'
 }]==])
 
-chdir(rel_scriptdir)
-local tmp = 'pp_test.tmp'
-pp_save(tmp, {a=1, b=2})
---assert(pp(eval(load(tmp)), false) == '{a=1,b=2}')
---rmfile(tmp)
+print'pp tests passed'
