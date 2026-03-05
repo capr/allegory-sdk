@@ -228,6 +228,11 @@ ALLOCATION
 	  alloc(len) -> buf,len        alloc len and get a buffer
 	dynarray([ct][,cap]) -> alloc
 		alloc(len)->buf,len         alloc len and get a buffer, contents preserved
+	malloc(size) -> p              C malloc
+	realloc(p, size) -> p          C realloc
+	free(p)                        C free
+	memcmp(p1, p2, sz) -> i        memcmp
+BUFFERED I/O
 	dynarray_pump([dynarray]) -> write, collect, reset
 	  write(buf,len)               append to internal buffer
 	  collect() -> buf,len         get internal buffer
@@ -238,10 +243,7 @@ ALLOCATION
 	  collect() -> buf,len         get internal buffer
 	readall(read,...) -> buf,len   repeat read based on a read function
 	buffer_reader(buf,len)->read   make a read function that consumes a buffer
-	malloc(size) -> p              C malloc
-	realloc(p, size) -> p          C realloc
-	free(p)                        C free
-	memcmp(p1, p2, sz) -> i        memcmp
+	string_buffer() -> b           make a luajit string buffer, see https://luajit.org/ext_buffer.html
 CONFIG
 	config(k[, default]) -> v      get/set global config value
 	with_config(conf, f, ...) -> ...    run f with custom config table
@@ -2172,9 +2174,7 @@ auto-growing buffer allocation pattern.
   greater than the requested length.
 - the returned buffer is referenced by the allocation function. call
   alloc(false) to let it loose.
-- the contents of the buffer are not preserved between allocations but you
-  are allowed to access both buffers between two consecutive allocations
-  in order to copy the contents to the new buffer yourself.
+- the contents of the buffer are not preserved between allocations.
 ]]
 local nextpow2 = nextpow2
 function buffer(ct)
@@ -2195,11 +2195,11 @@ end
 --also returns minlen instead of capacity.
 function dynarray(ct, min_capacity)
 	ct = ct or u8a
-	local buffer = buffer(ct)
+	local alloc = buffer(ct)
 	local elem_size = sizeof(ct, 1)
 	local buf0, minlen0
 	return function(minlen)
-		local buf, len = buffer(max(min_capacity or 0, minlen))
+		local buf, len = alloc(minlen and max(min_capacity or 0, minlen))
 		if buf ~= buf0 and buf ~= nil and buf0 ~= nil then
 			copy(buf, buf0, minlen0 * elem_size)
 		end
@@ -2284,7 +2284,7 @@ end
 
 --buffered I/O ---------------------------------------------------------------
 
---make a write(buf, sz) that appends data to a dynarray accumulator.
+--make a write(buf, sz) function that appends data to a dynarray buffer.
 function dynarray_pump(dynarr)
 	dynarr = dynarr or dynarray()
 	local i = 0
@@ -2352,7 +2352,7 @@ end
 
 --like dynarray() but with a lot more features, including fast binary
 --(de)serialization of Lua values and a queue-like push/pull API.
---see https://htmlpreview.github.io/?https://github.com/LuaJIT/LuaJIT/blob/v2.1/doc/ext_buffer.html
+--see https://luajit.org/ext_buffer.html
 string_buffer = require'string.buffer'.new
 
 --config ---------------------------------------------------------------------
