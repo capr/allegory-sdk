@@ -437,6 +437,8 @@ Read Arvid Norberg's article[1] for more info.
 
 ]=]
 
+FS_TEST = 'load_save'
+
 if not ... then require'fs_test'; return end
 
 require'glue'
@@ -1962,149 +1964,94 @@ function load(file, default, ignore_file_size) --load a file into a string.
 	return str(buf, len)
 end
 
---write a Lua value, array of values or function results to a file atomically.
---TODO: make a file_saver() out of this without coroutines and use it
---in resize_image()!
-function try_save(file, s, sz, perms)
-
-	local tmpfile = file..'.tmp'
-
-	local dir = assert(dirname(tmpfile))
-	local ok, err = try_mkdir(dir, true, perms)
-	if not ok then
-		return false, _('could not create dir %s: %s', dir, err)
-	end
-
-	local f, err = try_open{path = tmpfile, mode = 'w', perms = perms, quiet = true}
-	if not f then
-		return false, _('could not open file %s: %s', tmpfile, err)
-	end
-
-	local ok, err = true
-	if istab(s) then --array of stringables
-		for i = 1, #s do
-			ok, err = f:try_write(tostring(s[i]))
-			if not ok then break end
+--return a `try_write(s | buf,len) -> true | false,err` function
+--that doesn't yield, so you can use it in ffi write callbacks.
+function file_saver(file, perms)
+	require'proc'
+	local tmpfile = file..'~'..getpid()
+	local f, n
+	local function _write(buf, sz)
+		if not f then
+			mkdirs(tmpfile, perms)
+			f = open{path = tmpfile, mode = 'w', perms = perms, quiet = true}
+			n = 0
 		end
-	elseif isfunc(s) then --reader of buffers or stringables
-		local read = s
-		while true do
-			local s, sz
-			ok, s, sz = pcall(read, true)
-			if not ok then err = s; break end
-			pr(ok, s, sz)
-			if sz == 0 then break end --eof
-			if s == nil then --nil, err
-				ok, err = false, assert(sz)
-				break
-			end
-			if not iscdata(s) then
-				s = tostring(s)
-			end
-			ok, err = f:try_write(s, sz)
-			if not ok then break end
+		if buf ~= nil and not iscdata(buf) then
+			buf = tostring(buf)
 		end
-	elseif s ~= nil and s ~= '' then --buffer or stringable
-		if not iscdata(s) then
-			s = tostring(s)
+		sz = sz or #buf
+		if sz > 0 then
+			f:write(buf, sz)
+			n = n + sz
+		else --eof
+			f:sync()
+			f:close()
+			rename(tmpfile, file)
+			local df = open{
+				path = dirname(file),
+				flags = 'rdonly directory',
+				quiet = true,
+			}
+			df:sync()
+			df:close()
+			log('note', 'fs', 'save', '%s (%s)', file, kbytes(n))
 		end
-		ok, err = f:try_write(s, sz)
 	end
-	local close_ok, close_err = f:close()
-	if ok then --I/O errors can also be reported by close().
-		ok, err = close_ok, close_err
-	end
-
-	if not ok then
-		local err_msg = 'could not write to file %s: %s'
-		local ok, rm_err = try_rmfile(tmpfile)
-		if not ok then
-			err_msg = err_msg..'\nremoving it also failed: %s'
-		end
-		return false, _(err_msg, tmpfile, err, rm_err)
-	end
-
-	local ok, err = try_rename(tmpfile, file)
-	if not ok then
-		local err_msg = 'could not rename file %s -> %s: %s'
-		local ok, rm_err = try_rmfile(tmpfile)
-		if not ok then
-			err_msg = err_msg..'\nremoving it also failed: %s'
-		end
-		return false, _(err_msg, tmpfile, file, err, rm_err)
-	end
-
-	local sz = sz or isstr(s) and #s
-	log('note', 'fs', 'save', '%s%s', file, sz and _(' (%s)', kbytes(sz)) or '')
-	return true
-end
-
-function save(file, s, sz, perms)
-	local ok, err = try_save(file, s, sz, perms)
-	check('fs', 'save', ok, '%s: %s', file, err)
-end
-
---return a `try_write(s | buf,len) -> true | false,err` function.
-function file_saver(file)
-
-	local opened, open_err
 	local function write(buf, sz)
-
-		if not opened then
-			opened = true
-			local tmpfile = file..'.tmp'
-
-			local dir = assert(dirname(tmpfile))
-			local ok, err = try_mkdir(dir, true, perms)
-			if not ok then
-				open_err = _('could not create dir %s: %s', dir, err)
-				return false, err
-			end
-
-			local f, err = try_open{path = tmpfile, mode = 'w', perms = perms, quiet = true}
-			if not f then
-				open_err = _('could not open file %s: %s', tmpfile, err)
-				return false, err
-			end
+		assert(not (f and f:closed()))
+		local ok, err
+		if buf == nil and not isnum(sz) then --caller wants to abort with error
+			ok, err = buf, sz
+		else
+			ok, err = catch('io', _write, buf, sz)
 		end
-
-		local ok, err = true --eof
-		if buf then --not eof
-			sz = sz or #buf
-			if sz > 0 then --not eof
-				ok, err = f:try_write(buf, sz)
-				if ok then return true end --not eof
+		if ok then
+			return true
+		else
+			--io error: file was either closed or not yet opened
+			if f then
+				assert(f:closed()) --bug check, io error should have closed the file
+				try_rmfile(tmpfile)
 			end
+			return false, err
 		end
-
-		local close_ok, close_err = f:close()
-		if ok then --I/O errors can also be reported by close().
-			ok, err = close_ok, close_err
-		end
-
-		if not ok then
-			local err_msg = 'could not write to file %s: %s'
-			local ok, rm_err = try_rmfile(tmpfile)
-			if not ok then
-				err_msg = err_msg..'\nremoving it also failed: %s'
-			end
-			return false, _(err_msg, tmpfile, err, rm_err)
-		end
-
-		local ok, err = try_rename(tmpfile, file)
-		if not ok then
-			local err_msg = 'could not rename file %s -> %s: %s'
-			local ok, rm_err = try_rmfile(tmpfile)
-			if not ok then
-				err_msg = err_msg..'\nremoving it also failed: %s'
-			end
-			return false, _(err_msg, tmpfile, file, err, rm_err)
-		end
-
-		log('note', 'fs', 'save', '%s%s', file, sz and _(' (%s)', kbytes(sz)) or '')
-		return true
 	end
 	return write
+end
+
+--write a Lua value, array of values or read()->buf,sz to a file
+--atomically and durably (on drives with PLP).
+function try_save(file, arg, sz, perms)
+	local write = file_saver(file, perms)
+	if istab(arg) then --array of stringables
+		local t = arg
+		for i = 1, #t do
+			local ok, err = write(t[i])
+			if not ok then return false, err end
+		end
+	elseif isfunc(arg) then --reader of buffers or stringables
+		local read = arg
+		while true do
+			local ok, buf, sz = pcall(read)
+			if not ok then
+				write(nil, buf)
+				error(buf)
+			elseif buf == '' or sz == 0 then --eof
+				break
+			else
+				local ok, err = write(buf, sz)
+				if not ok then return false, err end
+			end
+		end
+	else --buffer or stringable
+		local ok, err = write(arg, sz)
+		if not ok then return false, err end
+	end
+	return write'' --eof
+end
+function save(file, arg, sz, perms)
+	local ok, err = try_save(file, arg, sz, perms)
+	check('fs', 'save', ok, '%s: %s', file, err)
 end
 
 function try_touch(file, mtime) --create file or update its mtime.

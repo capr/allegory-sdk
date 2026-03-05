@@ -1207,7 +1207,7 @@ chdir(os.getenv'HOME')
 mkdir'fs_test'
 chdir'fs_test'
 
-local name = ...
+local name = ... or rawget(_G, 'FS_TEST')
 if not name or name == 'fs_test' then
 	--run all tests in the order in which they appear in the code.
 	local n,m = 0, 0
