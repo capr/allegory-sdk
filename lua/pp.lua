@@ -3,10 +3,8 @@
 	Pretty printer and serializer.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	TIP: If you don't need human-readable or diff'able output, use the
-	LuaJIT's built-in `string.buffer:encode()`[1].
-
-	[1]: https://htmlpreview.github.io/?https://github.com/LuaJIT/LuaJIT/blob/v2.1/doc/ext_buffer.html
+	TIP: If you don't need human-readable or diff'able output then
+	string_buffer:encode() is a faster way to serialize Lua values.
 
 INPUT
 	* all Lua types except coroutines, userdata, cdata and C functions.
@@ -44,16 +42,15 @@ LIMITATIONS
 	* loading back the output with the Lua interpreter is not safe.
 
 API
-	pp(v, opt...) -> s                      pretty-print v to a string.
 
-pp_write(write, v, opt...)
+pp(v[, opt | indent]) -> s
 
-	Pretty-print a value using a supplied write function that takes a string.
-	The options can be given in a table or as separate args:
+	Pretty-print a value. Options:
 
+	* `write` - call write(s) to write the chunks instead of using a buffer.
 	* `indent` - default is '\t', pass `false` to get compact, faster output.
 	* `onerror` - enable error handling eg. `function(err_type, v, depth)
-	   error(err_type..': '..tostring(v)) end` (default is to add a comment).
+		error(err_type..': '..tostring(v)) end` (default is to add a comment).
 	* `sort_keys` - sort keys to get deterministic output (default is `true`).
 	* `filter` - filter and/or translate values.
 	  `filter(v[[, k], t]) -> passes, v`
@@ -106,7 +103,7 @@ local function format_string(s)
 end
 
 local function write_string(s, write)
-	write("'"); write(quote_string(s)); write("'")
+	write"'"; write(quote_string(s)); write"'"
 end
 
 local keywords = {}
@@ -390,23 +387,23 @@ end
 
 local function nofilter(v) return true, v end
 
-local function args(opt, ...)
-	local indent, parents, onerror, sort_keys, filter
-	if type(opt) == 'table' then
+function pp(v, opt)
+	local write, indent, parents, onerror, sort_keys, filter
+	if istab(opt) then
+		write     = opt.write
 		indent    = opt.indent
 		parents   = opt.parents
 		onerror   = opt.onerror
 		sort_keys = opt.sort_keys
 		filter    = opt.filter
 	else
-		indent, parents, onerror, sort_keys, filter = opt, ...
+		indent = opt
 	end
 	filter = filter or nofilter
-	return indent, parents, onerror, sort_keys, filter
-end
-
-function pp(v, ...)
-	local buf = {}
-	pretty(v, function(s) buf[#buf+1] = s end, 1, nil, args(...))
-	return concat(buf)
+	local b = string_buffer()
+	if not write then
+		function write(s) b:put(s) end
+	end
+	pretty(v, write, 1, nil, indent, parents, onerror, sort_keys, filter)
+	if b then return b:tostring() end
 end
