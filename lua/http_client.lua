@@ -419,7 +419,7 @@ function client:get_cookies(client_ip, host, uri, https)
 end
 
 function client:save_cookies(file)
-	return pp_save(file, self.cookies)
+	return save(file, pp(self.cookies))
 end
 
 function client:load_cookies(file)

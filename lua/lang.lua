@@ -699,7 +699,7 @@ end
 function S_texts_save()
 	for ext, langs in pairs(to_update) do
 		for lang in pairs(langs) do
-			pp_save(S_texts_file(lang, ext), S_texts(lang, ext))
+			save(S_texts_file(lang, ext), pp(S_texts(lang, ext)))
 			langs[lang] = nil
 		end
 	end

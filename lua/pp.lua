@@ -45,7 +45,6 @@ LIMITATIONS
 
 API
 	pp(v, opt...) -> s                      pretty-print v to a string.
-	[try_]pp_save(f|write|path, v, opt...)  pretty-print v to file.
 
 pp_write(write, v, opt...)
 
@@ -413,35 +412,6 @@ local function args(opt, ...)
 	return
 		indent, parents, quote, line_term, onerror,
 		sort_keys, filter
-end
-
-function try_pp_save(write, v, ...)
-	if type(write) == 'string' then --path
-		require'fs'
-		local write_protected = assert(file_saver(write))
-		function write(s)
-			if s == nil then
-				assert(write_protected('', 0))
-			else
-				assert(write_protected(s))
-			end
-		end
-	elseif type(write) ~= 'function' then --assume io or fs file object
-		local f = write
-		function write(s)
-			assert(f:write(s))
-		end
-	end
-	write'return '
-	return pcall(function(...)
-		pretty(v, write, 1, nil, args(...))
-		write()
-		return true
-	end, ...)
-end
-
-function pp_save(write, v, ...)
-	assert(try_pp_save(write, v, ...))
 end
 
 function pp(v, ...)
