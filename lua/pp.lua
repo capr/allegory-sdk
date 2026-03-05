@@ -52,8 +52,6 @@ pp_write(write, v, opt...)
 	The options can be given in a table or as separate args:
 
 	* `indent` - default is '\t', pass `false` to get compact, faster output.
-	* `quote` - string quoting to use eg. `'"'` (default is "'").
-	* `line_term` - line terminator to use (default is `'\n'`).
 	* `onerror` - enable error handling eg. `function(err_type, v, depth)
 	   error(err_type..': '..tostring(v)) end` (default is to add a comment).
 	* `sort_keys` - sort keys to get deterministic output (default is `true`).
@@ -95,20 +93,20 @@ end
 local function escape_byte_short(c)
 	return string_format('\\%d', c:byte())
 end
-local function quote_string(s, quote)
+local function quote_string(s)
 	s = s:gsub('[\\\t\n\r]', escapes)
-	s = s:gsub(quote, '\\%1')
+	s = s:gsub("'", '\\%1')
 	s = s:gsub('([^\32-\126])([0-9])', escape_byte_long)
 	s = s:gsub('[^\32-\126]', escape_byte_short)
 	return s
 end
 
-local function format_string(s, quote)
-	return string_format('%s%s%s', quote, quote_string(s, quote), quote)
+local function format_string(s)
+	return string_format("'%s'", quote_string(s))
 end
 
-local function write_string(s, write, quote)
-	write(quote); write(quote_string(s, quote)); write(quote)
+local function write_string(s, write)
+	write("'"); write(quote_string(s)); write("'")
 end
 
 local keywords = {}
@@ -166,8 +164,8 @@ local function format_function(f)
 	return string_format('loadstring(%s)', format_string(string_dump(f, true)))
 end
 
-local function write_function(f, write, quote)
-	write'loadstring('; write_string(string_dump(f, true), write, quote); write')'
+local function write_function(f, write)
+	write'loadstring('; write_string(string_dump(f, true), write); write')'
 end
 
 local function is_int64(v)
@@ -183,14 +181,13 @@ local function write_int64(v, write)
 	write(format_int64(v))
 end
 
-local function format_value(v, quote)
-	quote = quote or "'"
+local function format_value(v)
 	if v == nil or type(v) == 'boolean' then
 		return tostring(v)
 	elseif type(v) == 'number' then
 		return format_number(v)
 	elseif is_stringable(v) then
-		return format_string(tostring(v), quote)
+		return format_string(tostring(v))
 	elseif is_dumpable(v) then
 		return format_function(v)
 	elseif is_int64(v) then
@@ -205,16 +202,15 @@ local function is_serializable(v)
 		or is_stringable(v) or is_dumpable(v) or is_int64(v)
 end
 
-local function write_value(v, write, quote)
-	quote = quote or "'"
+local function write_value(v, write)
 	if v == nil or type(v) == 'boolean' then
 		write(tostring(v))
 	elseif type(v) == 'number' then
 		write_number(v, write)
 	elseif is_stringable(v) then
-		write_string(tostring(v), write, quote)
+		write_string(tostring(v), write)
 	elseif is_dumpable(v) then
-		write_function(v, write, quote)
+		write_function(v, write)
 	elseif is_int64(v) then
 		write_int64(v, write)
 	else
@@ -294,20 +290,20 @@ local function is_array_index_key(k, maxn)
 end
 
 local function pretty(v, write, depth, wwrapper, indent,
-	parents, quote, line_term, onerror, sort_keys, filter)
+	parents, onerror, sort_keys, filter)
 
 	local ok, v = filter(v)
 	if not ok then return end
 
 	if is_serializable(v) then
 
-		write_value(v, write, quote)
+		write_value(v, write)
 
 	elseif metamethod(v, '__pwrite') then
 
 		wwrapper = wwrapper or function(v)
 			pretty(v, write, -1, wwrapper, nil,
-				parents, quote, line_term, onerror, sort_keys, filter)
+				parents, onerror, sort_keys, filter)
 		end
 		metamethod(v, '__pwrite')(v, write, wwrapper)
 
@@ -338,11 +334,11 @@ local function pretty(v, write, depth, wwrapper, indent,
 					write','
 				end
 				if indent then
-					write(line_term)
+					write'\n'
 					write(indent:rep(depth))
 				end
 				pretty(v, write, depth + 1, wwrapper, indent,
-					parents, quote, line_term, onerror, sort_keys, filter)
+					parents, onerror, sort_keys, filter)
 			end
 		end
 
@@ -357,7 +353,7 @@ local function pretty(v, write, depth, wwrapper, indent,
 						write','
 					end
 					if indent then
-						write(line_term)
+						write'\n'
 						write(indent:rep(depth))
 					end
 					if is_stringable(k) then
@@ -368,17 +364,17 @@ local function pretty(v, write, depth, wwrapper, indent,
 					else
 						write'['
 						pretty(k, write, depth + 1, wwrapper, indent,
-							parents, quote, line_term, onerror, sort_keys, filter)
+							parents, onerror, sort_keys, filter)
 						write']='
 					end
 					pretty(v, write, depth + 1, wwrapper, indent,
-						parents, quote, line_term, onerror, sort_keys, filter)
+						parents, onerror, sort_keys, filter)
 				end
 			end
 		end
 
 		if indent then
-			write(line_term)
+			write'\n'
 			write(indent:rep(depth-1))
 		end
 
@@ -395,23 +391,18 @@ end
 local function nofilter(v) return true, v end
 
 local function args(opt, ...)
-	local
-		indent, parents, quote, line_term, onerror,
-		sort_keys, filter
+	local indent, parents, onerror, sort_keys, filter
 	if type(opt) == 'table' then
-		indent, parents, quote, line_term, onerror,
-		sort_keys, filter =
-			opt.indent, opt.parents, opt.quote, opt.line_term, opt.onerror,
-			opt.sort_keys, opt.filter
+		indent    = opt.indent
+		parents   = opt.parents
+		onerror   = opt.onerror
+		sort_keys = opt.sort_keys
+		filter    = opt.filter
 	else
-		indent, parents, quote, line_term, onerror,
-		sort_keys, filter = opt, ...
+		indent, parents, onerror, sort_keys, filter = opt, ...
 	end
-	line_term = line_term or '\n'
 	filter = filter or nofilter
-	return
-		indent, parents, quote, line_term, onerror,
-		sort_keys, filter
+	return indent, parents, onerror, sort_keys, filter
 end
 
 function pp(v, ...)
