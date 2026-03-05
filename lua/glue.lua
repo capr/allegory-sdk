@@ -5,7 +5,7 @@
 
 TYPES MATH VARARGS ARRAYS TABLES CACHING STRINGS STDOUT/ERR
 ITERATORS CALLBACKS OBJECTS PROCESS-CONTROL TIME DATES ERRORS MODULES
-EVAL BITS FFI ALLOCATION CONFIG DEBUGGING LOGGING SERIALIZATION
+EVAL BITS FFI ALLOCATION BUFFERS CONFIG DEBUGGING LOGGING SERIALIZATION
 
 TYPES
 	typeof                       = type
@@ -222,17 +222,17 @@ FFI
 	ptr(p)                       = p ~= nil and p  or nil
 	ptr_serialize(p) -> n|s             store pointer address in Lua value
 	ptr_deserialize([ct,]n|s) -> p      convert address to pointer
+	memcmp(p1, p2, sz) -> i        memcmp
 ALLOCATION
 	freelist([create], [destroy]) -> alloc,free   Lua freelist allocation pattern
 	buffer([ct]) -> alloc
-	  alloc(len) -> buf,len        alloc len and get a buffer
-	dynarray([ct][,cap]) -> alloc
-		alloc(len)->buf,len         alloc len and get a buffer, contents preserved
+		alloc(len) -> buf,len        alloc len and get a buffer
 	malloc(size) -> p              C malloc
 	realloc(p, size) -> p          C realloc
 	free(p)                        C free
-	memcmp(p1, p2, sz) -> i        memcmp
-BUFFERED I/O
+BUFFERS
+	dynarray([ct][,cap]) -> alloc
+		alloc(len)->buf,len         alloc len and get a buffer, contents preserved
 	dynarray_pump([dynarray]) -> write, collect, reset
 	  write(buf,len)               append to internal buffer
 	  collect() -> buf,len         get internal buffer
@@ -1933,34 +1933,6 @@ function sopath(path)
 	env('LD_LIBRARY_PATH', (env('LD_LIBRARY_PATH') or '')..':'..path)
 end
 
---allocation -----------------------------------------------------------------
-
---freelist for Lua tables. Returns alloc() -> e and free(e) functions.
---alloc() returns the last freed object if any or calls create().
-local function create_table()
-	return {}
-end
-function freelist(create, destroy)
-	create = create or create_table
-	destroy = destroy or noop
-	local t = {} --{freed_index -> e}
-	local n = 0
-	local function alloc()
-		local e = t[n]
-		if e then
-			t[n] = false
-			n = n - 1
-		end
-		return e or create()
-	end
-	local function free(e)
-		destroy(e)
-		n = n + 1
-		t[n] = e
-	end
-	return alloc, free
-end
-
 --interpreter ----------------------------------------------------------------
 
 local loadstring = loadstring
@@ -2153,14 +2125,44 @@ typedef uint8_t  bool8;
 ]]
 
 cdef[[
-void* malloc  (size_t size);
-void* realloc (void* ptr, size_t size);
-void  free    (void* ptr);
 int   memcmp  (const void * ptr1, const void * ptr2, size_t num);
 ]]
 
 memcmp = C.memcmp
 
+--allocation -----------------------------------------------------------------
+
+--freelist for Lua tables. Returns alloc() -> e and free(e) functions.
+--alloc() returns the last freed object if any or calls create().
+local function create_table()
+	return {}
+end
+function freelist(create, destroy)
+	create = create or create_table
+	destroy = destroy or noop
+	local t = {} --{freed_index -> e}
+	local n = 0
+	local function alloc()
+		local e = t[n]
+		if e then
+			t[n] = false
+			n = n - 1
+		end
+		return e or create()
+	end
+	local function free(e)
+		destroy(e)
+		n = n + 1
+		t[n] = e
+	end
+	return alloc, free
+end
+
+cdef[[
+void* malloc  (size_t size);
+void* realloc (void* ptr, size_t size);
+void  free    (void* ptr);
+]]
 local ptr = ptr
 function malloc(size) return ptr(C.malloc(size)) end
 function realloc(p, size) return ptr(C.realloc(p, size)) end
@@ -2191,22 +2193,7 @@ function buffer(ct)
 	end
 end
 
---like buffer() but preserves data on reallocations.
---also returns minlen instead of capacity.
-function dynarray(ct, min_capacity)
-	ct = ct or u8a
-	local alloc = buffer(ct)
-	local elem_size = sizeof(ct, 1)
-	local buf0, minlen0
-	return function(minlen)
-		local buf, len = alloc(minlen and max(min_capacity or 0, minlen))
-		if buf ~= buf0 and buf ~= nil and buf0 ~= nil then
-			copy(buf, buf0, minlen0 * elem_size)
-		end
-		buf0, minlen0 = buf, minlen
-		return buf, minlen
-	end
-end
+--pointer serialization/deserialization --------------------------------------
 
 --convert a pointer's address to a Lua number or possibly string.
 --use case #1: hashing on pointer values i.e. using pointers as table keys.
@@ -2282,7 +2269,24 @@ function check_errno(ret, err)
 	return ret, s
 end
 
---buffered I/O ---------------------------------------------------------------
+--buffers --------------------------------------------------------------------
+
+--like buffer() but preserves data on reallocations.
+--also returns minlen instead of capacity.
+function dynarray(ct, min_capacity)
+	ct = ct or u8a
+	local alloc = buffer(ct)
+	local elem_size = sizeof(ct, 1)
+	local buf0, minlen0
+	return function(minlen)
+		local buf, len = alloc(minlen and max(min_capacity or 0, minlen))
+		if buf ~= buf0 and buf ~= nil and buf0 ~= nil then
+			copy(buf, buf0, minlen0 * elem_size)
+		end
+		buf0, minlen0 = buf, minlen
+		return buf, minlen
+	end
+end
 
 --make a write(buf, sz) function that appends data to a dynarray buffer.
 function dynarray_pump(dynarr)

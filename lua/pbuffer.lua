@@ -3,15 +3,24 @@
 	Buffer object for encoding & decoding of binary files and network protocols.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	Based on LuaJIT 2.1's string.buffer, see:
-		https://luapower.com/files/luapower/csrc/luajit/src/doc/ext_buffer.html
+	Based on LuaJIT 2.1's string.buffer, see: https://luajit.org/ext_buffer.html
 
 	pbuffer(pb) -> pb
 		pb.f                              opened file or socket
 		pb.readahead                      read-ahead size (64K)
 		pb.linesize                       max. line size for haveline() (8K)
-		pb.lineterm                       line terminator ('\r\n')
+		pb.lineterm                       line terminator ('\n')
 		pb.dict, pb.metatable             see string.buffer doc
+
+	pb:put([str|num|obj], ...)           push values to buffer
+	pb:putf(format, ...)                 push printf message
+	pb:putcdata(cdata, len)              push cdata value
+	pb:set(str)                          use str as underlying buffer
+	pb:set(cdata, len)                   use cdata as underlying buffer
+	pb:reset()                           empty the buffer (memory is kept)
+	pb:encode(o)                         push serialized Lua object
+	pb:tostring() -> s                   convert buffer to string
+	pb:free()                            free buffer memory
 
 	pb:put_{u8,i8,...}(x)                push binary integer
 	pb:get_{u8,i8,...}(x)                pull binary integer
@@ -23,9 +32,6 @@
 	pb:fill(n, [c])                      push repeat bytes
 	pb:find(s, [i], [j]) -> i            find string (of 1 or 2 chars max.)
 	pb:getto(term, [i], [j]) -> s        pull terminated string
-
-	pb:[try_]connect(host, port, [timeout])  TCP-connect
-	pb:[try_]open(file)                      open file
 
 	pb:[try_]read(buf, size) -> read_n   read once to external buffer
 	pb:[try_]readn(buf, n) -> buf, n     read n bytes to external buffer
@@ -40,8 +46,8 @@
 	pb:skip(n, [past_buffer])            skip n bytes
 	pb:seek(offset)                      seek to offset
 
+	pb:haveline() -> s | nil,err         read line if there is one
 	pb:needline() -> s                   read line
-	pb:haveline() -> s                   read line if there is one
 	pb:readn_to(n, write)                read n bytes calling write on each read
 	pb:readall_to(write)                 read to eof calling write on each read
 
@@ -173,30 +179,6 @@ function pb.f:seek(whence, offset)
 end
 pb.f.try_close = noop
 
-function pb:try_open(...)
-	local f, err = try_open(...)
-	if not f then return nil, err end
-	self.f = f
-	return true
-end
-
-function pb:open(...)
-	self.f = open(...)
-	return self
-end
-
-function pb:try_connect(...)
-	local f, err = try_connect(...)
-	if not f then return nil, err end
-	self.f = f
-	return true
-end
-
-function pb:connect(...)
-	self.f = connect(...)
-	return self
-end
-
 function pb:try_close() --for self:check*()
 	if not self.f then return end
 	return self.f:try_close()
@@ -310,7 +292,7 @@ function pb:seek(offset)
 end
 
 pb.linesize = 8192
-pb.lineterm = '\r\n'
+pb.lineterm = '\n'
 function pb:haveline() --for line-based protocols like http.
 	local i = 0
 	::again::
@@ -351,14 +333,14 @@ end
 
 --string.buffer method forwarding
 
-function pb:put      (...) return self.b:put      (...) end
-function pb:putf     (...) return self.b:putf     (...) end
-function pb:putcdata (...) return self.b:putcdata (...) end
-function pb:set      (...) return self.b:set      (...) end
-function pb:reset    ()    return self.b:reset    ()    end
-function pb:encode   (o)   return self.b:encode   (o)   end
-function pb:tostring ()    return self.b:tostring ()    end
-function pb:free     ()    return self.b:free     ()    end
+function pb:put      (...) self.b:put      (...); return self end
+function pb:putf     (...) self.b:putf     (...); return self end
+function pb:putcdata (...) self.b:putcdata (...); return self end
+function pb:set      (...) self.b:set      (...); return self end
+function pb:reset    ()    self.b:reset    ()   ; return self end
+function pb:encode   (o)   self.b:encode   (o)  ; return self end
+function pb:free     ()    self.b:free     ()   ; return self end
+function pb:tostring ()    return self.b:tostring () end
 
 function pbuffer(self)
 	local pb = object(pb, self)
@@ -373,10 +355,10 @@ function pbuffer(self)
 	local b = string_buffer(sb_opt)
 	pb.b = b
 	--inline these to make them a tad faster (scrape 1 lookup and 1 __index access).
-	function pb:__len   ()  return #b              end
-	function pb:ref     ()  return b:ref     ()    end
-	function pb:reserve (n) return b:reserve (n)   end
-	function pb:commit  (n) return b:commit  (n)   end
-	function pb:_skip   (n) return b:skip    (n)   end
+	function pb:__len   ()  return #b end
+	function pb:ref     ()  return b:ref() end
+	function pb:reserve (n) return b:reserve(n) end
+	function pb:commit  (n) b:commit(n); return self end
+	function pb:_skip   (n) b:skip(n); return self end
 	return pb
 end

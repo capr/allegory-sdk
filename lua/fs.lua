@@ -32,7 +32,7 @@ FILE I/O
 	f:[try_]seek([whence] [, offset]) -> pos      get/set the file pointer
 	f:[try_]skip(n) -> actual_n                   skip bytes
 	f:[try_]truncate(size, [opt])                 truncate file and set pointer to end
-	f:[un]buffered_reader([bufsize]) -> read(buf, sz)   get read(buf, sz)
+	f:buffered_reader([bufsize]) -> read          get a readahead buffer with a read function
 OPEN FILE ATTRIBUTES
 	f:[try_]attr([attr]) -> val|t                 get/set attribute(s) of open file
 	f:[try_]size() -> n                           get file size
@@ -97,10 +97,10 @@ FILESYSTEM INFO
 	fs_info(path) -> {size=, free=}               get free/total disk space for a path
 HI-LEVEL APIs
 	[try_]load[_tobuffer](path, [default], [ignore_fsize]) -> buf,len  read file to string or buffer
-	[try_]save(path, s, [sz], [perms])            atomic save value/buffer/array/read-results
-	file_saver(path) -> f(v | buf,len | t | read) atomic save writer function
+	[try_]save(path, v | buf,len | read, [perms])          atomic save value/buffer/array/read-results
+	file_saver(path) -> write(v | buf,len | read, [eof])   atomic save writer function
 	[try_]touch(file, [mtime])
-	gen_id(name, [start=1]) -> id                 persistent atomic autoincrement
+	gen_id(name, [start=1]) -> id                 persistent atomic, concurrent autoincrement
 
 The `deref` arg is true by default, meaning that by default, symlinks are
 followed recursively and transparently where this option is available.
@@ -254,11 +254,11 @@ f:[try_]truncate(size, [opt])
 	Btw, seeking past EOF and writing something there will also create a
 	sparse file, so there's no easy way out of this complexity.
 
-f:[un]buffered_reader([bufsize]) -> read(buf, len)
+f:buffered_reader([bufsize]) -> read(buf, len)
 
 	Returns a `read(buf, len) -> readlen` function which reads ahead from file
 	in order to lower the number of syscalls. `bufsize` specifies the buffer's
-	size (default is 64K). The unbuffered version doesn't use a buffer.
+	size (default is 64K).
 
 Open file attributes ---------------------------------------------------------
 
@@ -662,16 +662,6 @@ function file.try_skip(f, n)
 	return j - i
 end
 file.skip = unprotect_io(file.try_skip)
-
-function file.unbuffered_reader(f)
-	return function(buf, sz)
-		if not buf then --skip bytes (libjpeg semantics)
-			return f:try_skip(sz)
-		else
-			return f:try_read(buf, sz)
-		end
-	end
-end
 
 function file.buffered_reader(f, bufsize)
 	local ptr_ct = u8p
@@ -1922,10 +1912,6 @@ end
 
 --hi-level APIs --------------------------------------------------------------
 
-function file.pbuffer(f)
-	return pbuffer{f = f}
-end
-
 ABORT = {} --error signal to pass to save()'s reader function.
 
 function try_load_tobuffer(file, default_buf, default_len, ignore_file_size)
@@ -1964,13 +1950,13 @@ function load(file, default, ignore_file_size) --load a file into a string.
 	return str(buf, len)
 end
 
---return a `try_write(s | buf,len) -> true | false,err` function
+--return a `try_write(v | buf,len | read, [eof]) -> true | false,err` function
 --that doesn't yield, so you can use it in ffi write callbacks.
 function file_saver(file, perms)
 	require'proc'
 	local tmpfile = file..'~'..getpid()
 	local f, n
-	local function _write(buf, sz)
+	local function _write(buf, sz, eof)
 		if not f then
 			mkdirs(tmpfile, perms)
 			f = open{path = tmpfile, mode = 'w', perms = perms, quiet = true}
@@ -1980,10 +1966,11 @@ function file_saver(file, perms)
 			buf = tostring(buf)
 		end
 		sz = sz or #buf
-		if sz > 0 then
+		if sz == 0 then eof = true end --diff. way to signal eof
+		if not eof then
 			f:write(buf, sz)
 			n = n + sz
-		else --eof
+		else
 			f:sync()
 			f:close()
 			rename(tmpfile, file)
@@ -2006,7 +1993,7 @@ function file_saver(file, perms)
 			ok, err = catch('io', _write, buf, sz)
 		end
 		if ok then
-			return true
+			return true, f:closed() and 'closed' or nil
 		else
 			--io error: file was either closed or not yet opened
 			if f then
@@ -2023,31 +2010,24 @@ end
 --atomically and durably (on drives with PLP).
 function try_save(file, arg, sz, perms)
 	local write = file_saver(file, perms)
-	if istab(arg) then --array of stringables
-		local t = arg
-		for i = 1, #t do
-			local ok, err = write(t[i])
-			if not ok then return false, err end
-		end
-	elseif isfunc(arg) then --reader of buffers or stringables
+	if isfunc(arg) then --reader of buffers or stringables
 		local read = arg
 		while true do
 			local ok, buf, sz = pcall(read)
-			if not ok then
-				write(nil, buf)
-				error(buf)
-			elseif buf == '' or sz == 0 then --eof
-				break
-			else
-				local ok, err = write(buf, sz)
-				if not ok then return false, err end
-			end
+			if not ok then buf, sz = nil, buf end --send error to write()
+			local ok, err = write(buf, sz)
+			if not ok then return false, err end
+			if err == 'closed' then break end --eof
 		end
 	else --buffer or stringable
 		local ok, err = write(arg, sz)
 		if not ok then return false, err end
+		if not err then
+			local ok, err = write(nil, 0) --eof
+			if not ok then return false, err end
+		end
+		return true
 	end
-	return write'' --eof
 end
 function save(file, arg, sz, perms)
 	local ok, err = try_save(file, arg, sz, perms)
@@ -2079,13 +2059,13 @@ end
 function gen_id(name, start)
 	local next_id_file = varpath('next_'..name)
 	local f = open(next_id_file, 'rw')
-	check_io(f, f:try_lock'ex')
-	local s = check_io(f, f:try_readall())
+	f:lock'ex'
+	local s = str(f:readall())
 	local n = tonumber(s) or start or 1
 	check_io(f, n and n >= 0 and floor(n) == n, '%s invalid: %s', next_id_file, s)
-	check_io(f, f:try_truncate(0))
-	check_io(f, f:try_write(tostring(n + 1)))
-	check_io(f, f:try_unlock())
+	f:truncate(0)
+	f:write(tostring(n + 1))
+	f:unlock()
 	f:close()
 	log('note', 'fs', 'gen_id', '%s: %d', name, n)
 	return n

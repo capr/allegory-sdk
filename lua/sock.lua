@@ -1613,10 +1613,6 @@ tcp.try_write = tcp.try_send
 tcp.readn     = tcp.recvn
 tcp.write     = tcp.send
 
-function socket:pbuffer()
-	return pbuffer{f = self}
-end
-
 --[[local]] function wrap_socket(opt, class, s, st, af, pr)
 	local s = object(class, {
 		s = s, issocket = true,
