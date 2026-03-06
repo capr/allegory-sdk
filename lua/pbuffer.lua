@@ -1,9 +1,11 @@
 --[[
 
-	Buffer object for encoding & decoding of binary files and network protocols.
+	Protocol Buffers for structured I/O of binary files and network protocols.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	Based on LuaJIT 2.1's string.buffer, see: https://luajit.org/ext_buffer.html
+	Based on LuaJIT 2.1's string.buffer, see:
+
+		https://luajit.org/ext_buffer.html
 
 	pbuffer(pb) -> pb
 		pb.f                              opened file or socket
@@ -14,43 +16,48 @@
 
 	pb:put([str|num|obj], ...)           push values to buffer
 	pb:putf(format, ...)                 push printf message
-	pb:putcdata(cdata, len)              push cdata value
+	pb:putcdata(cdata, size)             push cdata value
 	pb:set(str)                          use str as underlying buffer
-	pb:set(cdata, len)                   use cdata as underlying buffer
+	pb:set(cdata, size)                  use cdata as underlying buffer
 	pb:reset()                           empty the buffer (memory is kept)
 	pb:encode(o)                         push serialized Lua object
 	pb:tostring() -> s                   convert buffer to string
 	pb:free()                            free buffer memory
+	#pb                                  buffer size
+	pb:ref() -> p, size                  get allocated buffer and size
+	pb:reserve(size)                     allocate memory for writing
+	pb:commit(size)                      commit written memory
+	pb:skip(size, [past_buffer])         skip bytes; past_buffer allows reading
 
 	pb:put_{u8,i8,...}(x)                push binary integer
 	pb:get_{u8,i8,...}(x)                pull binary integer
 	pb:put_{u8,i8,...}_at(x, offset)     write binary integer at offset
 	pb:get_{u8,i8,...}_at(x, offset)     read binary integer at offset
 
-	pb:get([n]) -> s                     get string of length n
+	pb:get([size]) -> s                  get string of length n bytes
 	pb:decode() -> t                     deserialize Lua value
 	pb:fill(n, [c])                      push repeat bytes
 	pb:find(s, [i], [j]) -> i            find string (of 1 or 2 chars max.)
 	pb:getto(term, [i], [j]) -> s        pull terminated string
 
 	pb:[try_]read(buf, size) -> read_n   read once to external buffer
-	pb:[try_]readn(buf, n) -> buf, n     read n bytes to external buffer
+	pb:[try_]readn(buf, n)               read n bytes to external buffer
 	pb:[try_]write(p, n)                 write n bytes from external buffer
-	pb.offset                            length read or written
+	pb.offset                            size read or written
 	pb:filepos()                         current position in file
 
-	pb:have(n) -> true|false             read n bytes up-to eof
+	pb:have(n) -> true | false,err       read n bytes up-to eof
 	pb:need(n) -> pb                     read n bytes, break on eof
 
 	pb:flush()                           write buffer and reset it
-	pb:skip(n, [past_buffer])            skip n bytes
 	pb:seek(offset)                      seek to offset
 
 	pb:haveline() -> s | nil,err         read line if there is one
 	pb:needline() -> s                   read line
 	pb:readn_to(n, write)                read n bytes calling write on each read
 	pb:readall_to(write)                 read to eof calling write on each read
-
+	pb:reader() -> read                  get a buffered read function
+		read(buf, size) -> read_size
 ]]
 
 require'glue'
@@ -203,15 +210,14 @@ function pb:read(buf, size)
 end
 
 function pb:try_readn(buf, n)
-	local buf, err, read_n = self.f:try_readn(buf, n)
-	self.offset = self.offset + (read_n or n)
-	return buf, err, read_n
+	local ok, err, read_n = self.f:try_readn(buf, n)
+	self.offset = self.offset + (ok and n or read_n)
+	return ok, err, read_n
 end
 
 function pb:readn(buf, n)
 	self.f:readn(buf, n)
 	self.offset = self.offset + n
-	return buf, n
 end
 
 function pb:try_write(p, n)
@@ -239,7 +245,8 @@ function pb:have(n)
 	--NOTE: ignoring actually reserved size because we're not allowed to
 	--exceed self.readahead so that self.readahead = 0 disables read-ahead.
 	while n > 0 do
-		local read_n = self:read(p, max_n)
+		local read_n, err = self:try_read(p, max_n)
+		if not read_n then return false, err end
 		if read_n == 0 then return false, 'eof' end
 		self:commit(read_n)
 		n = n - read_n
@@ -328,6 +335,23 @@ function pb:readall_to(write)
 		local p, n = self:ref()
 		write(p, n)
 		self:reset()
+	end
+end
+
+
+--Returns a `read(buf, size) -> read_size` function which reads ahead from
+--file in order to lower the number of syscalls.
+function pb:reader()
+	return function(dst, dsz)
+		local ok, err = self:have(1)
+		if not ok and err ~= 'eof' then
+			return nil, err
+		end
+		local src, ssz = self:ref()
+		local sz = min(dsz, ssz)
+		copy(dst, src, sz)
+		self:_skip(sz)
+		return sz
 	end
 end
 

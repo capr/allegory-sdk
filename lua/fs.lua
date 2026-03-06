@@ -32,7 +32,6 @@ FILE I/O
 	f:[try_]seek([whence] [, offset]) -> pos      get/set the file pointer
 	f:[try_]skip(n) -> actual_n                   skip bytes
 	f:[try_]truncate(size, [opt])                 truncate file and set pointer to end
-	f:buffered_reader([bufsize]) -> read          get a readahead buffer with a read function
 OPEN FILE ATTRIBUTES
 	f:[try_]attr([attr]) -> val|t                 get/set attribute(s) of open file
 	f:[try_]size() -> n                           get file size
@@ -254,12 +253,6 @@ f:[try_]truncate(size, [opt])
 	Btw, seeking past EOF and writing something there will also create a
 	sparse file, so there's no easy way out of this complexity.
 
-f:buffered_reader([bufsize]) -> read(buf, len)
-
-	Returns a `read(buf, len) -> readlen` function which reads ahead from file
-	in order to lower the number of syscalls. `bufsize` specifies the buffer's
-	size (default is 64K).
-
 Open file attributes ---------------------------------------------------------
 
 f:[try_]attr([attr]) -> val|t
@@ -436,8 +429,6 @@ Read Arvid Norberg's article[1] for more info.
 [1] https://blog.libtorrent.org/2012/10/asynchronous-disk-io/
 
 ]=]
-
-FS_TEST = 'load_save'
 
 if not ... then require'fs_test'; return end
 
@@ -662,49 +653,6 @@ function file.try_skip(f, n)
 	return j - i
 end
 file.skip = unprotect_io(file.try_skip)
-
-function file.buffered_reader(f, bufsize)
-	local ptr_ct = u8p
-	local buf_ct = u8a
-	local o1, err = f:try_size()
-	local o0, err = f:try_seek'cur'
-	if not (o0 and o1) then
-		return function() return nil, err end
-	end
-	local bufsize = min(bufsize or 64 * 1024, max(0, o1 - o0))
-	local buf = buf_ct(bufsize)
-	local ofs, len = 0, 0
-	local eof = false
-	return function(dst, sz)
-		if not dst then --skip bytes (libjpeg semantics)
-			return f:try_skip(sz)
-		end
-		local rsz = 0
-		while sz > 0 do
-			if len == 0 then
-				if eof then
-					return 0
-				end
-				ofs = 0
-				local len1, err = f:try_read(buf, bufsize)
-				if not len1 then return nil, err end
-				len = len1
-				if len == 0 then
-					eof = true
-					return rsz
-				end
-			end
-			--TODO: benchmark: read less instead of copying.
-			local n = min(sz, len)
-			copy(cast(ptr_ct, dst) + rsz, buf + ofs, n)
-			ofs = ofs + n
-			len = len - n
-			rsz = rsz + n
-			sz = sz - n
-		end
-		return rsz
-	end
-end
 
 --pipes ----------------------------------------------------------------------
 

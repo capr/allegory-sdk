@@ -824,13 +824,14 @@ end
 --buffered_reader ------------------------------------------------------------
 
 function test.buffered_reader()
+	require'pbuffer'
 	local testfile = 'fs_test_bufread'
 	local data = ('abcdefghij'):rep(100) --1000 bytes
 	local f = open(testfile, 'w')
 	f:write(data)
 	f:close()
 	local f = open(testfile)
-	local read = f:buffered_reader(64) --small buffer
+	local read = pbuffer{f = f, readahead = 64}:reader() --small buffer
 	local parts = {}
 	local buf = u8a(37) --odd size
 	while true do
@@ -840,28 +841,6 @@ function test.buffered_reader()
 	end
 	local result = table.concat(parts)
 	assert(result == data)
-	f:close()
-	rmfile(testfile)
-end
-
-function test.unbuffered_reader()
-	local testfile = 'fs_test_unbufread'
-	local f = open(testfile, 'w')
-	f:write('abcdefghij')
-	f:close()
-	local f = open(testfile)
-	local read = f:unbuffered_reader()
-	local buf = u8a(5)
-	local n = read(buf, 5)
-	assert(n == 5)
-	assert(str(buf, 5) == 'abcde')
-	--skip bytes
-	local n = read(nil, 3)
-	assert(n == 3)
-	--read remaining
-	local n = read(buf, 5)
-	assert(n == 2)
-	assert(str(buf, 2) == 'ij')
 	f:close()
 	rmfile(testfile)
 end
@@ -1207,7 +1186,7 @@ chdir(os.getenv'HOME')
 mkdir'fs_test'
 chdir'fs_test'
 
-local name = ... or rawget(_G, 'FS_TEST')
+local name = rawget(_G, 'FS_TEST') or ...
 if not name or name == 'fs_test' then
 	--run all tests in the order in which they appear in the code.
 	local n,m = 0, 0

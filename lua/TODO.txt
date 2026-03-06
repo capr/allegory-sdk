@@ -1,9 +1,6 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
 
-file:buffered_reader(bufsize) -> read(buf, sz) -> readsz
-	file:pbuffer():reader()
-
 dynarray
 dynarray_pump
 dynarray_loader

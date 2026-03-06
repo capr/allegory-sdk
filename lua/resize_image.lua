@@ -16,6 +16,7 @@ require'rect'
 require'pillow'
 require'jpeg'
 require'png'
+require'pbuffer'
 
 function resize_image(src_path, dst_path, max_w, max_h)
 
@@ -33,7 +34,7 @@ function resize_image(src_path, dst_path, max_w, max_h)
 
 			if src_ext == 'jpg' or src_ext == 'jpeg' then
 
-				local read = f:buffered_reader()
+				local read = pbuffer({f = f}):reader()
 				local img = jpeg_open{read = read}
 				finally(function() if img then img:free() end end)
 

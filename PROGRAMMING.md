@@ -30,8 +30,7 @@ Keep lines under 80 chars as much as you reasonably can.
 
 Tell your editor to remove trailing spaces and to keep an empty line at EOF.
 
-Use `\r\n` as line separator only for Windows-specific modules, if at all.
-Generally just use `\n`.
+Only use `\n` as line separator.
 
 ## Modules
 
@@ -81,23 +80,27 @@ Use Lua's naming conventions `foo_bar` and `foobar` instead of `FooBar` or `fooB
   * `err` is for errors
   * `t0`, `i0`, etc. is for "previous value of"
 
+Use `len` for element count, `size` for byte count and `capacity` for allocated size.
+
 ### Abbreviations
 
-Abbreviations are ok, just don't forget to document them when they first
-appear in the code. Short names are mnemonic and you can juggle more of them
-in your head at the same time, and they're indicative of a deeply understood
-problem: you're not being lazy for using them.
+Short names (acronyms, contractions, truncations, etc.) are ok, just don't
+forget to document them at declaration site. Short names are mnemonic
+and you can juggle more of them in your head at the same time, and they're
+indicative of a deeply understood problem: you're not being lazy for using them.
 
 ## Comments
 
 Assume your readers already know Lua so try not to teach that to them
 (it would only show that you're really trying to teach it to yourself).
 But don't tell them that the code "speaks for itself" either because
-it doesn't. Take time to document the tricky parts of the code.
-If there's an underlying narrative on how you solved a problem, take time
-to document that too. Don't worry about how long that is, people love stories.
-And in fact the high-level overview, how everything is put together
-is _much more important_ than the nitty-gritty details and it's too often missing.
+it doesn't. Take time to document the tricky parts of the code. Take time
+to name and reference your algorithms and idioms properly, including any
+modifications from what is generally known. If there's an underlying narrative
+on how you solved a problem, take time to document that. Don't worry about how
+long that is, people love stories. And in fact the high-level overview, how
+everything is put together is _more important_ than the details and it's
+too often missing.
 
 ## Syntax
 
@@ -107,18 +110,18 @@ is _much more important_ than the nitty-gritty details and it's too often missin
 * use `foo.bar` instead of `foo['bar']`.
 * use `local function foo() end` instead of `local foo = function() end`.
 (this sugar shouldn't have existed, but it's too late now, use it).
-* put a comma after the last element of vertical lists.
+* put a comma after the last element in a vertical list.
 
 ## FFI Declarations
 
-Put cdefs in a separate `foo_h.lua` file because it may contain types that
-other modules might need. If this is unlikely and the API is small, embed
-the cdefs in the main module file directly.
+Put cdefs in a separate `foo_h.lua` file if you know that it contains C types
+that other modules might need. If this is unlikely, embed the cdefs in the
+module file directly instead.
 
 Add a comment on top of your `foo_h.lua` file describing the origin
-(which files? which version?) and process (cpp? by hand?) used for generating
-the file. This adds confidence that the C API is complete and up-to-date
-and can hint a maintainer on how to upgrade the definitions.
+(which files? which version?) and process (cpp? by hand? LLM?) used for
+generating the file. This adds confidence that the C API is complete and
+up-to-date and can hint a maintainer on how to upgrade the definitions.
 
 Call `ffi.load()` without paths, custom names or version numbers to keep
 the module away from any decisions regarding how and where the library
@@ -131,7 +134,7 @@ casual code reader. It's ok and even encouraged to use these instead of
 making library functions for them. More complicated patterns belong
 to the [glue](lua/glue.lua) library.
 
-| Idiom | Decription |
+| Idiom | Description |
 | :---  | :---       |
 | __logic__                                   |
 | `not a == not b`                            | both or none
@@ -147,7 +150,7 @@ to the [glue](lua/glue.lua) library.
 | __strings__                                 |
 | `s:match'^something'`                       | starts with
 | `s:match'something$'`                       | ends with
-| `s:match'["\'](.-)%1'`                      | match pairs of single or double quotes
+| `s:match'(["\'])(.-)%1'`                    | match pairs of single or double quotes
 | __i/o__                                     |
 | `f:read(4096, '*l')`                        | read lines efficiently
 
@@ -199,7 +202,7 @@ This has two implications:
 
 1. Lua-ffi cannot implement this for Lua 5.1, so compatibility with Lua
 cannot be achieved if this idiom is used.
-2. The `if ptr then` idiom doesn't work, although you'd expect that anything
+2. The `if ptr then` idiom doesn't work, although you'd expect anything
 that `== nil` to pass the `if` test too.
 
 Both problems can be solved easily with a NULL->nil converter which must be
@@ -294,7 +297,7 @@ Pointer to number conversion that turns into a no-op when compiled:
 Switching endianness of a 64bit integer (to use in conjunction with
 `ffi.abi'le'` and `ffi.abi'be'`):
 
-	local p = ffi.cast('uint32*', int64_buffer)
+	local p = ffi.cast('uint32_t*', int64_buffer)
 	p[0], p[1] = bit.bswap(p[1]), bit.bswap(p[0])
 
 ------------------------------------------------------------------------------
@@ -317,7 +320,7 @@ fix something, the better it is for everything that sits on it.
 
 Structuring your API semantically makes it easier to learn and later
 to recall because humans work best with semantic hierarchies.
-Here's a few techniques you can use:
+Here are a few techniques you can use:
 
   * group functions into namespaces (the easy one, and the wrong approach!)
   * group semantic variations into a single function using parameter
@@ -338,7 +341,7 @@ because each level in the hierarchy contains a concept of a different kind
 this association. But `urllib.parse.urlparse` is a classification hierarchy,
 which although a logical one to make from the implementation point of view,
 the fact that `urlparse` is to be found under the `parse` sub-namespace is
-completely arbitrary from the user's pov. and thus hard to remember.
+completely arbitrary from the user's POV and thus hard to remember.
 
 ## Caveats of function overloading
 
@@ -371,7 +374,7 @@ by looking at the code, eg. `fileopen(filename, mode = '*b' or '*t')`
 not `fileopen(filename, is_binary)` which could just as well be
 `fileopen(filename, is_text)` and you wouldn't know which by looking
 at a code like: `fileopen('file', false)`. On the other hand,
-it's ok to use use boolean for on/off enable/disable switches.
+it's ok to use boolean for on/off enable/disable switches.
 Avoid inverted switches though where `true` means "disabled".
 Even when "disabled" is the default value it's usually better to
 disambiguate on `nil` rather than make an inverted flag.
@@ -428,4 +431,3 @@ is call it and pass it around.
 
 Never mutate received arguments except on constructors, where you should
 accept an `options` arg and convert that into the constructed object.
-
