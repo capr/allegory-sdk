@@ -5,85 +5,59 @@ The **Allegory SDK** is a self-contained programming environment for
 developing web-based **database-driven business apps** in
 **LuaJIT** and **JavaScript**.
 
-The **server-side stack** is written entirely in Lua and contains:
+The **server-side** is written in Lua and contains:
 
- * a coroutine-based scheduler for epoll and IOCP multiplexing.
- * a programmable web-server-as-a-library (like golang).
- * a fully-featured http client and async DNS resolver.
- * OS threads with synchronized queues.
+ * async web server, http client, DNS resolver.
+ * coroutine-based epoll scheduler for sockets and pipes.
  * async process execution with pipes and shared memory.
+ * OS threads with synchronized queues.
  * the fastest libraries for hashing, encryption, compression, image codecs,
-   image resizing, JSON and XML codecs, CSV parsing and XLS generation.
- * async clients for MySQL and Tarantool.
- * a powerful SQL preprocessor with macros and conditionals.
- * a database schema DSL with automatic schema synchronization.
+   image resizing, JSON and XML codecs, CSV parsing and XLSX generation.
+ * ACID RDBMS engine based on the MDBX key-value store.
+ * database schema DSL with automatic schema sync.
  * ...and more, see full list of modules below.
 
-On the **frontend** we use [canvas-ui], an IMGUI library written in
-JavaScript with no dependencies, featuring an editable virtual grid,
-built-in screen sharing, a UI builder, and more. It is included as a git
-submodule so you can use your own frontend tech instead.
+The **client-side** is [canvas-ui], an immediate-mode GUI (IMGUI) library
+written in JavaScript with no dependencies, featuring an editable virtual grid,
+built-in screen sharing and more.
 
 [canvas-ui]: https://github.com/allegory-software/canvas-ui
 
 # Who is this for?
 
-This is for people who could write the whole thing themselves if they wanted
-to but just don't have the time and could use a head start of about 2-5 years
-depending on experience. You will have to read the code while you're using it
-and gradually start to _own it_ so that in time you gain the ability and the
-freedom to work on it like you wrote it yourself. The code is simplified and
-organized to facilitate that (there are no dark corners).
+For experienced developers who could build this themselves but want a head
+start. This is not a black box, and treating it as one will only bring sadness.
+This code is supposed to be read, understood, owned and tailored to fit, not
+abstracted away and extended.
 
-This is a very different proposition than the black-box approach of most
-frameworks that don't encourage looking under the hood. Our approach comes
-from the observation that in order to keep things simple, you have to solve
-problems at the right level of abstraction, and you can only do that if you
-own as much of the stack as you possibly can. We'd own the OS if we could,
-we'd definitely own the browser. Another way of saying this is that accidental
-complexity builds up at the boundary between the software that you control
-and the software that you don't control. When you can't fix a bad or incomplete
-API that you nevertheless have to build on, all you get is hacks and bugs.
-As a middleware, the Allegory SDK is in the worst position in that regard,
-it can never cover everything for everybody, so you'll have to tailor it
-to suit your needs. Treating it as a black box will only bring you sadness.
-
-We understand that this approach might seem alien to some, that it comes with
-a learning curve, that it's probably not suited for beginners or people who
-just want to get something done quickly and move on, but as someone once said:
-"In the beginning all you want is results. In the end, all you want is control."
-
-So if you think you're too far away from making your own full stack from scratch,
-server and all, or you prefer the black-box approach, then you will probably
-not be happy using this. If, on the other hand, you're comfortable reading other
-people's code, and you're of the mind that procedural > functional > OOP,
-library > framework, SQL > ORM, JavaScript > TypeScript, relational > nosql,
-less LOC > more LOC, and you get a rash whenever you hear the words "build system",
-"package manager", "folder structure", "microservice", "container"
-or "dependency injection", then you might actually enjoy this.
+If you're of the mind that procedural > functional > OOP, library > framework, JavaScript > TypeScript, relational > nosql, less LOC > more LOC, and you get
+a rash whenever you hear the words "build system", "package manager",
+"folder structure", "microservice", "container" or "dependency injection",
+then this is for you.
 
 # Status
 
 Follow the [releases](https://github.com/allegory-software/allegory-sdk/tags)
 to see what's new and the [master branch](https://github.com/allegory-software/allegory-sdk/commits/master)
-to see keep up to date with the latest features.<br>
+to keep up to date with the latest features.
+
 Look at the [issues](https://github.com/allegory-software/allegory-sdk/issues)
 to see what's missing, broken or wanted.
 
 # Compatibility
 
- * Operating Systems: **Linux**
- * Browsers: Desktop **Chrome**, **Firefox**, **Edge**, **Safari 16.3+**
+ * Operating Systems: **Linux**.
+ * Browsers: Desktop **Chrome**, **Firefox**, **Edge**, **Safari 16.3+**.
  * CPUs: x86-64 with SSE 4.2 (AVX2 used if found).
 
-# Binaries
+# Binaries & Building
 
-Binaries are included for Debian 12. Use `c/build-all` to rebuild for your distro.
+Binaries are included for Debian 12. To rebuild for your distro, clone all
+the git submodules of this repo and run `c/build-all`. It should be very fast
+and there are no external dependencies.
 
-# Building
-
-See our [Building Guide](c/README.md) which also teaches how to create build
-scripts for new libraries without using a build system.
+For more info, see the [Building Guide](c/README.md), which also teaches how
+to create build scripts for new libraries without using a build system.
 
 # Server Runtime
 
@@ -94,6 +68,8 @@ scripts for new libraries without using a build system.
 * __Standard Library__
   * [glue](lua/glue.lua)               - "Assorted lengths of wire" library
   * [pp](lua/pp.lua)                   - Pretty printer and serializer
+  * [errors](lua/errors.lua)           - Structured exceptions
+  * [errors_io](lua/errors_io.lua)     - Exceptions for writing protocols
   * [coro](lua/coro.lua)               - [Symmetric coroutines](https://stackoverflow.com/questions/41891989) for cross-yielding
   * [logging](lua/logging.lua)         - Logging to files and network
   * [events](lua/events.lua)           - Event system (pub/sub) mixin for any object or class
@@ -107,7 +83,7 @@ scripts for new libraries without using a build system.
   * [fs](lua/fs.lua)                   - Files, directories, symlinks, pipes, memory mapping
   * [proc](lua/proc.lua)               - Async process execution with I/O redirection
   * [path](lua/path.lua)               - Path manipulation
-  * [unixperms](lua/unixperms.lua)     - Unix permissons string parser
+  * [unixperms](lua/unixperms.lua)     - Unix permissions string parser
   * [time](lua/time.lua)               - Wall clock, monotonic clock, sleep
 * __Multi-threading__
   * [os_thread](lua/os_thread.lua)     - High-level threads API based on pthread and luastate
@@ -123,9 +99,8 @@ scripts for new libraries without using a build system.
   * [http_client](lua/http_client.lua) - Async [HTTP(s) 1.1](lua/http.lua) client for high-volume web scraping
   * [http_server](lua/http_server.lua) - Async [HTTP(s) 1.1](lua/http.lua) server
   * [smtp](lua/smtp.lua)               - Async SMTP(s) client
-  * [mess](lua/mess.lua)               - simple TCP-based protocol for Lua programs
+  * [mess](lua/mess.lua)               - Simple TCP-based protocol for Lua programs
   * [url](lua/url.lua)                 - URL parsing and formatting
-  * [ipv6](lua/ipv6.lua)               - IPv6 conversion routines
 * __Data Exchange__
   * [base64](lua/base64.lua)           - Base64 encoding & decoding
   * [json](lua/json.lua)               - Fast JSON encoding & decoding
@@ -140,22 +115,18 @@ scripts for new libraries without using a build system.
   * [blake3](lua/blake3.lua)           - Fast secure hash & MAC (based on [BLAKE3](https://github.com/BLAKE3-team/BLAKE3))
   * [sha1](lua/sha1.lua)               - SHA1 hash
   * [sha2](lua/sha2.lua)               - SHA2 hash
-  * [md5](lua/md5.lua)                 - MD5 hash
   * [hmac](lua/hmac.lua)               - HMAC signing
   * [bcrypt](lua/bcrypt.lua)           - Password hashing
 * __Compression__
   * [gzip](lua/gzip.lua)               - DEFLATE & GZIP (based on [zlib-ng](https://github.com/zlib-ng/zlib-ng))
   * [zip](lua/zip.lua)                 - ZIP file reading, creating and updating (based on [minizip-ng](https://github.com/zlib-ng/minizip-ng))
 * __Databases__
-  * [sqlpp](lua/sqlpp.lua)             - SQL preprocessor
-  * [mysql](lua/mysql.lua)             - MySQL async driver
-  * [tarantool](lua/tarantool.lua)     - Tarantool async driver
   * [schema](lua/schema.lua)           - Database schema diff'ing and migrations
-  * [query](lua/query.lua)             - SQL queries with preprocessor on a connection pool
+  * [mdbx](lua/mdbx.lua)               - MDBX database binding
+  * [mdbx_schema](lua/mdbx_schema.lua) - Relational database engine over MDBX
 * __Raster Images__
   * [jpeg](lua/jpeg.lua)               - Fast JPEG decoding & encoding (based on [libjpeg-turbo](https://libjpeg-turbo.org/))
   * [png](lua/png.lua)                 - Fast PNG decoding & encoding (based on [libspng](https://libspng.org/))
-  * [bmp](lua/bmp.lua)                 - BMP decoding & encoding
   * [bitmap](lua/bitmap.lua)           - Bitmap conversions
   * [pillow](lua/pillow.lua)           - Fast image resizing (based on [Pillow-SIMD](https://github.com/uploadcare/pillow-simd#pillow-simd))
   * [resize_image](lua/resize_image.lua) - Image resizing and format conversion
@@ -200,9 +171,8 @@ Widgets are provided by [canvas-ui].
 
 # Working on the SDK
 
-If you want to contribute to the SDK, we patched together a
-[Programming Guide](PROGRAMMING.md) to help you understand the code
-a little better and keep with the style and conventions that we use.
+Read the [Programming Guide](PROGRAMMING.md) if you want to keep up with the
+style and conventions of the code base.
 
 # License
 
@@ -215,31 +185,19 @@ The Allegory SDK is MIT Licensed.
 
 Because Lua is like modern JavaScript, except
 [it got there 10 years earlier](https://stackoverflow.com/questions/1022560#1022683)
-and it didn't keep the baggage while doing so. That said, we're all
-engineers here, we don't have language affectations. We're just happy to use
-a language with stackful coroutines, real closures with full lexical scoping,
-hash maps, a garbage collector, a better C FFI than we could ever ask for,
-and an overall non-opinionated design that doesn't pretend to know better
-than its user.
+and it didn't keep the baggage while doing so. That, and LuaJIT ffi.
+
+Plus Lua has an overall non-opinionated design that doesn't pretend to know
+better than its user, which is something rare these days.
 
 ### Why not OpenResty?
 
-We actually used OpenResty in the past, nothing wrong with it. It's
-probably even faster. It definitely has more features. Nginx is however quite
-large, not nearly as hackable as our pure-Lua server, it wants to control
-the main loop and manage threads all by itself, and its configuration
-directives are inescapably byzantine and undebuggable by trying to do
-declaratively what is sometimes better done procedurally in a web server.
-
-We also don't like inversion-of-control in general. The industry is also
-waking up to this in recent years by moving from scriptable web servers like
-apache and nginx to more flexible build-your-own kits like golang or node.
+Nothing wrong with it. It's probably even faster. It definitely has more
+features. Nginx however wants to control the main loop and manage threads
+all by itself and its configuration directives are inescapably byzantine and undebuggable by trying to do declaratively what is sometimes better done
+procedurally in a web server.
 
 ### Why not Golang or Node?
 
 It's the same answer: hackability. Golang and Node have their networking guts
-written in C while ours is Lua all the way down to OS APIs with a few
-exceptions (libtls).
-
-------------------------------------------------------------------------------
-<sup>Allegory SDK (c) 2020-2024 Allegory Software</sup>
+written in C while this is Lua all the way down to OS APIs with a few exceptions.
