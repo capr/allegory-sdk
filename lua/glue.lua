@@ -2293,8 +2293,8 @@ function dynarray_pump(dynarr)
 	dynarr = dynarr or dynarray()
 	local i = 0
 	local function write(src, len)
-		if src == nil then return end --eof
-		len = len or #src
+		len = len or (src and #src or 0)
+		if len == 0 then return end --eof
 		local dst = dynarr(i + len)
 		copy(dst + i, src, len)
 		i = i + len

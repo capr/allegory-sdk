@@ -75,7 +75,6 @@ function resize_image(src_path, dst_path, max_w, max_h)
 
 		if dst_ext == 'jpg' or dst_ext == 'jpeg' then
 
-			--we can't use file_saver() here because we can't yield from write().
 			local write, collect = dynarray_pump()
 			jpeg_save{
 				bitmap = bmp,
