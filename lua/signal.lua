@@ -120,8 +120,8 @@ function signal_file(signals, async, flags, name)
 	assert(sizeof(si) == 128)
 	local psi = cast(u8p, si)
 	f.try_read_signal = function(f)
-		local buf, err = f:try_readn(psi, 128)
-		if not buf then return nil, err end
+		local ok, err = f:try_readn(psi, 128)
+		if not ok then return nil, err end
 		return si
 	end
 	f.read_signal = unprotect_io(f.try_read_signal)
