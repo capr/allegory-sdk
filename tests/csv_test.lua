@@ -32,7 +32,7 @@ local function testhandle(handle, correct_result)
 end
 
 local function test(filename, correct_result, parameters)
-  filename = 'csv_test/'..filename
+  filename = exedir()..'/../tests/csv_test/'..filename
   parameters = parameters or {}
   for i = 1, 16 do
     parameters.buffer_size = i
