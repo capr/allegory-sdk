@@ -4,7 +4,7 @@ require'blake3'
 require'json'
 require'fs'
 
-local tests = json_decode(assert(load(indir(rel_scriptdir, 'blake3_test/test_vectors.json'))))
+local tests = json_decode(assert(load(exedir()..'/../tests/blake3_test/test_vectors.json')))
 
 local b1 = blake3_state()
 local b2 = blake3_state(tests.key)
