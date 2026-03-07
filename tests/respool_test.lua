@@ -1,6 +1,8 @@
 require'sock'
 require'respool'
 
+--logging.debug = true
+
 run(function()
 
 	-- [1] empty pool: get() must create
@@ -57,7 +59,7 @@ run(function()
 		local got_res, got_err
 		resume(thread(function()
 			got_res, got_err = pool:get(clock() + 10)
-		end))
+		end, 'test'))
 		-- thread is now blocked on wait_until(); main continues
 		pool:reuse(r1) -- check_waitlist() -> wait_job:resume() -> thread runs synchronously
 		assert(got_res == r1)
@@ -72,7 +74,7 @@ run(function()
 		local got_res, got_err
 		resume(thread(function()
 			got_res, got_err = pool:get(clock() + 10)
-		end))
+		end, 'test'))
 		pool:pull(r1) -- n->0, wakes waiter; waiter sees n < limit -> 'create'
 		assert(got_res == nil)
 		assert(got_err == 'create')
@@ -85,7 +87,7 @@ run(function()
 		local got_res, got_err
 		resume(thread(function()
 			got_res, got_err = pool:get(clock() + 10)
-		end))
+		end, 'test'))
 		pool:cancel() -- n->0, wakes waiter
 		assert(got_res == nil)
 		assert(got_err == 'create')
@@ -99,7 +101,7 @@ run(function()
 		local got_res, got_err
 		resume(thread(function()
 			got_res, got_err = pool:get(clock() + 0.02)
-		end))
+		end, 'test'))
 		wait(0.1) -- outlast the thread's deadline
 		assert(got_res == nil)
 		assert(got_err == 'timeout')
@@ -115,12 +117,12 @@ run(function()
 			local res = pool:get(clock() + 10)
 			order[#order+1] = 'A'
 			pool:reuse(res) -- wakes B
-		end))
+		end, 'test1'))
 		resume(thread(function() -- B queues second
 			local res = pool:get(clock() + 10)
 			order[#order+1] = 'B'
 			pool:reuse(res)
-		end))
+		end, 'test2'))
 		pool:reuse(r1) -- wakes A; A reuses -> wakes B; B reuses -> done
 		assert(order[1] == 'A')
 		assert(order[2] == 'B')
@@ -148,13 +150,13 @@ run(function()
 			wait(0) -- yield so Thread B can also call get()
 			pool:put({})
 			puts = puts + 1
-		end))
+		end, 'test1'))
 		-- Thread A yielded. Thread B now runs:
 		resume(thread(function()
 			local _, e = pool:get(); assert(e == 'create') -- n=2, reserved=2
 			pool:put({})
 			puts = puts + 1
-		end))
+		end, 'test2'))
 		-- Thread B done. Let Thread A resume its put():
 		wait(0)
 		assert(puts == 2)

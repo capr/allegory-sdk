@@ -51,6 +51,8 @@ come up as potentially retriable which is not correct. This must be fixed
 case-by-case in fs and sock. See try_accept() for how to fix it.
 ]=]
 
+require'glue'
+
 local function io_error_init(self)
 	if self.target then
 		local ok, err = self.target:try_close()

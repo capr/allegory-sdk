@@ -76,7 +76,7 @@ function resource_pool(opt)
 	local reserved = 0 --number of resources reserved for creation
 
 	local function dbg(event, res, ufmt, ...)
-		log('', 'respool', event, '%-4s %-4s n=%d free=%d reserved=%d %s',
+		log('', 'rpool', event, '%-4s %-4s n=%d free=%d reserved=%d %s',
 			currentthread(), res or '', n, #free, reserved, ufmt and _(ufmt, ...) or '')
 	end
 

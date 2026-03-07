@@ -47,6 +47,8 @@ traceback by default unless they ask for it.
 
 ]=]
 
+require'glue'
+
 local
     type, xpcall =
     type, xpcall
@@ -56,6 +58,8 @@ local lua_pcall = pcall
 
 local classes = {} --{name -> class}
 local class_sets = {} --{'name1 name2 ...' -> {class->true}}
+
+local Error --fw. decl.
 
 local function errortype(classname, super, default_error_message)
 	local class = classname and classes[classname]
@@ -162,15 +166,6 @@ local function protect(classes, f, oncaught)
 	end
 end
 
-_G.errortype = errortype
-_G.newerror = newerror
-_G.iserror = iserror
-_G.raise = raise
-_G.catch = catch
-_G.pcall = pcall
-_G.lua_pcall = lua_pcall
-_G.protect = protect
-
 --base error class that all error types inherit from.
 
 Error = errortype()
@@ -221,3 +216,13 @@ function Error:__tostring()
 	end
 	return s
 end
+
+_G.errortype = errortype
+_G.newerror = newerror
+_G.iserror = iserror
+_G.raise = raise
+_G.catch = catch
+_G.pcall = pcall
+_G.lua_pcall = lua_pcall
+_G.protect = protect
+_G.Error = Error
