@@ -23,6 +23,8 @@ FILE OBJECTS
 PIPES
 	[try_]pipe([opt]) -> rf, wf                   create an anonymous pipe
 	[try_]mkfifo(path|{path=,...}) -> true        create a named pipe
+STDIN/OUT/ERR ASYNC PIPES
+	std{in|out|err}_async_pipe() -> pipe          get stdin/out/err as async pipes
 FILE I/O
 	f:[try_]read(buf, len) -> readlen             read data from file
 	f:[try_]readn(buf, n)                         read exactly n bytes
@@ -551,6 +553,7 @@ function file_wrap_fd(fd, opt)
 	}, opt)
 
 	if f.async then
+		assert(rawget(_G, '_sock_register'), 'sock module required for async')
 		fcntl_set_fl_flags(f, O_NONBLOCK, O_NONBLOCK)
 		local ok, err = _sock_register(f)
 		if not ok then
@@ -707,6 +710,10 @@ function pipe(opt)
 	check('fs', 'pipe', rf, '%s', wf)
 	return rf, wf
 end
+
+stdin_async_pipe  = memoize(function() return file_wrap_fd(0, {type = 'pipe', async = true, debug_prefix = '<stdin>' }) end)
+stdout_async_pipe = memoize(function() return file_wrap_fd(1, {type = 'pipe', async = true, debug_prefix = '<stdout>'}) end)
+stderr_async_pipe = memoize(function() return file_wrap_fd(2, {type = 'pipe', async = true, debug_prefix = '<stderr>'}) end)
 
 --i/o ------------------------------------------------------------------------
 

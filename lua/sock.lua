@@ -98,9 +98,6 @@ THREAD SETS
 MULTI-THREADING (WITH OS THREADS)
 	epoll_fd([epfd]) -> epfd    get/set epoll fd
 
-STDIN/OUT/ERR ASYNC PIPES
-	std{in|out|err}_async_pipe() -> pipe
-
 ------------------------------------------------------------------------------
 
 All function return `nil, err` on error (but raise on user error
@@ -305,7 +302,7 @@ wait(s) -> ...
 
 wait_job() -> sj
 
-	Make an interruptible waiting job. Put the current thread wait using
+	Make an interruptible waiting job. Put the current thread to sleep using
 	`sj:wait()` or `sj:wait_until()` and then from another thread call
 	`sj:resume()` to resume the waiting thread. Any arguments passed to
 	`sj:resume()` will be returned by `wait()`.
@@ -1937,9 +1934,3 @@ do --scheduler loop
 	end
 
 end
-
---init stdin/out/err as async pipes ------------------------------------------
-
-stdin_async_pipe  = memoize(function() require'fs'; return file_wrap_fd(0, {type = 'pipe', async = true, debug_prefix = '<stdin>' }) end)
-stdout_async_pipe = memoize(function() require'fs'; return file_wrap_fd(1, {type = 'pipe', async = true, debug_prefix = '<stdout>'}) end)
-stderr_async_pipe = memoize(function() require'fs'; return file_wrap_fd(2, {type = 'pipe', async = true, debug_prefix = '<stderr>'}) end)
