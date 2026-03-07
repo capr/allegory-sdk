@@ -232,17 +232,11 @@ ALLOCATION
 	free(p)                        C free
 BUFFERS
 	dynarray([ct][,cap]) -> alloc
-		alloc(len)->buf,len         alloc len and get a buffer, contents preserved
-	dynarray_pump([dynarray]) -> write, collect, reset
-	  write(buf,len)               append to internal buffer
+		alloc(len) -> buf, len      alloc len and get a buffer, contents preserved
+	dynarray_pump() -> write, collect, reset
+	  write(s | buf, len)          append to internal buffer
 	  collect() -> buf,len         get internal buffer
 	  reset()                      start again
-	dynarray_loader([dynarray]) -> get, commit, collect
-	  get(len) -> buf,len          get a buffer of len to write to
-	  commit(len)                  commit len
-	  collect() -> buf,len         get internal buffer
-	readall(read,...) -> buf,len   repeat read based on a read function
-	buffer_reader(buf,len)->read   make a read function that consumes a buffer
 	string_buffer() -> b           make a luajit string buffer, see https://luajit.org/ext_buffer.html
 CONFIG
 	config(k[, default]) -> v      get/set global config value
@@ -286,7 +280,7 @@ end
 
 local ffi_string = ffi.string
 local function str(s, len)
-	if s == nil then return nil end
+	if s == nil and not len then return nil end
 	return ffi_string(s, len)
 end
 
@@ -2280,6 +2274,7 @@ function dynarray(ct, min_capacity)
 	local buf0, minlen0
 	return function(minlen)
 		local buf, len = alloc(minlen and max(min_capacity or 0, minlen))
+		--TODO: would realloc() be better than copy? probably not...
 		if buf ~= buf0 and buf ~= nil and buf0 ~= nil then
 			copy(buf, buf0, minlen0 * elem_size)
 		end
@@ -2288,70 +2283,28 @@ function dynarray(ct, min_capacity)
 	end
 end
 
---make a write(buf, sz) function that appends data to a dynarray buffer.
-function dynarray_pump(dynarr)
-	dynarr = dynarr or dynarray()
-	local i = 0
+--make a write(buf, sz) function that appends data to a dynamic buffer.
+function dynarray_pump()
+	local b = string_buffer()
 	local function write(src, len)
-		len = len or (src and #src or 0)
-		if len == 0 then return end --eof
-		local dst = dynarr(i + len)
-		copy(dst + i, src, len)
-		i = i + len
-		return len
+		if isstr(src) then
+			assert(not len)
+			b:put(src)
+		elseif src == nil then --nil, 0 means eof
+			assert(len == 0)
+			return true
+		else
+			b:putcdata(src, len)
+		end
+		return true
 	end
 	local function collect()
-		return dynarr(i)
+		return b:ref()
 	end
 	local function reset()
-		i = 0
+		b:reset()
 	end
 	return write, collect, reset
-end
-
---unlike a pump which copies the user's buffer, a loader provides a buffer
---for the user to fill up and mark (a portion of it) as filled.
-function dynarray_loader(dynarr)
-	dynarr = dynarr or dynarray()
-	local i = 0
-	local function get(sz)
-		return dynarr(i + sz) + i, sz
-	end
-	local function put(len)
-		i = i + len
-	end
-	local function collect()
-		return dynarr(i)
-	end
-	return get, put, collect
-end
-
---load up a dynarray with repeated reads given a read(self, buf, sz, ...) method.
-function readall(try_read, self, ...)
-	local get, put, collect = dynarray_loader()
-	while true do
-		local buf, sz = get(16 * 1024)
-		local len, err = try_read(self, buf, sz, ...)
-		if not len then return nil, err, collect() end --short read
-		if len == 0 then return collect() end --eof
-		put(len)
-	end
-end
-
---return a read(buf, sz) -> readsz function that consumes data from the
---supplied buffer. The supplied buf,sz can also be nil,err in which case
---the read function will always return just that. The buffer must be a
---(u)int8_t pointer or VLA.
-function buffer_reader(p, n)
-	return function(buf, sz)
-		if p == nil then return p, n end
-		sz = min(n, sz)
-		if sz == 0 then return nil, 'eof' end
-		copy(buf, p, sz)
-		p = p + sz
-		n = n - sz
-		return sz
-	end
 end
 
 --like dynarray() but with a lot more features, including fast binary

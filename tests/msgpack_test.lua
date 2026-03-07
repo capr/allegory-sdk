@@ -273,4 +273,4 @@ local v0 = tohex(encoded)
 local v1 = tohex(b:tostring())
 assert(v0 == v1)
 
-print'ok'
+print'msgpack ok'

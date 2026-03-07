@@ -47,9 +47,6 @@ jpeg_open(opt | read) -> jpg
 	allow the read callback to yield (browsers don't support arithmetic
 	decoding either for the same reason).
 
-	TIP: Wrap `tcp:read()` from sock.lua to read from a TCP socket.
-	TIP: Use `f:*_reader()` from fs.lua to read from a file.
-
 jpg:load([opt]) -> bmp
 
 	Load the image, returning a bitmap object.

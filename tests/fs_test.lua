@@ -265,16 +265,6 @@ function test.rm_rf()
 	rm_rf(rootdir)
 end
 
-function test.ls_empty()
-	local d = 'fs_test_dir_empty/a/b'
-	rm_rf'fs_test_dir_empty/'
-	mkdir(d, true)
-	for name in ls(d) do
-		print(name)
-	end
-	rm_rf'fs_test_dir_empty/'
-end
-
 function test.mkdir_already_exists_dir()
 	mkdir'fs_test_dir'
 	local ok, err = try_mkdir'fs_test_dir'
@@ -667,48 +657,58 @@ end
 
 --directory listing ----------------------------------------------------------
 
-function test.ls()
+function test.ls_empty()
+	local d = 'fs_test_dir_empty/a/b'
+	rm_rf'fs_test_dir_empty/'
+	mkdir(d, true)
 	local found
-	local n = 0
+	for name in ls(d) do
+		found = true
+	end
+	assert(not found)
+	rm_rf'fs_test_dir_empty/'
+end
+
+function test.ls()
+	local t0 = time()
+	rm_rf'fs_test_ls'
+	mkdir('fs_test_ls/d', true)
+	open('fs_test_ls/f', 'w'):close()
 	local files = {}
-	for file, d in ls(tests_dir) do
-		if not file then break end
-		found = found or file == 'fs_test.lua'
-		n = n + 1
+	for file, d in ls'fs_test_ls' do
 		local t = {}
 		files[file] = t
-		--these are fast to get on all platforms
-		t.type = d:attr('type', false)
-		t.inode = d:attr('inode', false)
+		t.type  = assert(d:attr('type' , false))
+		t.inode = assert(d:attr('inode', false))
 		t.mtime = assert(d:attr('mtime', false))
 		t.atime = assert(d:attr('atime', false))
 		t.size  = assert(d:attr('size' , false))
 		t._all_attrs = assert(d:attr(false))
-		local noval, err = d:try_attr('non_existent_attr', false)
-		assert(noval == nil) --non-existent attributes are free to get
-		assert(not err) --and they are not an error
-		--print('', d:attr('type', false), file)
+		local ok, err = pcall(function() return d:try_attr('non_existent_attr', false) end)
+		assert(not ok)
+		assert(err:find'non_existent_attr')
 	end
 	assert(not files['.'])  --skipping this by default
 	assert(not files['..']) --skipping this by default
-	assert(files['fs_test.lua'].type == 'file')
-	local t = files['fs_test.lua']
-	print(string.format('  found %d dir/file entries in cwd', n))
-	assert(found, 'fs_test.lua not found in cwd')
+	assert(files.d)
+	assert(files.f)
+	assert(files.d.type == 'dir')
+	assert(files.f.type == 'file')
+	assert(files.d.mtime >= t0 - 1 and files.d.mtime <= t0 + 5)
+	assert(files.f.mtime >= t0 - 1 and files.f.mtime <= t0 + 5)
 end
 
 function test.scandir()
 	local n = 0
-	for sc in scandir('/proc') do
-		local typ, err = sc:attr'type'
-		local path, err = sc:path()
-		print(string.format('%-5s %-60s %s', typ, path, err or ''))
+	for sc in scandir('/proc/self') do
+		local path = sc:path()
+		local typ, err = sc:try_attr'type'
+		print(string.format('%-8s %-60s %s', typ, path, err or ''))
 		n = n + 1
 		if n >= 20 then
 			break
 		end
 	end
-	print(n)
 end
 
 function test.ls_not_found()
@@ -874,14 +874,6 @@ end
 function test.load_default()
 	local s = load('fs_test_nonexistent_file', 'default_val')
 	assert(s == 'default_val')
-end
-
-function test.save_array()
-	local testfile = 'fs_test_save_array'
-	save(testfile, {'hello', ' ', 'world'})
-	local s = load(testfile)
-	assert(s == 'hello world')
-	rmfile(testfile)
 end
 
 function test.save_buffer()

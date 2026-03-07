@@ -28,9 +28,6 @@
 	to read a positive number of bytes and it can return less bytes than asked,
 	including zero which signals EOF.
 
-	TIP: Use `tcp:recvall_read()` from sock.lua to read from a TCP socket.
-	TIP: Use `f:*_reader()` from fs.lua to read from a file.
-
 png:[try_]load(opt) -> bmp
 
 	If no `accept` option is given or no conversion is possible, the image

@@ -48,7 +48,6 @@ SOCKETS
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
 	tcp:[try_]recvn(buf, n)                         receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
-	tcp:[try_]recvall_read() -> read                make a buffered read function
 	udp:[try_]sendto(host, port, s|buf, [len], [af]) -> len    send a datagram to an address
 	udp:[try_]recvnext(buf, maxlen, [flags]) -> len, sa        receive the next datagram
 	tcp:[try_]shutdown(['r'|'w'|'rw'])         send FIN
@@ -226,11 +225,6 @@ tcp:[try_]recvall() -> buf,len | nil,err,buf,len
 
 	Receive until closed into an accumulating buffer. If an error occurs
 	before the socket is closed, the partial buffer and length is returned after it.
-
-tcp:[try_]recvall_read() -> read
-
-	Receive all data into a buffer and make a `read` function that consumes it.
-	Useful for APIs that require an input `read` function that cannot yield.
 
 udp:[try_]sendto(host, port, s|buf, [maxlen], [flags], [af]) -> len
 
@@ -1459,15 +1453,16 @@ function tcp:try_recvn(buf, sz)
 end
 
 function tcp:try_recvall()
-	return readall(self.try_recv, self)
+	local b = string_buffer()
+	local readahead_size = 16 * 1024
+	while true do
+		local buf, sz = b:reserve(readahead_size)
+		local len, err = self:try_recv(buf, sz)
+		if not len then return nil, err, b:ref() end --partial read
+		if len == 0 then return b:ref() end --eof
+		b:commit(len)
+	end
 end
-
-function tcp:try_recvall_read()
-	local buf, len = self:try_recvall()
-	if not buf then return nil, len end
-	return buffer_reader(buf, len)
-end
-tcp.recvall_read = unprotect_io(tcp.try_recvall_read)
 
 --sleeping & timers ----------------------------------------------------------
 

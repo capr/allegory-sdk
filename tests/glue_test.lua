@@ -1275,56 +1275,23 @@ do --dynarray: with min_capacity
 end
 do --dynarray_pump: write and collect
 	local write, collect, reset = dynarray_pump()
-	write('hello', 5)
-	write(' world', 6)
+	write('hello')
+	write(' world')
 	local buf = collect()
 	assert(buf ~= nil)
 	assert(str(buf, 11) == 'hello world')
 	reset()
-	write('abc', 3)
+	write('abc')
 	buf = collect()
 	assert(str(buf, 3) == 'abc')
 end
 do --dynarray_pump: nil write is eof (no-op)
 	local write, collect = dynarray_pump()
-	write('x', 1)
-	assert(write(nil) == nil)
+	write('x')
+	assert(write(nil, 0) == true)
+	assert(write('') == true)
 	local buf = collect()
 	assert(str(buf, 1) == 'x')
-end
-do --dynarray_loader: get/put/collect
-	local get, put, collect = dynarray_loader()
-	local buf, sz = get(5)
-	assert(buf ~= nil and sz == 5)
-	copy(buf, 'hello', 5)
-	put(5)
-	local buf2, sz2 = get(6)
-	copy(buf2, ' world', 6)
-	put(6)
-	local result = collect()
-	assert(str(result, 11) == 'hello world')
-end
-do --buffer_reader: reads in chunks and signals eof
-	local ffi = require'ffi'
-	local src = ffi.new('uint8_t[5]')
-	copy(src, 'abcde', 5)
-	local read = buffer_reader(src, 5)
-	local dst = ffi.new('uint8_t[3]')
-	local n = read(dst, 3)
-	assert(n == 3)
-	assert(str(dst, 3) == 'abc')
-	n = read(dst, 3) --only 2 bytes left
-	assert(n == 2)
-	assert(str(dst, 2) == 'de')
-	local v, err = read(dst, 3) --eof
-	assert(v == nil and err == 'eof')
-end
-do --buffer_reader: nil input passes through
-	local read = buffer_reader(nil, 'some error')
-	local ffi = require'ffi'
-	local dst = ffi.new('uint8_t[4]')
-	local v, err = read(dst, 4)
-	assert(v == nil and err == 'some error')
 end
 
 --structured exceptions ------------------------------------------------------

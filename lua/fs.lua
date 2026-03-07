@@ -810,21 +810,25 @@ end
 file.readn = unprotect_io(file.try_readn)
 
 function file.try_readall(f, ignore_file_size)
-	if not f.seek or ignore_file_size then
-		return readall(f.try_read, f)
+	local b = string_buffer()
+	local filesize
+	if f.seek and not ignore_file_size then --find filesize to allocate once
+		local size, err = f:try_attr'size'; if not size then return nil, err end
+		local offset, err = f:try_seek(); if not offset then return nil, err end
+		filesize = size - offset
 	end
-	local size, err = f:try_attr'size'; if not size then return nil, err end
-	local offset, err = f:try_seek(); if not offset then return nil, err end
-	local sz = size - offset
-	local buf = u8a(sz)
-	local ok, err, read_n = f:try_readn(buf, sz)
-	if not ok then
-		if err == 'eof' then --short read from TOCTOU, still good
-			return buf, read_n
-		end
-		return nil, err
+	local readahead_size = 16 * 1024
+	local buf, sz = b:reserve(filesize or readahead_size)
+	local left = filesize or 1/0
+	while true do
+		local len, err = f:try_read(buf, sz)
+		if not len then return nil, err, b:ref() end --partial read
+		if len == 0 then return b:ref() end --eof
+		b:commit(len)
+		left = left - len
+		if left <= 0 then return b:ref() end --stop to avoid a realloc just to read 0
+		buf, sz = b:reserve(readahead_size)
 	end
-	return buf, sz
 end
 file.readall = unprotect_io(file.try_readall)
 
@@ -1235,7 +1239,7 @@ local file_types = {
 }
 local function st_type(mode)
 	local type = band(mode, 0xf000)
-	return file_types[type]
+	return file_types[type] or type --some /proc files have type 0
 end
 
 local function st_perms(mode)
@@ -1271,7 +1275,8 @@ local function wrap(stat_func)
 		if not ok then return check_errno() end
 		if attr then
 			local get = stat_getters[attr]
-			return get and get(st)
+			assertf(get, 'unknown file attr: %s', attr)
+			return get(st)
 		else
 			local t = {}
 			for k, get in pairs(stat_getters) do

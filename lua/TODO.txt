@@ -1,11 +1,6 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
 
-dynarray
-dynarray_pump
-dynarray_loader
-readall
-buffer_reader
 
 
 LEVERAGE AI
