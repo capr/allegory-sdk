@@ -1312,7 +1312,7 @@ int futimens(int fd, const struct timespec times[2]);
 int utimensat(int dirfd, const char *path, const struct timespec times[2], int flags);
 ]]
 
-local UTIME_OMIT = shl(1,30)-2
+local UTIME_OMIT = shl(1,30)-2 --means "leave it, don't change it"
 
 local function set_timespec(ts, t)
 	if ts then
@@ -1988,19 +1988,14 @@ function save(file, arg, sz, perms)
 end
 
 function try_touch(file, mtime) --create file or update its mtime.
-	local create = not exists(file)
-	if create then
-		local ok, err = try_save(file, '')
-		if not ok then return false, err end
-	end
-	if not (create and not mtime) then
-		local ok, err = try_file_attr(file, {
-			mtime = mtime or time(),
-		})
-		if not ok then return false, err end
-	end
-	log('note', 'fs', 'touch', '%s to %s', file,
-		date('%d-%m-%Y %H:%M', mtime) or 'now')
+	local f, err = try_open(file, 'a')
+	if not f then return false, err end
+	mtime = mtime or now()
+	local ok, err = futimes(f, mtime, mtime)
+	if not ok then f:try_close(); return false, err end
+	local ok, err = f:try_close()
+	if not ok then return false, err end
+	log('note', 'fs', 'touch', '%s to %s', file, date('%d-%m-%Y %H:%M', mtime))
 	return true
 end
 
@@ -2068,7 +2063,7 @@ end
 --pollable pid files ---------------------------------------------------------
 
 --NOTE: Linux 5.3+ feature, not used yet. Intended to replace polling
---for process status change in proc_posix.lua.
+--for process status change in proc.lua.
 
 local PIDFD_NONBLOCK = 0x000800
 

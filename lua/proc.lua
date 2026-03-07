@@ -529,6 +529,7 @@ function proc:wait(expires, poll_interval)
 	if not self.pid then
 		return nil, 'forgotten'
 	end
+	--TODO: use pidfd_open() instead.
 	while self:status() == 'active' and clock() < (expires or 1/0) do
 		wait(poll_interval or .1)
 	end
