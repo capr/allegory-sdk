@@ -1094,7 +1094,7 @@ function mysql_connect(opt)
 	log('', 'mysql', 'connect', '%s:%s user=%s db=%s',
 		host, port, opt.user or '', opt.db or '')
 
-	local f = tcp(nil, host:starts'unix:' and 'unix' or nil)
+	local f = tcp(host:starts'unix:' and 'unix' or nil)
 	f.tracebacks = opt.tracebacks
 	local self = setmetatable({f = f, host = host, port = port}, conn_mt)
 

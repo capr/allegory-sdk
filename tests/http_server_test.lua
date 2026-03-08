@@ -2,18 +2,17 @@
 require'glue'
 require'http_server'
 logging.debug = true
-local zero6 = Linux
 
 local server = http_server{
 	listen = {
 		{
 			host = 'localhost',
-			addr = zero6 and '10.0.0.6' or '127.0.0.1',
+			addr = '127.0.0.1',
 			port = 80,
 		},
 		{
 			host = 'localhost',
-			addr = zero6 and '10.0.0.6' or '127.0.0.1',
+			addr = '127.0.0.1',
 			port = 443,
 			tls = true,
 			tls_options = {

@@ -1,6 +1,24 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
+* make test-all report modules that don't output anything which means they have no tests.
 
+* sock unit tests
+
+* http server + client hitting different parts
+
+* http server smoke test to look for memory leaks
+
+* pbuffer try vs raising and usage
+
+* fix tests that used to work
+	luastate
+	pthread
+	os_thread
+	proc
+	relabel
+	smtp
+
+* inline tests
 
 
 LEVERAGE AI

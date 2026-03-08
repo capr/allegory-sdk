@@ -50,7 +50,6 @@ end
 
 local char = string.char
 local function bin1(s) return char(tonumber(s, 16)) end
-
 function ipv6_tobin(s)
 	s = ipv6_normalize(s, false, true)
 	return s and s:gsub(':', ''):gsub('[^:][^:]', bin1)

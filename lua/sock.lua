@@ -4,55 +4,40 @@
 	Written by Cosmin Apreutesei. Public Domain.
 	TLS support in sock_bearssl.lua.
 
-ADDRESS LOOKUP
-	[try_]getaddrinfo(...) -> ai           look-up a hostname
-	ai:free()                              free the address list
-	ai:next() -> ai|nil                    get next address in list
-	ai:addrs() -> iter() -> ai             iterate addresses
-	ai:type() -> s                         socket type: 'tcp', ...
-	ai:family() -> s                       'inet', 'inet6', 'unix'
-	ai:protocol() -> s                     'tcp', 'udp', 'raw', 'ip', ...
-	ai:name() -> s                         canonical name
-	ai:tostring() -> s                     formatted address
-	ai.addr -> sa                          first address object
-	sa:family() -> s                       address family: 'inet', ...
-	sa:port() -> n                         address port
-	sa:tostring() -> s                     'ip:port'
-	sa:addr() -> ip                        IP address object
-	ip:tobinary() -> uint8_t[4|16], 4|16   IP address in binary form
-	ip:tostring() -> s                     IP address in string form
-
+ADDRESSES
+	sockaddr('unix:PATH') -> sa            make a sockaddr for a unix socket
+	sockaddr('ip:port') -> sa              make a sockaddr for a inet/inet6 socket
+	sa:family() -> 'inet|inet6|unix'       socket family
+	sa:port() -> port|nil                  port (for inet/inet6 family)
+	sa:tostring() -> ip|ip6|path           string representation
 SOCKETS
-	tcp([opt], [family], [protocol]) -> tcp         make a TCP socket
-	udp([opt], [family], [protocol]) -> udp         make a UDP socket
-	issocket(s) -> t|f                              check if s is a socket
-	rawsocket([opt], [family], [protocol]) -> raw   make a raw socket
-	[try_]connect([tcp, ]host, port, [timeout]) -> tcp   (create tcp socket and) connect
-	listen([tcp, ]host, port, ...) -> tcp                (create tcp socket and) listen
-	s:socktype() -> s                               socket type: 'tcp', ...
-	s:family() -> s                                 address family: 'inet', ...
-	s:protocol() -> s                               protocol: 'tcp', 'icmp', ...
-	s:[try_]close()                                 send FIN and/or RST and free socket
-	s:closed() -> t|f                               check if the socket is closed
-	s:onclose(fn)                                   exec fn after the socket is closed
-	s:[try_]bind([host], [port], [af])              bind socket to an address
-	s:[try_]bind(sa)                                bind socket to an address
-	s:[try_]bind('unix:FILE')                       bind socket to a unix domain socket
-	s:[try_]setopt(opt, val)                        set socket option ('so_*', 'tcp_*', 'ip_*', etc.)
-	s:[try_]getopt(opt) -> val                      get socket option
-	tcp|udp:[try_]connect(host, port, [af], ...)    connect to an address
+	issocket(s) -> t|f                     check if s is a socket
+	s:[try_]close()                        close connection and free socket
+	s:closed() -> t|f                      check if the socket is closed
+	s:onclose(fn)                          exec fn after the socket is closed
+	s:[try_]bind(addr)                     bind socket to an address
+	s:[try_]setopt(opt, val)               set socket option ('so_*', 'tcp_*', 'ip_*', etc.)
+	s:[try_]getopt(opt) -> val             get socket option
+	s:debug([protocol])                    enable debugging
+TCP
+	tcp([family='inet'], [opt]) -> tcp              make a SOCK_STREAM socket
+	[try_]connect([tcp, ], addr, [timeout]) -> tcp  (create tcp socket and) connect
+	listen([tcp, ], addr, ...) -> tcp               (create tcp socket and) listen
+	tcp:[try_]connect(addr)                         connect to an address
 	tcp:[try_]send(s|buf, [len], [flags]) -> true   send bytes to connected address
-	udp:[try_]send(s|buf, [len], [flags]) -> len    send bytes to connected address
-	tcp|udp:[try_]recv(buf, maxlen) -> len          receive bytes
-	tcp:[try_]listen([backlog, ]host, port, [onaccept], [af])   put socket in listening mode
+	tcp:[try_]recv(buf, maxlen) -> len              receive bytes
+	tcp:[try_]listen([backlog, ]addr, [onaccept])   put socket in listening mode
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
 	tcp:[try_]recvn(buf, n)                         receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
-	udp:[try_]sendto(host, port, s|buf, [len], [af]) -> len    send a datagram to an address
-	udp:[try_]recvnext(buf, maxlen, [flags]) -> len, sa        receive the next datagram
+UDP
+	udp([family='inet'], [opt]) -> udp              make a SOCK_DGRAM socket
+	udp:[try_]connect(addr)                         connect to an address
+	udp:[try_]send(s|buf, [len], [flags]) -> len    send bytes to connected address
+	udp:[try_]recv(buf, maxlen) -> len              receive bytes
+	udp:[try_]sendto(addr, s|buf, [len]) -> len     send a datagram to an address
+	udp:[try_]recvnext(buf, maxlen, [flags]) -> len, sa     receive the next datagram
 	tcp:[try_]shutdown(['r'|'w'|'rw'])         send FIN
-	s:debug([protocol])                        enable debugging
-
 THREADS
 	thread(func[, fmt, ...]) -> co         create a coroutine for async I/O
 	resume(thread, ...)                    resume thread
@@ -65,93 +50,46 @@ THREADS
 	cofinish(co, ...) -> ...               see coro.finish()
 	threadenv([co]) -> t                   get (current) thread's own environment
 	ownthreadenv([co], [create]) -> t      get/create (current) thread's own environment
-	onthreadfinish(co, f)                  run `f(thread)` when thread finishes
-
+	onthreadfinish(co, f)                  run f(thread) when thread finishes
 SCHEDULER
 	poll([ignore_interrupts])              poll for I/O
 	start([ignore_interrupts])             keep polling until all threads finish
 	stop()                                 stop polling
 	run(f, ...) -> ...                     run a function inside a thread
-
 TIMERS
 	wait_job() -> sj            make an interruptible async wait job
 	  sj:wait_until(t) -> ...   wait until clock()
-	  sj:wait(s) -> ...         wait for `s` seconds
+	  sj:wait(s) -> ...         wait for s seconds
 	  sj:resume(...)            resume the waiting thread
 	  sj:cancel()               calls sj:resume(sj.CANCEL)
 	  sj.CANCEL                 magic arg that can cancel runat()
 	wait_until(t) -> ...        wait until clock() value
 	wait(s) -> ...              wait for s seconds
-	runat(t, f) -> sj           run `f` at clock `t`
-	runafter(s, f) -> sj        run `f` after `s` seconds
-	runevery(s, f) -> sj        run `f` every `s` seconds
-	runagainevery(s, f) -> sj   run `f` now and every `s` seconds afterwards
+	runat(t, f) -> sj           run f at clock t
+	runafter(s, f) -> sj        run f after s seconds
+	runevery(s, f) -> sj        run f every s seconds
+	runagainevery(s, f) -> sj   run f now and every s seconds afterwards
 	s:wait_job() -> sj          wait job that is auto-canceled on socket close
 	s:wait_until(t) -> ...      wait_until() on auto-canceled wait job
 	s:wait(s) -> ...            wait() on auto-canceled wait job
-
 THREAD SETS
 	threadset() -> ts
 	  ts:thread(f, [fmt, ...]) -> co
 	  ts:join() -> {{ok=,ret=,thread=},...}
-
 MULTI-THREADING (WITH OS THREADS)
 	epoll_fd([epfd]) -> epfd    get/set epoll fd
 
 ------------------------------------------------------------------------------
 
-All function return `nil, err` on error (but raise on user error
-or unrecoverable OS failure). Some error messages are normalized
-across platforms, like 'access_denied' and 'address_already_in_use'
-so they can be used in conditionals.
+The `addr` arg is either a sockaddr (sa) or a string of form 'ip:port'
+or 'unix:path'.
 
-I/O functions only work inside threads created with `thread()`.
+Some error messages are normalized across platforms, like 'access_denied'
+and 'address_already_in_use' so they can be used in conditionals.
 
-`host, port` args are passed to `getaddrinfo()` (with the optional `af` arg),
-which means that an already resolved address can be passed as `ai, nil`
-in place of `host, port`.
-
-ADDRESS LOOKUP ---------------------------------------------------------------
-
-getaddrinfo(...) -> ai
-
-	Look-up a hostname. Returns an "address info" object which is a OS-allocated
-	linked list of one or more addresses resolved with the system's `getaddrinfo()`.
-	The args can be either:
-
-	* an existing `ai` object which is passed through, or
-	* `host, port, [socket_type], [family], [protocol], [af]`, or
-	* `'unix:PATH', [socket_type]
-
-	where:
-
-	* `host` can be a hostname, ip address or `'*'` which means "all interfaces".
-	* `port` can be a port number, a service name or `0` which means "any available port".
-	* `'unix:PATH'` creates an object representing a unix domain socket.
-	* `socket_type` can be `'tcp'`, `'udp'`, `'raw'` or `0` (the default, meaning "all").
-	* `family` can be `'inet'`, `'inet6'` or `'unix'` or `0` (the default, meaning "all").
-	* `protocol` can be `'ip'`, `'ipv6'`, `'tcp'`, `'udp'`, `'raw'`, `'icmp'`,
-	`'igmp'` or `'icmpv6'` or `0` (the default is either `'tcp'`, `'udp'`
-	or `'raw'`, based on socket type).
-	* `af` are a `bor()` list of `passive`, `canonname`,
-	`numerichost`, `numericserv`, `all`, `v4mapped`, `addrconfig`
-	which map to `getaddrinfo()` flags.
-
-NOTE: `getaddrinfo()` is blocking! Use resolve() to resolve hostnames first!
+I/O functions only work inside threads created with thread().
 
 SOCKETS ----------------------------------------------------------------------
-
-tcp([opt], [family], [protocol]) -> tcp
-
-	Make a TCP socket. The default family is `'inet'`.
-
-udp([opt], [family], [protocol]) -> udp
-
-	Make a UDP socket. The default family is `'inet'`.
-
-rawsocket([opt], [family], [protocol]) -> raw
-
-	Make a raw socket. The default family is `'inet'`.
 
 s:[try_]close()
 
@@ -161,8 +99,7 @@ s:[try_]close()
 	returned 0 yet), or 2) `linger` socket option was set with a zero timeout,
 	then a TCP RST packet is sent to the client, otherwise a FIN is sent.
 
-s:[try_]bind([host], [port], [af])
-s:[try_]bind('unix:FILE')
+s:[try_]bind(addr)
 
 	Bind socket to an interface/port (which default to '*' and 0 respectively
 	meaning all interfaces and a random port).
@@ -174,7 +111,7 @@ s:settimeout(seconds|nil, ['r'|'w'])
 	If the expiration clock is reached before an operation completes,
 	`nil, 'timeout'` is returned.
 
-tcp|udp:[try_]connect(host, port, [af], ...)
+tcp|udp:[try_]connect(addr, ...)
 
 	Connect to an address, binding the socket to `('*', 0)` if not bound already.
 
@@ -199,10 +136,10 @@ tcp|udp:[try_]recv(buf, maxlen, [flags]) -> len
 	With TCP, returning 0 means that the socket was closed on the other side.
 	With UDP it just means that an empty packet was received.
 
-tcp:[try_]listen([backlog, ]host, port, [onaccept], [af])
+tcp:[try_]listen([backlog, ]addr, port, [onaccept])
 
 	Put the socket in listening mode, binding the socket if not bound already
-	(in which case `host` and `port` args are ignored). The `backlog` defaults
+	(in which case `addr` is ignored). The `backlog` defaults
 	to `1/0` which means "use the maximum allowed".
 
 tcp:[try_]accept() -> ctcp | nil,err,[retry]
@@ -223,7 +160,7 @@ tcp:[try_]recvall() -> buf,len | nil,err,buf,len
 	Receive until closed into an accumulating buffer. If an error occurs
 	before the socket is closed, the partial buffer and length is returned after it.
 
-udp:[try_]sendto(host, port, s|buf, [maxlen], [flags], [af]) -> len
+udp:[try_]sendto(addr, s|buf, [maxlen], [flags]) -> len
 
 	Send a datagram to a specific destination, regardless of whether the socket
 	is connected or not.
@@ -333,8 +270,11 @@ coro.pcall = pcall
 assert(Linux, 'platform not Linux')
 
 local
-	assert, isstr, clock, max, abs, min, bor, band, cast, u8p, fill, str, errno =
-	assert, isstr, clock, max, abs, min, bor, band, cast, u8p, fill, str, errno
+	assert, isstr, clock, max, abs, min, errno =
+	assert, isstr, clock, max, abs, min, errno
+local
+	band, bor, shr, cast, u8p, fill, str =
+	band, bor, shr, cast, u8p, fill, str
 
 local coro_create   = coro.create
 local coro_safewrap = coro.safewrap
@@ -346,7 +286,6 @@ local C = C
 local socket = {debug_prefix = 'S'} --common socket methods
 local tcp = {type = 'tcp_socket'}
 local udp = {type = 'udp_socket'}
-local raw = {type = 'raw_socket'}
 local wait_job_class = {type = 'wait_job', debug_prefix = 'W'}
 
 function issocket(s)
@@ -354,8 +293,202 @@ function issocket(s)
 	return istab(mt) and rawget(mt, 'issocket') or false
 end
 
+--sockaddr -------------------------------------------------------------------
+
+cdef[[
+struct sockaddr_in {
+	short          family;
+	uint8_t        port_bytes[2];
+	uint8_t        ip_bytes[4];
+	char           _zero[8];
+};
+struct sockaddr_in6 {
+	short           family;
+	uint8_t         port_bytes[2];
+	unsigned long   flowinfo;
+	uint8_t         ip_bytes[16];
+	unsigned long   scope_id;
+};
+struct sockaddr_un {
+	short family;
+	char  path[108];
+};
+typedef struct sockaddr {
+	union {
+		struct {
+			short   family;
+			uint8_t port_bytes[2];
+		};
+		struct sockaddr_in  addr_in;
+		struct sockaddr_in6 addr_in6;
+		struct sockaddr_un  addr_un;
+	};
+} sockaddr;
+]]
+
+local sockaddr_ct = ctype'sockaddr'
+
+function issockaddr(sa)
+	return isctype(sa, sockaddr_ct)
+end
+
+local AF_UNIX     = 1
+local AF_INET     = 2
+local AF_INET6    = 10
+local SOCK_STREAM = 1
+local SOCK_DGRAM  = 2
+local IPPROTO_TCP = 6
+local IPPROTO_UDP = 17
+
+local function sockaddr_from_unix_path(path)
+	local sa = sockaddr_ct()
+	sa.family = AF_UNIX
+	assertf(#path < sizeof(sa.addr_un.path), 'unix socket path too long')
+	copy(sa.addr_un.path, path)
+	return sa
+end
+
+local function check_range(n, ip)
+	assertf(n and n >= 0 and n <= 255, 'invalid ip address: %s', ip)
+end
+local function sockaddr_from_ip4(ip, port)
+	local sa = sockaddr_ct()
+	sa.family = AF_INET
+	local b = sa.addr_in.ip_bytes
+	local i = 0
+	local n1, n2, n3, n4 = ip:match'^(%d+)%.(%d+)%.(%d+)%.(%d+)$'
+	assertf(n1, 'invalid ip address: %s', ip)
+	b[0] = check_range(tonumber(n1), ip)
+	b[1] = check_range(tonumber(n2), ip)
+	b[2] = check_range(tonumber(n3), ip)
+	b[3] = check_range(tonumber(n4), ip)
+	if port then
+		sa.port_bytes[0] = shr(port, 8)
+		sa.port_bytes[1] = band(port, 0xff)
+	end
+	return sa
+end
+
+local function sockaddr_from_ip6(ip, port)
+	local sa = sockaddr_ct()
+	sa.family = AF_INET6
+	local bin = assert(ipv6_tobin(ip), 'invalid ip6 address')
+	local b = sa.addr_in6.ip_bytes
+	for i = 0, 15 do
+		b[i] = bin:byte(i + 1)
+	end
+	if port then
+		sa.port_bytes[0] = shr(port, 8)
+		sa.port_bytes[1] = band(port, 0xff)
+	end
+	return sa
+end
+
+local function sockaddr(s)
+	if issockaddr(s) then return s end --pass-through
+	if s:starts'unix:' then
+		return sockaddr_from_unix_path(s:sub(6))
+	else
+		local ip, port = s:match'^(.*):(%d+)$'
+		port = port and tonumber(port)
+		assertf(ip and port, 'invalid ip:port address: %s', s)
+		if s:has'.' then
+			return sockaddr_from_ip4(ip, port)
+		elseif s:has':' then
+			return sockaddr_from_ip6(ip, port)
+		else
+			assertf(false, 'invalid address: %s', s)
+		end
+	end
+end
+
+local sa = {}
+function sa:family()
+	return (
+		self.family == AF_INET and 'inet' or
+		self.family == AF_INET6 and 'inet6' or
+		self.family == AF_UNIX and 'unix'
+		or nil
+	)
+end
+function sa:port()
+	if self.family == AF_INET or self.family == AF_INET6 then
+		return self.port_bytes[0] * 0x100 + self.port_bytes[1]
+	end
+end
+function sa:size()
+	return (
+		self.family == AF_INET and sizeof'struct sockaddr_in' or
+		self.family == AF_INET6 and sizeof'struct sockaddr_in6' or
+		self.family == AF_UNIX and offsetof('struct sockaddr_un', 'path')
+			+ strlen(self.addr_un.path)
+		or nil
+	)
+end
+function sa:tostring()
+	if self.family == AF_INET then
+		local b = self.addr_in.ip_bytes
+		return format('%d.%d.%d.%d', b[0], b[1], b[2], b[3])..':'..self:port()
+	elseif self.family == AF_INET6 then
+		local b = self.addr_in6.ip_bytes
+		return ipv6_tostring(str(b, 16), true, false)..':'..self:port()
+	elseif self.family == AF_UNIX then
+		return str(self.addr_un.path)
+	end
+end
+
+metatype('struct sockaddr', {__index = sa})
+
+--POSIX sockets --------------------------------------------------------------
+
+cdef[[
+typedef int SOCKET;
+int socket(int af, int type, int protocol);
+int accept4(int s, struct sockaddr *addr, int *addrlen, int flags);
+int close(int s);
+int connect(int s, const struct sockaddr *name, int namelen);
+int ioctl(int s, long cmd, unsigned long *argp, ...);
+int getsockopt(int sockfd, int level, int optname, char *optval, unsigned int *optlen);
+int setsockopt(int sockfd, int level, int optname, const char *optval, unsigned int optlen);
+int recv(int s, char *buf, int len, int flags);
+int recvfrom(int s, char *buf, int len, int flags, struct sockaddr *from, int *fromlen);
+int send(int s, const char *buf, int len, int flags);
+int sendto(int s, const char *buf, int len, int flags, const struct sockaddr *to, int tolen);
+int getsockname(int sockfd, struct sockaddr *restrict addr, int *restrict addrlen);
+]]
+
 --forward declarations
-local _poll, wait_io, cancel_wait_io, wrap_socket, waiting
+local _poll, wait_io, cancel_wait_io, waiting
+
+local SOCK_NONBLOCK  = 0x000800 --async I/O
+local SOCK_CLOEXEC   = 0x080000 --close-on-exec (non-inheritable on exec())
+
+local function wrap_socket(opt, class, s)
+	local s = object(class, {
+		s = s, issocket = true,
+		check_io = check_io, checkp = checkp, protect = protect,
+		r = 0, w = 0,
+	}, opt)
+	return s
+end
+local function create_socket(st, family, class, opt)
+	local af =
+		family == 'inet' and AF_INET or
+		family == 'inet6' and AF_INET6 or
+		family == 'unix' and AF_UNIX or
+		assert(false)
+	local s = C.socket(af, bor(st, SOCK_NONBLOCK, SOCK_CLOEXEC), 0)
+	assert(check_errno(s ~= -1))
+	local s = wrap_socket(opt, class, s)
+	live(s, '%s fd=%d', s:socktype(), s.s)
+	return s
+end
+local function create_tcp(family, opt)
+	return create_socket(SOCK_STREAM, family or 'inet', tcp, opt)
+end
+local function create_udp(family, opt)
+	return create_socket(SOCK_DGRAM, family or 'inet', udp, opt)
+end
 
 --NOTE: close() returns `false` on error but it should be ignored.
 function socket:try_close()
@@ -392,297 +525,6 @@ end
 
 function socket:onclose(fn)
 	after(self, '_after_close', fn)
-end
-
---getaddrinfo() --------------------------------------------------------------
-
-cdef[[
-struct sockaddr_in {
-	short          family_num;
-	uint8_t        port_bytes[2];
-	uint8_t        ip_bytes[4];
-	char           _zero[8];
-};
-
-struct sockaddr_in6 {
-	short           family_num;
-	uint8_t         port_bytes[2];
-	unsigned long   flowinfo;
-	uint8_t         ip_bytes[16];
-	unsigned long   scope_id;
-};
-
-struct sockaddr_un {
-	short family_num;
-	char  path[108];
-};
-
-typedef struct sockaddr {
-	union {
-		struct {
-			short   family_num;
-			uint8_t port_bytes[2];
-		};
-		struct sockaddr_in  addr_in;
-		struct sockaddr_in6 addr_in6;
-		struct sockaddr_un  addr_un;
-	};
-} sockaddr;
-]]
-
-local sockaddr_ct = ctype'sockaddr'
-
-cdef[[
-struct addrinfo {
-	int              flags;
-	int              family_num;
-	int              socktype_num;
-	int              protocol_num;
-	size_t           addrlen;
-	struct sockaddr *addr;
-	char            *name_ptr;
-	struct addrinfo *next_ptr;
-	struct sockaddr  _addrs[?];
-};
-]]
-
-cdef[[
-int getaddrinfo(const char *node, const char *service,
-	const struct addrinfo *hints, struct addrinfo **res);
-void freeaddrinfo(struct addrinfo *);
-]]
-
-local socketargs
-do
-	local families = {
-		inet  = 2,
-		inet6 = 10,
-		unix  = 1,
-	}
-	local family_map = index(families)
-
-	local AF_INET  = families.inet
-	local AF_INET6 = families.inet6
-	local AF_UNIX  = families.unix
-
-	local socket_types = {
-		tcp = 1,
-		udp = 2,
-		raw = 3,
-	}
-	local socket_type_map = index(socket_types)
-
-	local protocols = {
-		ip     =   0,
-		icmp   =   1,
-		igmp   =   2,
-		tcp    =   6,
-		udp    =  17,
-		raw    = 255,
-		ipv6   =  41,
-		icmpv6 =  58,
-	}
-	local protocol_map = index(protocols)
-
-	local flag_bits = {
-		passive     = 0x0001,
-		canonname   = 0x0002,
-		numerichost = 0x0004,
-		numericserv = 0x0400,
-		all         = 0x0010,
-		v4mapped    = 0x0008,
-		addrconfig  = 0x0020,
-	}
-
-	local default_protocols = {
-		[socket_types.tcp] = protocols.tcp,
-		[socket_types.udp] = protocols.udp,
-		[socket_types.raw] = protocols.raw,
-	}
-
-	function socketargs(socket_type, family, protocol)
-		local st = socket_types[socket_type] or socket_type or 0
-		local af = families[family] or family or 0
-		local pr = protocols[protocol] or protocol
-			or (af ~= AF_UNIX and default_protocols[st]) or 0
-		return st, af, pr
-	end
-
-	local hints = new('struct addrinfo', 0)
-	local addrs = new'struct addrinfo*[1]'
-	local addrinfo_ct = ctype'struct addrinfo'
-
-	local getaddrinfo_error
-	cdef'const char *gai_strerror(int ecode);'
-	function getaddrinfo_error(err)
-		return nil, str(C.gai_strerror(err))
-	end
-
-	function try_getaddrinfo(host, port, socket_type, family, protocol, flags)
-		assert(host, 'host required')
-		if host == '*' then host = '0.0.0.0' end --all.
-		if isctype(addrinfo_ct, host) then
-			return host, true --pass-through and return "not owned" flag
-		elseif host:starts'unix:' then
-			local ai = addrinfo_ct(1)
-			local sa = ai._addrs[0]
-			local path = host:sub(6)
-			sa.family_num = AF_UNIX
-			assert(#path < sizeof(sa.addr_un.path))
-			copy(sa.addr_un.path, path)
-			ai.socktype_num = socket_types[socket_type] or socket_type or 0
-			ai.family_num = AF_UNIX
-			ai.addrlen = sizeof(hints)
-			ai.addr = sa
-			return ai, true --second retval is to prevent calling free() on it
-		elseif istab(host) then
-			local t = host
-			host, port, family, socket_type, protocol, flags =
-				t.host, t.port or port, t.family, t.socket_type, t.protocol, t.flags
-		end
-		assert(host, 'host required')
-		assert(port, 'port required')
-		fill(hints, sizeof(hints))
-		hints.socktype_num, hints.family_num, hints.protocol_num
-			= socketargs(socket_type, family, protocol)
-		hints.flags = flags and bitflags(flags, flag_bits, nil, true) or 0
-		local ret = C.getaddrinfo(host, port and tostring(port), hints, addrs)
-		if ret ~= 0 then return getaddrinfo_error(ret) end
-		return gc(addrs[0], C.freeaddrinfo)
-	end
-	function getaddrinfo(...)
-		return assert(try_getaddrinfo(...))
-	end
-
-	local ai = {}
-
-	function ai:free()
-		gc(self, nil)
-		C.freeaddrinfo(self)
-	end
-
-	function ai:next(ai)
-		local ai = ai and ai.next_ptr or self
-		return ai ~= nil and ai or nil
-	end
-
-	function ai:addrs()
-		return ai.next, self
-	end
-
-	function ai:type     () return socket_type_map[self.socktype_num] end
-	function ai:family   () return family_map     [self.family_num  ] end
-	function ai:protocol () return protocol_map   [self.protocol_num] end
-	function ai:name     () return str(self.name_ptr) end
-	function ai:tostring () return self.addr:tostring() end
-
-	local sa = {}
-
-	function sa:family() return family_map[self.family_num] end
-
-	function sa:port()
-		if self.family_num == AF_INET or self.family_num == AF_INET6 then
-			return self.port_bytes[0] * 0x100 + self.port_bytes[1]
-		else
-			return 0
-		end
-	end
-
-	function sa:addr()
-		return self.family_num == AF_INET  and self.addr_in
-			 or self.family_num == AF_INET6 and self.addr_in6
-			 or self.family_num == AF_UNIX  and self.addr_un
-			 or error'NYI'
-	end
-
-	function sa:tostring()
-		return self:addr():tostring()..(self:port() ~= 0 and ':'..self:port() or '')
-	end
-
-	metatype('struct sockaddr', {__index = sa})
-
-	local sa_in4 = {}
-
-	function sa_in4:tobinary()
-		return self.ip_bytes, 4
-	end
-
-	function sa_in4:tostring()
-		local b = self.ip_bytes
-		return format('%d.%d.%d.%d', b[0], b[1], b[2], b[3])
-	end
-
-	metatype('struct sockaddr_in', {__index = sa_in4})
-
-	local sa_in6 = {}
-
-	function sa_in6:tobinary()
-		return self.ip_bytes, 16
-	end
-
-	function sa_in6:tostring()
-		local b = self.ip_bytes
-		return format('%x:%x:%x:%x:%x:%x:%x:%x',
-			b[ 0]*0x100+b[ 1], b[ 2]*0x100+b[ 3], b[ 4]*0x100+b[ 5], b[ 6]*0x100+b[ 7],
-			b[ 8]*0x100+b[ 9], b[10]*0x100+b[11], b[12]*0x100+b[13], b[14]*0x100+b[15])
-	end
-
-	metatype('struct sockaddr_in6', {__index = sa_in6})
-
-	metatype(addrinfo_ct, {__index = ai})
-
-	function socket:socktype () return socket_type_map[self._st] end
-	function socket:family   () return family_map     [self._af] end
-	function socket:protocol () return protocol_map   [self._pr] end
-
-	function socket:try_addr(host, port, flags)
-		return try_getaddrinfo(host, port, self._st, self._af, self._pr, flags)
-	end
-	function socket:addr(host, port, flags)
-		return getaddrinfo(host, port, self._st, self._af, self._pr, flags)
-	end
-
-	local sa_un = {}
-
-	function sa_un:tostring()
-		return str(self.path)
-	end
-
-	metatype('struct sockaddr_un', {__index = sa_un})
-
-end
-
---POSIX sockets --------------------------------------------------------------
-
-cdef[[
-typedef int SOCKET;
-int socket(int af, int type, int protocol);
-int accept4(int s, struct sockaddr *addr, int *addrlen, int flags);
-int close(int s);
-int connect(int s, const struct sockaddr *name, int namelen);
-int ioctl(int s, long cmd, unsigned long *argp, ...);
-int getsockopt(int sockfd, int level, int optname, char *optval, unsigned int *optlen);
-int setsockopt(int sockfd, int level, int optname, const char *optval, unsigned int optlen);
-int recv(int s, char *buf, int len, int flags);
-int recvfrom(int s, char *buf, int len, int flags, struct sockaddr *from, int *fromlen);
-int send(int s, const char *buf, int len, int flags);
-int sendto(int s, const char *buf, int len, int flags, const struct sockaddr *to, int tolen);
-int getsockname(int sockfd, struct sockaddr *restrict addr, int *restrict addrlen);
-// for async pipes
-ssize_t read(int fd, void *buf, size_t count);
-ssize_t write(int fd, const void *buf, size_t count);
-]]
-
-local SOCK_NONBLOCK  = 0x000800 --async I/O
-local SOCK_CLOEXEC   = 0x080000 --close-on-exec
-
-local function create_socket(opt, class, socktype, family, protocol)
-	local st, af, pr = socketargs(socktype, family or 'inet', protocol)
-	local s = C.socket(af, bor(st, SOCK_NONBLOCK, SOCK_CLOEXEC), pr)
-	assert(check_errno(s ~= -1))
-	local s = wrap_socket(opt, class, s, st, af, pr)
-	live(s, '%s fd=%d', socktype, s.s)
-	return s
 end
 
 local EAGAIN      = 11
@@ -774,31 +616,24 @@ local function make_async(for_writing, returns_n, func, wait_errno)
 	end
 end
 
-local _connect = make_async(true, false, function(self, ai)
-	return C.connect(self.s, ai.addr, ai.addrlen)
+local _connect = make_async(true, false, function(self, sa)
+	return C.connect(self.s, sa, sa:size())
 end, EINPROGRESS)
 
-function tcp:try_connect(host, port, addr_flags)
+function tcp:try_connect(addr)
 	if not self.s then return nil, 'closed' end
-	log('', 'sock', 'connect?', '%-4s %s:%s', self, host, port)
-	local ai, ext_ai = self:try_addr(host, port, addr_flags)
-	if not ai then return false, ext_ai end
+	local sa = sockaddr(addr)
+	local addr_s = sa:tostring()
+	log('', 'sock', 'connect?', '%-4s %s:%s', self, addr_s)
 	if not self.bound_addr then
-		local bind_host = ai:family() == 'unix' and 'unix:' or '*'
-		local ok, err = self:try_bind(bind_host)
-		if not ok then
-			if not ext_ai then ai:free() end
-			return false, err
-		end
+		local ok, err = self:try_bind(sa)
+		if not ok then return false, err end
 	end
-	local ret, err = _connect(self, ai)
+	local ret, err = _connect(self, sa)
 	local ok = ret == 0
-	self.remote_addr = ok and ai.addr:addr():tostring() or nil
-	self.remote_port = ok and ai.addr:port() or nil
-	if not ext_ai then ai:free() end
 	if not ok then return false, err end
-	log('', 'sock', 'connectd', '%-4s %s:%s',
-		self, self.remote_addr, self.remote_port)
+	self.remote_addr = addr_s
+	log('', 'sock', 'connectd', '%-4s %s', self, self.remote_addr)
 	live(self, 'connected %s', self.remote_addr)
 	return true
 end
@@ -840,13 +675,13 @@ do
 		if not s then
 			return nil, err, retry
 		end
-		local s = wrap_socket(opt, tcp, s, self._st, self._af, self._pr)
+		local s = wrap_socket(opt, tcp, s)
 		local ok, err = _sock_register(s)
 		if not ok then
 			s:try_close()
 			return nil, err
 		end
-		local ra = accept_buf:addr():tostring()
+		local ra = accept_buf:tostring()
 		local rp = accept_buf:port()
 		--get local addr
 		nbuf[0] = accept_buf_size
@@ -861,15 +696,19 @@ do
 		self.sockets[s] = true
 		self.next_i = (self.next_i or 0) + 1
 		s.i = self.next_i
-		log('', 'sock', 'accepted', '%-4s %s.%d %s:%s <- %s:%s live:%d',
-			s, self, s.i, la, lp, ra, rp, self.n)
-		live(s, 'accepted %s.%d %s:%s <- %s:%s fd=%d', self, s.i, la, lp, ra, rp, s.s)
+		log('', 'sock', 'accepted', '%-4s %s.%d %s <- %s live:%d',
+			s, self, s.i, la, ra, self.n)
+		live(s, 'accepted %s.%d %s <- %s fd=%d', self, s.i, la, ra, s.s)
 		s.remote_addr = ra
-		s.remote_port = rp
-		s. local_addr = la
-		s. local_port = lp
+		s.local_addr  = la
 		s.listen_socket = self
 		return s
+	end
+	function tcp:accept()
+		local s, err, retry = self:try_accept()
+		if s then return s end
+		self:check_io(retry, err)
+		return nil, err, true
 	end
 end
 
@@ -898,13 +737,12 @@ local udp_sendto = make_async(true, true, function(self, ai, buf, len, flags)
 	return C.sendto(self.s, buf, len, flags or 0, ai.addr, ai.addrlen)
 end, EWOULDBLOCK)
 
-function udp:try_sendto(host, port, buf, len, flags, addr_flags)
+function udp:try_sendto(addr, buf, len, flags)
 	if not self.s then return nil, 'closed' end
 	len = len or #buf
-	local ai, ext_ai = self:addr(host, port, addr_flags)
+	local ai, ext_ai = self:try_getaddrinfo(host, port)
 	if not ai then return nil, ext_ai end
 	local len, err = udp_sendto(self, ai, buf, len, flags)
-	if not ext_ai then ai:free() end
 	if not len then return nil, err end
 	return len
 end
@@ -929,7 +767,7 @@ do
 	end
 end
 
---making normal files async.
+--making pipes async.
 
 _file_async_write = make_async(true, true, function(self, buf, len)
 	return tonumber(C.write(self.fd, buf, len))
@@ -1130,24 +968,12 @@ cdef[[
 int bind(SOCKET s, const sockaddr*, int namelen);
 ]]
 
-function socket:try_bind(host, port, addr_flags)
+function socket:try_bind(addr)
 	assert(not self.bound_addr)
-	if isctype(sockaddr_ct, host) then
-		local sa = host
-		local ok, err = check_errno(C.bind(self.s, sa, sizeof(sa)) == 0)
-		if not ok then return false, err end
-		self.bound_addr = sa:tostring()
-	else
-		local ai, ext_ai = self:addr(host or '*', port or 0, addr_flags)
-		if not ai then return nil, ext_ai end
-		local ok, err = check_errno(C.bind(self.s, ai.addr, ai.addrlen) == 0)
-		local ba = ok and ai.addr:addr():tostring()
-		local bp = ok and ai.addr:port()
-		if not ext_ai then ai:free() end
-		if not ok then return false, err end
-		self.bound_addr = ba
-		self.bound_port = bp
-	end
+	local sa = sockaddr(addr)
+	local ok, err = check_errno(C.bind(self.s, sa, sizeof(sa)) == 0)
+	if not ok then return false, err end
+	self.bound_addr = sa:tostring()
 	--epoll_ctl() must be called after bind() for some reason.
 	return _sock_register(self)
 end
@@ -1158,20 +984,20 @@ cdef[[
 int listen(SOCKET s, int backlog);
 ]]
 
-function tcp:try_listen(backlog, host, port, onaccept, addr_flags)
+function tcp:try_listen(backlog, addr, onaccept)
 	if not isnum(backlog) then
-		backlog, host, port, onaccept, addr_flags = 1/0, backlog, host, port, onaccept
+		backlog, addr, onaccept, addr_flags = 1/0, backlog, addr, onaccept
 	end
-	log('', 'sock', 'listen?', '%-4s %s:%d', self, host or '*', port or	0)
+	log('', 'sock', 'listen?', '%-4s %s:%d', self, addr:tostring(), addr:port())
 	if not self.bound_addr then
-		local ok, err = self:try_bind(host, port, addr_flags)
+		local ok, err = self:try_bind(addr)
 		if not ok then return nil, err end
 	end
 	backlog = clamp(backlog or 1/0, 0, 0x7fffffff)
 	local ok = C.listen(self.s, backlog) == 0
 	if not ok then return check_errno() end
-	log('note', 'sock', 'listen', '%-4s %s:%d', self, self.bound_addr, self.bound_port)
-	live(self, 'listen %s:%d', self.bound_addr, self.bound_port)
+	log('note', 'sock', 'listen', '%-4s %s:%d', self, self.bound_addr)
+	live(self, 'listen %s:%d', self.bound_addr)
 	self.n = 0  --live client connection count
 	self.sockets = {} --live client connections: {socket->true}
 
@@ -1590,13 +1416,6 @@ udp.recvnext   = unprotect_io(udp.try_recvnext)
 udp.send       = unprotect_io(udp.try_send)
 udp.sendto     = unprotect_io(udp.try_sendto)
 
-function tcp:accept()
-	local s, err, retry = self:try_accept()
-	if s then return s end
-	self:check_io(retry, err)
-	return nil, err, true
-end
-
 --I/O API for protocol buffers.
 socket.try_read = socket.try_recv
 socket.read   = socket.recv
@@ -1605,37 +1424,24 @@ tcp.try_write = tcp.try_send
 tcp.readn     = tcp.recvn
 tcp.write     = tcp.send
 
---[[local]] function wrap_socket(opt, class, s, st, af, pr)
-	local s = object(class, {
-		s = s, issocket = true,
-		check_io = check_io, checkp = checkp,
-		protect = protect,
-		_st = st, _af = af, _pr = pr, r = 0, w = 0,
-	}, opt)
-	return s
-end
-function _G.tcp       (opt, ...) return create_socket(opt, tcp , 'tcp' , ...) end
-function _G.udp       (opt, ...) return create_socket(opt, udp , 'udp' , ...) end
-function _G.rawsocket (opt, ...) return create_socket(opt, raw , 'raw' , ...) end
-
 update(tcp, socket)
 update(udp, socket)
-update(raw, socket)
 
 udp_class = udp
 tcp_class = tcp
-raw_class = raw
 
-local create_tcp = _G.tcp
+_G.socket = create_socket
+_G.tcp    = create_tcp
+_G.udp    = create_udp
 
 function try_connect(self, host, port, timeout)
 	if not issocket(self) then
 		local host, port, timeout = self, host, port
-		local ai, err = try_getaddrinfo(host, port)
-		if not ai then return nil, err end
-		local s = create_tcp(nil, ai:family())
+		local ai, ext_ai = try_getaddrinfo(host, port)
+		if not ai then return nil, ext_ai end
+		local s = create_socket(ai)
 		local s, err = try_connect(s, ai, nil, timeout)
-		ai:free()
+		if not ext_ai then ai:free() end
 		if not s then return nil, err end
 		return s
 	end
@@ -1652,14 +1458,26 @@ function connect(...)
 	return check_io(nil, try_connect(...))
 end
 
-function listen(self, ...)
+function listen(self, host, port, ...)
 	if not issocket(self) then
-		return listen(create_tcp(), self, ...)
+		local host, port = self, host
+		local ai, ext_ai = try_getaddrinfo(host, port)
+		if not ai then return nil, ext_ai end
+		local s = create_socket(ai)
+		listen(s, ai, nil, ...)
+		if not ext_ai then ai:free() end
+		return s
 	end
-	--NOTE: reuseaddr doesn't work with unix sockets,
-	--you must remove the socket file first!
-	self:setopt('so_reuseaddr', true)
-	return self:listen(...)
+	if ai:family() == 'unix' then
+		--remove the socket file to emulate reuseaddr.
+		local socket_path = ai:tostring()
+		if file_is(socket_path, 'socket') then
+			try_rmfile(socket_path)
+		end
+	else
+		self:setopt('so_reuseaddr', true)
+	end
+	return self:listen(host, port, ...)
 end
 
 --coroutine-based scheduler --------------------------------------------------

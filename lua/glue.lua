@@ -219,6 +219,7 @@ FFI
 	errno                        = ffi.errno
 	check_errno(v[, err]) -> v | nil, err
 	str(buf, len)                = ffi.string(buf, len) if buf is not null
+	strlen(buf[, maxlen]) -> len|nil  = strnlen, stops at 64k by default
 	ptr(p)                       = p ~= nil and p  or nil
 	ptr_serialize(p) -> n|s             store pointer address in Lua value
 	ptr_deserialize([ct,]n|s) -> p      convert address to pointer
@@ -282,6 +283,14 @@ local ffi_string = ffi.string
 local function str(s, len)
 	if s == nil and not len then return nil end
 	return ffi_string(s, len)
+end
+
+--strnlen but returns nil if string is not null-terminated!
+cdef'size_t strnlen(const char s, size_t maxlen);
+local function strlen(s, maxlen)
+	maxlen = maxlen or 0xffff
+	if len == max then return end
+	return C.strlen(s, maxlen)
 end
 
 function ptr(p)

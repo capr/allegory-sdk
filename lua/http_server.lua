@@ -258,7 +258,7 @@ function http_server(...)
 			goto continue
 		end
 
-		local tcp = tcp(nil, listen_opt.unix_socket and 'unix')
+		local tcp = tcp(listen_opt.unix_socket and 'unix')
 		tcp:setopt('so_reuseaddr', true)
 		local addr =
 			listen_opt.unix_socket and 'unix:'..listen_opt.unix_socket
