@@ -103,7 +103,7 @@ HI-LEVEL APIs
 	[try_]touch(file, [mtime])
 	gen_id(name, [start=1]) -> id                 persistent atomic, concurrent autoincrement
 
-The `deref` arg is true by default, meaning that by default, symlinks are
+The deref arg is true by default, meaning that by default, symlinks are
 followed recursively and transparently where this option is available.
 
 FILE ATTRIBUTES
@@ -128,7 +128,7 @@ FILE ATTRIBUTES
 
 On the table above, `r` means that the attribute is read/only and `rw` means
 that the attribute can be changed. Attributes can be queried and changed via
-`f:attr()`, `file_attr()` and `d:attr()`.
+f:attr(), file_attr() and d:attr().
 
 NOTE: File sizes and offsets are Lua numbers not 64bit ints, so they can hold
 at most 8KTB.
@@ -192,7 +192,7 @@ Pipes ------------------------------------------------------------------------
 	read and write ends of the pipe.
 
 	Options:
-		* `inheritable`, `read_inheritable`, `write_inheritable`: make one
+		* inheritable, read_inheritable, write_inheritable: make one
 		or both pipes inheritable by sub-processes.
 
 [try_]mkfifo(path, [perms]) -> true[,'already_exists']
@@ -207,20 +207,20 @@ f:[try_]read(buf, len) -> readlen
 
 f:[try_]readn(buf, len) -> true
 
-	Read data from file until `len` is read.
-	Partial reads are signaled with `nil, err, readlen`.
+	Read data from file until len is read.
+	Partial reads are signaled with nil,err,readlen.
 
 f:[try_]readall([ignore_file_size]) -> buf, len
 
 	Read until EOF into a buffer.
-	If `ignore_file_size` is true, the file size is not checked and the
+	If ignore_file_size is true, the file size is not checked and the
 	read is done in chunks until EOF (true for pipes, must be set true
 	explicity for virtual files).
 
 f:[try_]write(s | buf,len) -> true
 
 	Write data to file.
-	Partial writes are signaled with `nil, err, writelen`.
+	Partial writes are signaled with nil,err,writelen.
 
 f:[try_]sync()
 
@@ -233,22 +233,22 @@ f:settimeout(seconds|nil, ['r'|'w'])
 
 f:[try_]seek([whence] [, offset]) -> pos
 
-	Get/set the file pointer. Same semantics as standard `io` module seek
-	i.e. `whence` defaults to `'cur'` and `offset` defaults to `0`.
+	Get/set the file pointer. Same semantics as standard io module seek
+	i.e. whence defaults to 'cur' and offset defaults to 0.
 
 f:[try_]truncate(size, [opt])
 
-	Truncate file to given `size` and move the current file pointer to `EOF`.
+	Truncate file to given size and move the current file pointer to EOF.
 	This can be done both to shorten a file and thus free disk space, or to
 	preallocate disk space to be subsequently filled (eg. when downloading a file).
 
-	`opt` is an optional string which can contain any of the words
-	`fallocate` (call `fallocate()`) and `fail` (do not call `ftruncate()`
-	if `fallocate()` fails: return an error instead). The problem with calling
-	`ftruncate()` if `fallocate()` fails is that on most filesystems, that
+	opt is an optional string which can contain any of the words
+	"fallocate" (call fallocate()) and "fail" (do not call ftruncate()
+	if fallocate() fails: return an error instead). The problem with calling
+	ftruncate() if fallocate() fails is that on most filesystems, that
 	creates a sparse file which doesn't help if what you want is to actually
-	reserve space on the disk, hence the `fail` option. The default is
-	`'fallocate fail'` which should never create a sparse file, but it can be
+	reserve space on the disk, hence the fail option. The default is
+	'fallocate fail' which should never create a sparse file, but it can be
 	slow on some file systems (when it's emulated) or it can just fail
 	(like on virtual filesystems).
 
@@ -259,7 +259,7 @@ Open file attributes ---------------------------------------------------------
 
 f:[try_]attr([attr]) -> val|t
 
-	Get/set attribute(s) of open file. `attr` can be:
+	Get/set attribute(s) of open file. attr can be:
 	* nothing/nil: get the values of all attributes in a table.
 	* string: get the value of a single attribute.
 	* table: set one or more attributes.
@@ -268,9 +268,9 @@ Directory listing ------------------------------------------------------------
 
 ls([dir], [opt]) -> d, next
 
-	Directory contents iterator. `dir` defaults to '.'.
-	`opt` is a string that can include:
-		* `..`   :  include `.` and `..` dir entries (excluded by default).
+	Directory contents iterator. dir defaults to '.'.
+	opt is a string that can include:
+		".."   :  include . and .. dir entries (excluded by default).
 
 	USAGE
 
@@ -283,9 +283,9 @@ ls([dir], [opt]) -> d, next
 		end
 
 	Always include the `if not name` condition when iterating. The iterator
-	doesn't raise any errors. Instead it returns `false, err` as the
+	doesn't raise any errors. Instead it returns false,err as the
 	last iteration when encountering an error. Initial errors from calling
-	`ls()` (eg. `'not_found'`) are passed to the iterator also, so the
+	ls() (eg. 'not_found') are passed to the iterator also, so the
 	iterator must be called at least once to see them.
 
 	d:next() -> name,d | false,err | nil
@@ -294,7 +294,7 @@ ls([dir], [opt]) -> d, next
 
 	d:close()
 
-		Close the iterator. Always call `d:close()` before breaking the for loop
+		Close the iterator. Always call d:close() before breaking the for loop
 		except when it's an error (in which case `d` holds the error message).
 
 	d:closed() -> true|false
@@ -307,23 +307,23 @@ ls([dir], [opt]) -> d, next
 
 	d:dir() -> s
 
-		The directory that was passed to `ls()`.
+		The directory that was passed to ls().
 
 	d:path() -> s
 
-		The full path of the current dir entry (`d:dir()` combined with `d:name()`).
+		The full path of the current dir entry (d:dir() combined with d:name()).
 
 	d:[try_]attr([attr, ][deref]) -> t|val
 
 		Get/set dir entry attribute(s).
 
-		`deref` means return the attribute(s) of the symlink's target if the file is
-		a symlink (`deref` defaults to `true`!). When `deref=true`, even the `'type'`
-		attribute is the type of the target, so it will never be `'symlink'`.
+		deref means return the attribute(s) of the symlink's target if the file is
+		a symlink (deref defaults to true!). When deref=true, even the 'type'
+		attribute is the type of the target, so it will never be 'symlink'.
 
 		Some attributes for directory entries are free to get (but not for symlinks
-		when `deref=true`) meaning that they don't require a system call for each
-		file, notably `type` and `inode`.
+		when deref=true) meaning that they don't require a system call for each
+		file, notably type and inode.
 
 	d:is(type, [deref]) -> true|false
 
@@ -331,11 +331,11 @@ ls([dir], [opt]) -> d, next
 
 scandir(path|{path1,...}, [dive]) -> iter() -> sc
 
-	Recursive dir walker. All sc methods return `nil,err` if an error occured
+	Recursive dir walker. All sc methods return nil,err if an error occured
 	on the current dir entry, but the iteration otherwise continues, unless
 	you call close() to stop it.
-	* `depth` arg can be 0=sc:depth(), 1=first-level, -1=parent-level, etc.
-	* `dive(sc) -> true` is an optional filter to skip from diving into dirs.
+	* depth arg can be 0=sc:depth(), 1=first-level, -1=parent-level, etc.
+	* dive(sc) -> true is an optional filter to skip from diving into dirs.
 
 	sc:close()
 	sc:closed() -> true|false
@@ -360,10 +360,10 @@ Filesystem operations --------------------------------------------------------
 
 mkdir(path, [recursive], [perms])
 
-	Make directory. `perms` is passed to unixperms_parse().
+	Make directory. perms is passed to unixperms_parse().
 
 	NOTE: In recursive mode, if the directory already exists this function
-	returns `true, 'already_exists'`.
+	returns true,'already_exists'.
 
 rmfile(path)
 rmdir(path)
@@ -867,7 +867,7 @@ local function fallocate(f, size)
 end
 
 --NOTE: lseek() is not defined for shm_open()'ed fds, that's why we ask
---for a `size` arg. The seek() behavior is just for compat with Windows.
+--for a size arg. The seek() behavior is just for compat with Windows.
 function file.try_truncate(f, size, opt)
 	assert(isnum(size), 'size expected')
 	if f.fd == -1 then return nil, 'closed' end
@@ -937,7 +937,7 @@ end
 
 function try_mkdir(dir, recursive, perms)
 	if recursive then
-		dir = path_normalize(dir, true, true) --avoid creating `dir` in `dir/..` sequences
+		dir = path_normalize(dir, true, true) --avoid creating dir in dir/.. sequences
 		if not dir or dir == '.' then
 			return nil, 'invalid_path'
 		end
@@ -1910,7 +1910,7 @@ function load(file, default, ignore_file_size) --load a file into a string.
 	return str(buf, len)
 end
 
---return a `try_write(v | buf,len | read, [eof]) -> true | false,err` function
+--return a try_write(v | buf,len | read, [eof]) -> true | false,err function
 --that doesn't yield, so you can use it in ffi write callbacks.
 function file_saver(file, perms)
 	require'proc'

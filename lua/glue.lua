@@ -18,7 +18,7 @@ TYPES
 	isfunc(v)                      is v a function
 	iscdata(v)                     is v a cdata
 	isthread(v)                    is v a Lua thread
-	isctype(v, ct)               = ffi.istype
+	isctype(ct, v)               = ffi.istype
 	iserror(v[, classes])          is v a structured error
 	inherits(v, class)             is v an object that inherits from class
 MATH
@@ -61,7 +61,7 @@ ARRAYS
 	push(t, v)                     insert(t, v)
 	pop(t)                         remove(t)
 	clear                        = table.clear
-	sort(t, [cmp]) -> t          = table.sort
+	sort(t, [cmp]) -> t          = table.sort but returns the table
 	extend(dt, t1, ...) -> dt      extend an array with contents of other arrays
 	append(dt, v1, ...) -> dt      append non-nil values to an array
 	popn(dt, n) -> v1, ...         remove n values from the end and return them
@@ -279,24 +279,6 @@ function sort(t, cmp)
 	return t
 end
 
-local ffi_string = ffi.string
-local function str(s, len)
-	if s == nil and not len then return nil end
-	return ffi_string(s, len)
-end
-
---strnlen but returns nil if string is not null-terminated!
-cdef'size_t strnlen(const char s, size_t maxlen);
-local function strlen(s, maxlen)
-	maxlen = maxlen or 0xffff
-	if len == max then return end
-	return C.strlen(s, maxlen)
-end
-
-function ptr(p)
-	return p ~= nil and p or nil
-end
-
 --types ----------------------------------------------------------------------
 
 typeof   = type
@@ -388,12 +370,13 @@ end
 
 do
 local u32a = ffi.typeof'uint32_t[?]'
+local ffi_string = ffi.string
 function random_string(n)
 	local buf = u32a(n/4+1)
 	for i=0,n/4 do
 		buf[i] = random(0, 2^31)
 	end
-	return str(buf, n)
+	return ffi_string(buf, n)
 end
 end
 
@@ -2069,7 +2052,6 @@ gc     = ffi.gc
 metatype = ffi.metatype
 isctype = ffi.istype
 errno  = ffi.errno
-_G.str = str
 _G[ffi.os] = true --Windows, Linux, OSX
 
 local
@@ -2132,6 +2114,26 @@ int   memcmp  (const void * ptr1, const void * ptr2, size_t num);
 ]]
 
 memcmp = C.memcmp
+
+local ffi_string = ffi.string
+local function str(s, len)
+	if s == nil and not len then return nil end
+	return ffi_string(s, len)
+end
+_G.str = str
+
+--strnlen but returns nil if string is not null-terminated!
+cdef'size_t strnlen(const char *s, size_t maxlen);'
+function strlen(s, maxlen)
+	maxlen = maxlen or 0xffff
+	local len = C.strnlen(s, maxlen)
+	if len == maxlen then return nil end
+	return len
+end
+
+function ptr(p)
+	return p ~= nil and p or nil
+end
 
 --allocation -----------------------------------------------------------------
 

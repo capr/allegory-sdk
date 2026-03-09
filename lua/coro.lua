@@ -1,7 +1,6 @@
 --[=[
 
-	Symmetric coroutines from the paper at
-		http://www.inf.puc-rio.br/~roberto/docs/corosblp.pdf
+	Symmetric Coroutines
 	Written by Cosmin Apreutesei. Public Domain.
 
 OVERVIEW

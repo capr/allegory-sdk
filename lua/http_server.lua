@@ -262,16 +262,14 @@ function http_server(...)
 		tcp:setopt('so_reuseaddr', true)
 		local addr =
 			listen_opt.unix_socket and 'unix:'..listen_opt.unix_socket
-			or listen_opt.addr or '*'
-		local port =
-			listen_opt.unix_socket and 0
-			or listen_opt.port or (listen_opt.tls and 443 or 80)
+			or (listen_opt.addr or '0.0.0.0')..':'..
+				(listen_opt.port or (listen_opt.tls and 443 or 80))
 
 		if listen_opt.unix_socket and file_is(listen_opt.unix_socket, 'socket') then
 			try_rmfile(listen_opt.unix_socket)
 		end
 
-		tcp:listen(addr, port)
+		tcp:listen(addr)
 		if listen_opt.unix_socket then
 			if listen_opt.unix_socket_perms or
 				listen_opt.unix_socket_user  or
