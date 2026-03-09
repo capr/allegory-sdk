@@ -33,6 +33,31 @@ READ/WRITE LOCKS
 	rwlock:trywritelock() -> true | false         try to lock for writing
 	rwlock:tryreadlock() -> true | false          try to lock for reading
 	rwlock:unlock()                               unlock the r/w lock
+SEMAPHORES
+	sem([value]) -> sem                           create a semaphore (process-private)
+	sem:free()                                    destroy a semaphore
+	sem:post()                                    increment (signal)
+	sem:wait([expires]) -> true | false           decrement (wait) until `expires` (*)
+	sem:trywait() -> true | false                 try to decrement or return false
+	sem:value() -> n                              get current value
+BARRIERS
+	barrier(count) -> barrier                     create a barrier for `count` threads
+	barrier:free()                                destroy a barrier
+	barrier:wait() -> true | false                wait; one thread returns true
+SPINLOCKS
+	spinlock() -> spinlock                        create a spinlock
+	spinlock:free()                               destroy a spinlock
+	spinlock:lock()                               lock
+	spinlock:unlock()                             unlock
+	spinlock:trylock() -> true | false            try to lock or return false
+THREAD-LOCAL STORAGE
+	pthread_key([destructor_cb]) -> key           create a TLS key
+	pthread_key_free(key)                         delete the key
+	pthread_key_get(key) -> void*                 get thread-specific value
+	pthread_key_set(key, void*)                   set thread-specific value
+THREAD EXTRAS
+	th:name([name])                               get/set thread name (max 15 chars)
+	th:affinity([{cpu, ...}])                     get/set CPU affinity mask
 
 > (*) `expires` is a time() value, not a timeout nor a clock() value!
 
@@ -102,6 +127,7 @@ enum {
 	PTHREAD_CANCEL_DEFERRED = 0,
 	PTHREAD_CANCEL_ASYNCHRONOUS = 1,
 	PTHREAD_CANCELED = -1,
+	PTHREAD_BARRIER_SERIAL_THREAD = -1,
 	PTHREAD_EXPLICIT_SCHED = 1,
 	PTHREAD_PROCESS_PRIVATE = 0,
 	PTHREAD_MUTEX_NORMAL = 0,
@@ -163,6 +189,34 @@ typedef struct pthread_rwlockattr_t {
 	};
 } pthread_rwlockattr_t;
 
+typedef struct { int _; } pthread_spinlock_t;
+typedef unsigned int pthread_key_t;
+
+typedef struct {
+	union {
+		char __size[32];
+		long int __align;
+	};
+} sem_t;
+
+typedef struct {
+	union {
+		char __size[32];
+		long int __align;
+	};
+} pthread_barrier_t;
+
+typedef struct {
+	union {
+		char __size[4];
+		int __align;
+	};
+} pthread_barrierattr_t;
+
+typedef struct {
+	unsigned long int __bits[16];
+} cpu_set_t;
+
 struct sched_param {
 	int sched_priority;
 };
@@ -170,6 +224,7 @@ struct sched_param {
 
 local EBUSY     = 16
 local ETIMEDOUT = 110
+local EAGAIN    = 11
 
 ffi.cdef[[
 typedef struct {
@@ -222,6 +277,35 @@ int pthread_rwlock_unlock(pthread_rwlock_t *l);
 int sched_yield(void);
 int sched_get_priority_min(int pol);
 int sched_get_priority_max(int pol);
+
+int sem_init(sem_t *sem, int pshared, unsigned int value);
+int sem_destroy(sem_t *sem);
+int sem_post(sem_t *sem);
+int sem_wait(sem_t *sem);
+int sem_trywait(sem_t *sem);
+int sem_timedwait(sem_t *sem, const timespec *abs_timeout);
+int sem_getvalue(sem_t *sem, int *sval);
+
+int pthread_barrier_init(pthread_barrier_t *b, const pthread_barrierattr_t *a, unsigned int count);
+int pthread_barrier_destroy(pthread_barrier_t *b);
+int pthread_barrier_wait(pthread_barrier_t *b);
+
+int pthread_spin_init(pthread_spinlock_t *l, int pshared);
+int pthread_spin_destroy(pthread_spinlock_t *l);
+int pthread_spin_lock(pthread_spinlock_t *l);
+int pthread_spin_unlock(pthread_spinlock_t *l);
+int pthread_spin_trylock(pthread_spinlock_t *l);
+
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void*));
+int pthread_key_delete(pthread_key_t key);
+void *pthread_getspecific(pthread_key_t key);
+int pthread_setspecific(pthread_key_t key, const void *value);
+
+int pthread_setname_np(pthread_t thread, const char *name);
+int pthread_getname_np(pthread_t thread, char *name, size_t len);
+
+int pthread_setaffinity_np(pthread_t thread, size_t cpusetsize, const cpu_set_t *cpuset);
+int pthread_getaffinity_np(pthread_t thread, size_t cpusetsize, cpu_set_t *cpuset);
 ]]
 
 --helpers
@@ -246,6 +330,25 @@ end
 local function checktimeout(ret)
 	check(ret == 0 or ret == ETIMEDOUT, ret)
 	return ret == 0
+end
+
+--errno-based checkers for sem_* functions (which return -1/errno instead of errno directly)
+local function checkz_sem(ret)
+	check(ret == 0, ffi.errno())
+end
+
+local function checkbusy_sem(ret)
+	if ret == 0 then return true end
+	local err = ffi.errno()
+	check(err == EAGAIN, err)
+	return false
+end
+
+local function checktimeout_sem(ret)
+	if ret == 0 then return true end
+	local err = ffi.errno()
+	check(err == ETIMEDOUT, err)
+	return false
 end
 
 --convert a time returned by os.time() to timespec
@@ -339,12 +442,46 @@ function pthread_max_priority(sched)
 	return C.sched_get_priority_max(C.SCHED_OTHER)
 end
 
+local function pthread_name(thread, name)
+	if name then
+		checkz(C.pthread_setname_np(thread, name))
+	else
+		local buf = ffi.new('char[16]')
+		checkz(C.pthread_getname_np(thread, buf, 16))
+		return ffi.string(buf)
+	end
+end
+
+local function pthread_affinity(thread, cpus)
+	local cs = ffi.new'cpu_set_t'
+	if cpus then
+		local p = ffi.cast('uint32_t*', cs.__bits)
+		for _, cpu in ipairs(cpus) do
+			local i = bit.rshift(cpu, 5)
+			p[i] = bit.bor(p[i], bit.lshift(1, bit.band(cpu, 31)))
+		end
+		checkz(C.pthread_setaffinity_np(thread, ffi.sizeof'cpu_set_t', cs))
+	else
+		checkz(C.pthread_getaffinity_np(thread, ffi.sizeof'cpu_set_t', cs))
+		local p = ffi.cast('uint32_t*', cs.__bits)
+		local result = {}
+		for i = 0, 1023 do
+			if bit.band(p[bit.rshift(i, 5)], bit.lshift(1, bit.band(i, 31))) ~= 0 then
+				result[#result+1] = i
+			end
+		end
+		return result
+	end
+end
+
 ffi.metatype('pthread_t', {
 		__index = {
-			equal = pthread_equal,
-			join = pthread_join,
-			detach = pthread_detach,
+			equal    = pthread_equal,
+			join     = pthread_join,
+			detach   = pthread_detach,
 			priority = pthread_priority,
+			name     = pthread_name,
+			affinity = pthread_affinity,
 		},
 	})
 
@@ -479,6 +616,130 @@ function rwlock.unlock(rwlock)
 end
 
 ffi.metatype('pthread_rwlock_t', {__index = rwlock})
+
+--semaphores
+
+local sem = {}
+
+function _G.sem(value, space)
+	local s = space or ffi.new'sem_t'
+	checkz_sem(C.sem_init(s, 0, value or 0))
+	if not space then
+		ffi.gc(s, s.free)
+	end
+	return s
+end
+
+function sem.free(s)
+	checkz_sem(C.sem_destroy(s))
+	ffi.gc(s, nil)
+end
+
+function sem.post(s)
+	checkz_sem(C.sem_post(s))
+end
+
+local sem_ts
+--NOTE: `time` is time per os.time(), not a time period.
+function sem.wait(s, time)
+	if time then
+		sem_ts = sem_ts or ffi.new'timespec'
+		return checktimeout_sem(C.sem_timedwait(s, timespec(time, sem_ts)))
+	else
+		checkz_sem(C.sem_wait(s))
+		return true
+	end
+end
+
+function sem.trywait(s)
+	return checkbusy_sem(C.sem_trywait(s))
+end
+
+function sem.value(s)
+	local v = ffi.new'int[1]'
+	checkz_sem(C.sem_getvalue(s, v))
+	return v[0]
+end
+
+ffi.metatype('sem_t', {__index = sem})
+
+--barriers
+
+local barrier = {}
+
+function _G.barrier(count, space)
+	local b = space or ffi.new'pthread_barrier_t'
+	checkz(C.pthread_barrier_init(b, nil, count))
+	if not space then
+		ffi.gc(b, b.free)
+	end
+	return b
+end
+
+function barrier.free(b)
+	checkz(C.pthread_barrier_destroy(b))
+	ffi.gc(b, nil)
+end
+
+function barrier.wait(b)
+	local ret = C.pthread_barrier_wait(b)
+	check(ret == 0 or ret == C.PTHREAD_BARRIER_SERIAL_THREAD, ret)
+	return ret == C.PTHREAD_BARRIER_SERIAL_THREAD
+end
+
+ffi.metatype('pthread_barrier_t', {__index = barrier})
+
+--spinlocks
+
+local spinlock = {}
+
+function _G.spinlock(_, space)
+	local l = space or ffi.new'pthread_spinlock_t'
+	checkz(C.pthread_spin_init(l, C.PTHREAD_PROCESS_PRIVATE))
+	if not space then
+		ffi.gc(l, l.free)
+	end
+	return l
+end
+
+function spinlock.free(l)
+	checkz(C.pthread_spin_destroy(l))
+	ffi.gc(l, nil)
+end
+
+function spinlock.lock(l)
+	checkz(C.pthread_spin_lock(l))
+end
+
+function spinlock.unlock(l)
+	checkz(C.pthread_spin_unlock(l))
+end
+
+function spinlock.trylock(l)
+	return checkbusy(C.pthread_spin_trylock(l))
+end
+
+ffi.metatype('pthread_spinlock_t', {__index = spinlock})
+
+--thread-local storage
+
+function pthread_key(destructor)
+	local key = ffi.new'pthread_key_t[1]'
+	checkz(C.pthread_key_create(key, destructor))
+	return key[0]
+end
+
+function pthread_key_free(key)
+	checkz(C.pthread_key_delete(key))
+end
+
+function pthread_key_get(key)
+	return C.pthread_getspecific(key)
+end
+
+function pthread_key_set(key, val)
+	checkz(C.pthread_setspecific(key, val))
+end
 
 local SC = ffi.C
 function pthread_yield()
