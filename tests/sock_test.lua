@@ -272,23 +272,17 @@ end
 
 function test.tcp_recvall_partial_error()
 	checked_run(function()
-		pr()
 		local port = nextport()
 		local server = mkserver(port)
 		resume(sthread(function()
 			local s = mkclient(port)
 			s:send'partial' -- send some bytes then stop (no close)
-			pr('SENT', s)
-			wait(2.2)       -- outlast the server's timeout
-			pr'CLOSING'
+			wait(0.2)       -- outlast the server's timeout
 			s:close()
 		end, 'client'))
 		local cs = server:accept()
 		cs:settimeout(0.05, 'r') -- short recv deadline
-		pr('SETT', cs, cs.recv_expires, cs.recv_expires - clock())
-		pr('RECVNG', cs)
 		local ok, err, pbuf, plen = cs:try_recvall()
-		pr('RECV', cs, ok, err, pbuf, plen)
 		assert(not ok)
 		assert(err == 'timeout')
 		cs:close()
@@ -817,7 +811,7 @@ end
 
 -- runner -----------------------------------------------------------------------
 
-local name = 'tcp_recvall_partial_error' --...
+local name = ...
 if name == 'sock_test' then name = nil end -- loaded as module: run all tests
 local tests_to_run = name and {name} or test
 local n_ok, n_fail = 0, 0
@@ -829,9 +823,9 @@ for _, k in ipairs(tests_to_run) do
 		if ok then
 			print'ok'
 			n_ok = n_ok + 1
-		else
-			print'FAILED'
-			print(err)
+		else --failures goto stderr
+			pr('FAILED: ', k)
+			pr(err)
 			n_fail = n_fail + 1
 		end
 	end

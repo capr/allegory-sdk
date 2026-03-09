@@ -466,7 +466,7 @@ int getsockname(int sockfd, struct sockaddr *restrict addr, int *restrict addrle
 ]]
 
 --forward declarations
-local _poll, wait_io, cancel_wait_io, waiting
+local wait_io, cancel_wait_io, waiting
 
 local SOCK_NONBLOCK  = 0x000800 --async I/O
 local SOCK_CLOEXEC   = 0x080000 --close-on-exec (non-inheritable on exec())
@@ -601,8 +601,6 @@ local function make_async(for_writing, returns_n, func, wait_errno)
 			end
 			local errno = errno()
 			if errno == wait_errno then
-				pr('-WAIT', self, for_writing,
-					self.recv_expires and self.recv_expires - clock())
 				if for_writing then
 					if self.send_expires then
 						send_expires_heap:push(self)
@@ -831,6 +829,7 @@ do
 	end
 end
 
+local _poll
 do
 	local sockets = {} --{socket1, ...}
 	local free_indices = {} --{i1, ...}
@@ -876,14 +875,11 @@ do
 		if for_writing then
 			if socket.send_expires then
 				assert(send_expires_heap:remove(socket))
-				socket.send_expires = nil
 			end
 			socket.send_thread = nil
 		else
 			if socket.recv_expires then
-				pr('WAKING', socket)
 				assert(recv_expires_heap:remove(socket))
-				socket.recv_expires = nil
 			end
 			socket.recv_thread = nil
 		end
@@ -904,7 +900,6 @@ do
 			--this threshold of 0.01 assumes that the current loop will take more
 			--than 20ms to complete, so might as well expire some jobs now
 			--because the next loop might just be a bit too late for them.
-			pr('PEEK', socket, socket[EXPIRES] - t, socket[EXPIRES] - t <= 0.01)
 			if socket[EXPIRES] - t <= 0.01 then
 				assert(heap:pop())
 				socket[EXPIRES] = nil
@@ -923,14 +918,13 @@ do
 	local RECV_MASK = EPOLLIN  + EPOLLERR + EPOLLHUP + EPOLLRDHUP
 	local SEND_MASK = EPOLLOUT + EPOLLERR + EPOLLHUP + EPOLLRDHUP
 
-	--[[local]] function _poll()
+	function _poll()
 
 		local ss = send_expires_heap:peek()
 		local rs = recv_expires_heap:peek()
 		local sx = ss and ss.send_expires
 		local rx = rs and rs.recv_expires
 		local expires = min(sx or 1/0, rx or 1/0)
-		pr('POOL-RX', rx and rx - clock(), recv_expires_heap:length())
 		local timeout = expires < 1/0 and max(0, expires - clock()) or 1/0
 
 		local timeout_ms = max(timeout * 1000, 0)
@@ -938,10 +932,6 @@ do
 
 		local n = C.epoll_wait(epoll_fd(), events, maxevents, timeout_ms)
 		if n == -1 then return check_errno() end
-		--handle timed-out ops.
-		local t = clock()
-		check_heap(send_expires_heap, 'send_expires', 'send_thread', t)
-		check_heap(recv_expires_heap, 'recv_expires', 'recv_thread', t)
 		--handle ready ops.
 		for i = 0, n-1 do
 			local e = events[i].events
@@ -951,9 +941,13 @@ do
 			--threads because EPOLL{IN|OUT} might never follow, which is why
 			--we check {RECV|SEND}_MASK instead of EPOLL{IN|OUT} alone.
 			local has_err = band(e, EPOLLERR) ~= 0
-			if band(e, RECV_MASK) ~= 0 then pr('WAKE', socket, has_err); wake(socket, false, has_err) end
-			if band(e, SEND_MASK) ~= 0 then pr('WAKE', socket, has_err); wake(socket, true , has_err) end
+			if band(e, RECV_MASK) ~= 0 then wake(socket, false, has_err) end
+			if band(e, SEND_MASK) ~= 0 then wake(socket, true , has_err) end
 		end
+		--handle timed-out ops.
+		local t = clock()
+		check_heap(send_expires_heap, 'send_expires', 'send_thread', t)
+		check_heap(recv_expires_heap, 'recv_expires', 'recv_thread', t)
 		return true
 	end
 end
@@ -1093,7 +1087,7 @@ end
 local SOL_SOCKET  = 1
 
 local OPT = {
-	--SOL_SOCKET options (so_ prefix)
+	--SOL_SOCKET options (so_ prefix)l
 	so_reuseaddr      = 2,  --allow local address reuse
 	so_type           = 3,  --get socket type (RO)
 	so_error          = 4,  --get and clear pending error (RO)
