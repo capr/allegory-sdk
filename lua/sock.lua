@@ -573,6 +573,7 @@ local function job_resume(job, ...)
 end
 local CANCEL = {}
 local function cancel(job)
+	if not job.recv_thread then return end
 	job_resume(job, CANCEL)
 end
 function wait_job()

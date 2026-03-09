@@ -398,6 +398,28 @@ function test.udp_connected_mode()
 	end)
 end
 
+function test.udp_recvnext_source_addr()
+	checked_run(function()
+		local port = nextport()
+		local client_port = nextport()
+		local server = udp()
+		server:bind('127.0.0.1:'..port)
+		resume(sthread(function()
+			local s = udp()
+			s:bind('127.0.0.1:'..client_port)
+			s:sendto('127.0.0.1:'..port, 'probe')
+			s:close()
+		end, 'client'))
+		local buf = new'char[256]'
+		local n, sa = server:recvnext(buf, 256)
+		assert(str(buf, n) == 'probe')
+		assert(issockaddr(sa))
+		assert(sa:family() == 'inet')
+		assert(sa:port() == client_port)
+		server:close()
+	end)
+end
+
 -- [6] Socket Options -----------------------------------------------------------
 
 function test.sockopt_reuseaddr()
@@ -441,6 +463,17 @@ function test.sockopt_keepalive()
 		assert(s:getopt('tcp_keepidle') == 60)
 		assert(s:getopt('tcp_keepintvl') == 10)
 		assert(s:getopt('tcp_keepcnt') == 3)
+		s:close()
+	end)
+end
+
+function test.sockopt_linger()
+	checked_run(function()
+		local s = tcp()
+		s:setopt('so_linger', 5)
+		assert(s:getopt('so_linger') == 5)
+		s:setopt('so_linger', false)
+		assert(s:getopt('so_linger') == false)
 		s:close()
 	end)
 end
@@ -576,6 +609,33 @@ function test.socket_wait_job_autocancel()
 	end)
 end
 
+function test.socket_wait_timeout()
+	checked_run(function()
+		local s = tcp()
+		local r1, r2
+		resume(sthread(function()
+			r1, r2 = s:wait(0.02)
+		end, 'waiter'))
+		wait(0.08)
+		assert(r1 == nil and r2 == 'timeout')
+		s:close()
+	end)
+end
+
+function test.socket_wait_cancel_on_close()
+	checked_run(function()
+		local s = tcp()
+		local CANCEL = wait_job().CANCEL
+		local result
+		resume(sthread(function()
+			result = s:wait(10)
+		end, 'waiter'))
+		wait(0.02)
+		s:close()
+		assert(result == CANCEL)
+	end)
+end
+
 -- [8] Error and Edge Case Handling ---------------------------------------------
 
 function test.error_ops_on_closed_socket()
@@ -657,6 +717,26 @@ function test.error_recvn_eof()
 	end)
 end
 
+function test.close_while_blocked_recv()
+	checked_run(function()
+		local port = nextport()
+		local server = mkserver(port)
+		local s = mkclient(port)
+		local cs
+		local recv_n, recv_err
+		resume(sthread(function()
+			cs = server:accept()
+			recv_n, recv_err = cs:try_recv(BUF, 64)
+		end, 'server'))
+		wait(0.02) -- let server thread reach the blocking recv
+		cs:close()  -- cancel_wait_io fires
+		s:close()
+		server:close()
+		assert(recv_n == nil)
+		assert(recv_err == 'closed')
+	end)
+end
+
 -- [9] Threading and Concurrency ------------------------------------------------
 
 function test.threadset_join()
@@ -686,6 +766,15 @@ function test.threadset_error_propagation()
 		end))
 		local ok, rets = ts:join()
 		assert(not ok)
+	end)
+end
+
+function test.threadset_join_empty()
+	checked_run(function()
+		local ts = threadset()
+		local ok, rets = ts:join()
+		assert(ok)
+		assert(#rets == 0)
 	end)
 end
 
@@ -732,6 +821,19 @@ function test.concurrent_server_clients()
 		ts:join()
 		wait(0.05) -- let handler threads finish receiving
 		assert(received == N)
+	end)
+end
+
+function test.run_when_already_running()
+	checked_run(function()
+		local called = false
+		wait(0) -- yield into the poll loop so running=true when we resume
+		local ret = run(function()
+			called = true
+			return 42
+		end)
+		assert(called)
+		assert(ret == 42)
 	end)
 end
 
