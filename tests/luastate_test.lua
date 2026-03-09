@@ -76,4 +76,4 @@ f2()
 
 assert(lua:gettop() == 0)
 lua:close()
-print'ok'
+print'luastate ok'
