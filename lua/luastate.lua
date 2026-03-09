@@ -233,7 +233,7 @@ function M.openlibs(L, ...) --open specific libs (or all libs if no args given)
 	return L
 end
 
-function M.dump(L, write)
+function M.dump(L, write, data)
 	if not write then
 		local t = {}
 		function write(L, buf, sz, data)
@@ -358,7 +358,9 @@ function M.get(L, index, opt)
 			s = M.get(L) --result of string.dump()
 			M.pop(L, 2)
 		else
+			M.pushvalue(L, index)
 			s = M.dump(L)
+			M.pop(L)
 		end
 		assert(M.gettop(L) == top)
 		local f = assert(loadstring(s))
@@ -491,18 +493,18 @@ end
 
 --stack (compare)
 
-function M.equal(i1, i2)    return C.lua_equal(i1, i2) == 1 end
-function M.rawequal(i1, i2) return C.lua_rawequal(i1, i2) == 1 end
-function M.lessthan(i1, i2) return C.lua_lessthan(i1, i2) == 1 end
+function M.equal   (L, i1, i2) return C.lua_equal   (L, i1, i2) == 1 end
+function M.rawequal(L, i1, i2) return C.lua_rawequal(L, i1, i2) == 1 end
+function M.lessthan(L, i1, i2) return C.lua_lessthan(L, i1, i2) == 1 end
 
 --debug
 
-function M.getstack(level, dbg)
-	return C.lua_getstack(level, dbg) == 1
+function M.getstack(L, level, dbg)
+	return C.lua_getstack(L, level, dbg) == 1
 end
 
-function M.getinfo(what, dbg)
-	assert(C.lua_getinfo(what, dbg) ~= 0)
+function M.getinfo(L, what, dbg)
+	assert(C.lua_getinfo(L, what, dbg) ~= 0)
 end
 
 M.getlocal = C.lua_getlocal

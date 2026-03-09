@@ -136,13 +136,6 @@ typedef int idtype_t;
 typedef int id_t;
 pid_t waitpid(pid_t pid, int *status, int options);
 void _exit(int status);
-int pipe(int[2]);
-int fcntl(int fd, int cmd, ...);
-int close(int fd);
-ssize_t write(int fd, const void *buf, size_t count);
-ssize_t read(int fd, void *buf, size_t count);
-int chdir(const char *path);
-char *getcwd(char *buf, size_t size);
 int dup2(int oldfd, int newfd);
 pid_t getpid(void);
 pid_t getppid(void);
@@ -155,14 +148,7 @@ int prctl(
 );
 int setsid();
 unsigned int umask(unsigned int mask);
-int open(const char *pathname, int flags, mode_t mode);
-int close(int fd);
 ]]
-
-local F_GETFD = 1
-local F_SETFD = 2
-
-local FD_CLOEXEC = 1
 
 local PR_SET_PDEATHSIG = 1
 
@@ -194,22 +180,6 @@ function env(k, v)
 		i = i + 1
 	end
 	return t
-end
-
-local function getcwd()
-	local sz = 256
-	local buf = u8a(sz)
-	while true do
-		if C.getcwd(buf, sz) == nil then
-			if errno() ~= ERANGE then
-				return check_errno()
-			else
-				sz = sz * 2
-				buf = u8a(sz)
-			end
-		end
-		return str(buf)
-	end
 end
 
 local function close_fd(fd)
@@ -244,7 +214,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 	end
 
 	if dir and cmd:sub(1, 1) ~= '/' then
-		cmd = getcwd() .. '/' .. cmd
+		cmd = cwd() .. '/' .. cmd
 	end
 
 	--copy the args list to a char*[] buffer.
@@ -330,17 +300,12 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 
 	--see https://stackoverflow.com/questions/1584956/how-to-handle-execvp-errors-after-fork
 	local pipefds = u32a(2)
-	if C.pipe(pipefds) ~= 0 then
+	local O_CLOEXEC = 0x080000 --close-on-exec
+	if C.pipe2(pipefds, O_CLOEXEC) ~= 0 then
 		return check()
 	end
 	errno_r_fd = pipefds[0]
 	errno_w_fd = pipefds[1]
-
-	local flags = C.fcntl(errno_w_fd, F_GETFD)
-	local flags = bor(flags, FD_CLOEXEC) --close on exec.
-	if C.fcntl(errno_w_fd, F_SETFD, cast('int', flags)) ~= 0 then
-		return check()
- 	end
 
 	if stdin == true then
 		inp_rf, inp_wf = try_pipe{
@@ -455,7 +420,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 
 		self.pid = pid
 
-		local s = cmdline_quote_args(cmd, unpack(args))
+		local s = cmdline_quote_args(cmd, unpack(args or empty))
 		log('', 'proc', 'exec', '%s %s', self, s)
 		live(self, '%s', s)
 
@@ -553,7 +518,7 @@ local loader = memoize(function(path)
 	return function()
 		local err
 		if not f then
-			f = try_open(path)
+			f, err = try_open(path)
 			if not f then return nil, err end
 		else
 			local off, err = f:seek('set', 0)
@@ -709,7 +674,8 @@ function daemonize()
 	--child process
 	--9. redirect stdin/out/err to /dev/null.
 	logging.quiet = true --no point logging to /dev/null.
-	local null_fd = C.open('/dev/null', 1, 0)
+	local O_RDWR = 2
+	local null_fd = C.open('/dev/null', O_RDWR, 0)
 	assert(C.dup2(null_fd, 0) == 0)
 	assert(C.dup2(null_fd, 1) == 1)
 	assert(C.dup2(null_fd, 2) == 2)
