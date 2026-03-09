@@ -8,8 +8,11 @@ SIMPLIFY / REVIEW
 
 * pbuffer try vs raising and usage
 
+* mdbx test
+* mdbx_schema test
+* schema test?
+
 * fix tests that used to work
-	pthread
 	os_thread
 	smtp
 

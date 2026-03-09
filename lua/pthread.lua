@@ -13,21 +13,18 @@ THREADS
 	pthread_min_priority() -> priority            get min. priority
 	pthread_max_priority() -> priority            get max. priority
 	pthread_yield()                               relinquish control to the scheduler
-
 MUTEXES
 	mutex([mattrs]) -> mutex                      create a mutex
 	mutex:free()                                  free a mutex
 	mutex:lock()                                  lock a mutex
 	mutex:unlock()                                unlock a mutex
 	mutex:trylock() -> true | false               lock a mutex or return false
-
 CONDITION VARIABLES
 	condvar() -> cond                             create a condition variable
 	cond:free()                                   free the condition variable
 	cond:broadcast()                              broadcast
 	cond:signal()                                 signal
 	cond:wait(mutex[, expires]) -> true | false   wait until `expires` (*)
-
 READ/WRITE LOCKS
 	rwlock() -> rwlock                            create a r/w lock
 	rwlock:free()                                 free a r/w lock
@@ -91,8 +88,9 @@ if not ... then return require'pthread_test' end
 
 local ffi = require'ffi'
 local lib = 'pthread'
-local C = ffi.load(lib)
+local C = ffi.C
 assert(ffi.abi'64bit')
+assert(ffi.os == 'Linux')
 
 ffi.cdef[[
 typedef long int time_t;
@@ -321,14 +319,14 @@ end
 --NOTE: on Linux, min_priority() == max_priority() == 0 for SCHED_OTHER
 --(which is the only cross-platform SCHED_* value), and SCHED_RR needs root
 --which is a major usability hit, so it's not included.
-local function pthread_priority(thread, sched, level)
-	assert(not sched or sched == 'other')
-	local param = ffi.new'sched_param'
+local function pthread_priority(thread, level)
+	local param = ffi.new'struct sched_param'
 	if level then
 		param.sched_priority = level
 		checkz(C.pthread_setschedparam(thread, C.SCHED_OTHER, param))
 	else
-		checkz(C.pthread_getschedparam(thread, C.SCHED_OTHER, param))
+		local pol = ffi.new'int[1]'
+		checkz(C.pthread_getschedparam(thread, pol, param))
 		return param.sched_priority
 	end
 end
