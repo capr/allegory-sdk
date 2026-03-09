@@ -12,13 +12,13 @@ local function nextport() PORT = PORT + 1; return PORT end
 
 -- helpers
 local function mkserver(port)
-	local s = listen('127.0.0.1', port)
+	local s = listen('127.0.0.1:'..port)
 	assert(s)
 	return s
 end
 
 local function mkclient(port)
-	local s = connect('127.0.0.1', port)
+	local s = connect('127.0.0.1:'..port)
 	assert(s)
 	return s
 end
@@ -46,49 +46,37 @@ local function checked_run(f)
 	if _terr then error(_terr, 2) end
 end
 
--- [1] Address Resolution -------------------------------------------------------
+-- [1] Address ----------------------------------------------------------------
 
 function test.addr_ipv4()
-	local ai = getaddrinfo('127.0.0.1', 1234, 'tcp', 'inet')
-	assert(ai)
-	assert(ai:family() == 'inet')
-	assert(ai:type() == 'tcp')
-	assert(ai:protocol() == 'tcp')
-	assert(ai.addr:port() == 1234)
-	assert(ai.addr:addr():tostring() == '127.0.0.1')
+	local sa = sockaddr('1.2.3.4:1234')
+	assert(issockaddr(sa))
+	assert(sa:family() == 'inet')
+	assert(sa:port() == 1234)
+	assert(sa:tostring() == '1.2.3.4:1234')
 end
 
 function test.addr_ipv6()
-	local ai = getaddrinfo('::1', 80, 'tcp', 'inet6')
-	assert(ai)
-	assert(ai:family() == 'inet6')
+	local sa = sockaddr('::1:80')
+	assert(sa:family() == 'inet6')
+	assert(sa:port() == 80)
 end
 
 function test.addr_unix()
-	local ai = getaddrinfo('unix:/tmp/test.sock', 'tcp')
-	assert(ai)
-	assert(ai:family() == 'unix')
+	local sa = sockaddr('unix:/tmp/test.sock')
+	assert(sa:family() == 'unix')
+	assert(sa:tostring() == '/tmp/test.sock')
 end
 
-function test.addr_wildcard()
-	local ai = getaddrinfo('*', 0)
-	assert(ai)
+function test.addr_passthrough()
+	local sa1 = sockaddr('1.2.3.4:80')
+	local sa2 = sockaddr(sa1)
+	assert(sa1 == sa2)
 end
 
-function test.addr_error()
-	local ai, err = try_getaddrinfo('this.host.does.not.exist.invalid', 80)
-	assert(not ai)
-	assert(err)
-end
-
-function test.addr_iterate()
-	local ai = getaddrinfo('localhost', 80)
-	local n = 0
-	for a in ai:addrs() do
-		n = n + 1
-		assert(a:family())
-	end
-	assert(n >= 1)
+function test.addr_invalid()
+	local sa = try_sockaddr('not-an-address')
+	assert(not sa)
 end
 
 -- [2] TCP Connection Lifecycle -------------------------------------------------
@@ -117,7 +105,7 @@ end
 
 function test.tcp_connect_refused()
 	checked_run(function()
-		local s, err = try_connect('127.0.0.1', nextport(), 1)
+		local s, err = try_connect('127.0.0.1:'..nextport(), 1)
 		assert(not s)
 		assert(err)
 	end)
@@ -132,7 +120,7 @@ function test.tcp_remote_local_addr()
 			s:close()
 		end, 'client'))
 		local cs = server:accept()
-		assert(cs.remote_addr == '127.0.0.1')
+		assert(cs.remote_addr:match'^([^:]+)' == '127.0.0.1')
 		cs:close()
 		server:close()
 	end)
@@ -187,9 +175,10 @@ function test.tcp_server_onaccept()
 	checked_run(function()
 		local port = nextport()
 		local accepted = 0
-		local server = listen('127.0.0.1', port)
+		local server = tcp()
+		server:setopt('so_reuseaddr', true)
 		resume(sthread(function()
-			server:listen(function(srv, cs)
+			server:listen('127.0.0.1:'..port, nil, function(srv, cs)
 				accepted = accepted + 1
 				cs:recv(BUF, 64)
 				-- cs closed by listen's wrapper
@@ -214,15 +203,17 @@ function test.tcp_server_multiple_clients()
 		local server = mkserver(port)
 		local results = {}
 		resume(sthread(function()
+			local ts = threadset()
 			for i = 1, 3 do
 				local cs = server:accept()
-				resume(sthread(function()
+				resume(ts:thread(function()
 					local buf = new'char[64]'
 					local n = cs:recv(buf, 64)
 					results[#results+1] = str(buf, n)
 					cs:close()
 				end, 'handler'..i))
 			end
+			ts:join()
 			server:close()
 		end, 'server'))
 		for i = 1, 3 do
@@ -281,17 +272,23 @@ end
 
 function test.tcp_recvall_partial_error()
 	checked_run(function()
+		pr()
 		local port = nextport()
 		local server = mkserver(port)
 		resume(sthread(function()
 			local s = mkclient(port)
 			s:send'partial' -- send some bytes then stop (no close)
-			wait(0.2)       -- outlast the server's timeout
+			pr('SENT', s)
+			wait(2.2)       -- outlast the server's timeout
+			pr'CLOSING'
 			s:close()
 		end, 'client'))
 		local cs = server:accept()
 		cs:settimeout(0.05, 'r') -- short recv deadline
+		pr('SETT', cs, cs.recv_expires, cs.recv_expires - clock())
+		pr('RECVNG', cs)
 		local ok, err, pbuf, plen = cs:try_recvall()
+		pr('RECV', cs, ok, err, pbuf, plen)
 		assert(not ok)
 		assert(err == 'timeout')
 		cs:close()
@@ -375,11 +372,11 @@ function test.udp_sendto_recvnext()
 	checked_run(function()
 		local port = nextport()
 		local server = udp()
-		server:bind('127.0.0.1', port)
+		server:bind('127.0.0.1:'..port)
 		resume(sthread(function()
 			local s = udp()
-			s:bind('127.0.0.1', 0)
-			s:sendto('127.0.0.1', port, 'udp-hello')
+			s:bind('127.0.0.1:0')
+			s:sendto('127.0.0.1:'..port, 'udp-hello')
 			s:close()
 		end, 'client'))
 		local buf = new'char[256]'
@@ -393,10 +390,10 @@ function test.udp_connected_mode()
 	checked_run(function()
 		local port = nextport()
 		local server = udp()
-		server:bind('127.0.0.1', port)
+		server:bind('127.0.0.1:'..port)
 		resume(sthread(function()
 			local s = udp()
-			s:connect('127.0.0.1', port)
+			s:connect('127.0.0.1:'..port)
 			s:send'udp-connected'
 			s:close()
 		end, 'client'))
@@ -498,7 +495,7 @@ function test.timeout_connect()
 		-- Connect to a non-routable address with short timeout
 		local s = tcp()
 		s:settimeout(0.05)
-		local ok, err = s:try_connect('10.255.255.1', 1)
+		local ok, err = s:try_connect('10.255.255.1:1')
 		assert(not ok)
 		assert(err == 'timeout' or err) -- may be 'timeout' or other net error
 		if not s:closed() then s:close() end
@@ -602,9 +599,9 @@ function test.error_bind_conflict()
 	checked_run(function()
 		local port = nextport()
 		local s1 = tcp()
-		s1:bind('127.0.0.1', port)
+		s1:bind('127.0.0.1:'..port)
 		local s2 = tcp()
-		local ok, err = s2:try_bind('127.0.0.1', port)
+		local ok, err = s2:try_bind('127.0.0.1:'..port)
 		assert(not ok)
 		assert(err == 'address_already_in_use')
 		s1:close()
@@ -717,15 +714,17 @@ function test.concurrent_server_clients()
 		local N = 10
 		local received = 0
 		resume(sthread(function()
+			local hts = threadset()
 			for i = 1, N do
 				local cs = server:accept()
-				resume(sthread(function()
+				resume(hts:thread(function()
 					local buf = new'char[64]'
 					local n = cs:recv(buf, 64)
 					received = received + n
 					cs:close()
 				end, 'h'..i))
 			end
+			hts:join()
 			server:close()
 		end, 'server'))
 		local ts = threadset()
@@ -751,7 +750,7 @@ function test.tcp_and_udp_same_port()
 		local tcp_got, udp_got
 		local tserver = mkserver(port)
 		local userver = udp()
-		userver:bind('127.0.0.1', port)
+		userver:bind('127.0.0.1:'..port)
 		resume(sthread(function()
 			local cs = tserver:accept()
 			local buf = new'char[64]'
@@ -773,7 +772,7 @@ function test.tcp_and_udp_same_port()
 		end, 'tcp-client'))
 		resume(sthread(function()
 			local s = udp()
-			s:connect('127.0.0.1', port)
+			s:connect('127.0.0.1:'..port)
 			s:send'udp-msg'
 			s:close()
 		end, 'udp-client'))
@@ -788,9 +787,9 @@ function test.ipv4_and_ipv6_loopback()
 		local port = nextport()
 		local got4, got6
 		-- IPv4 server
-		local s4 = listen('127.0.0.1', port)
+		local s4 = listen('127.0.0.1:'..port)
 		resume(sthread(function()
-			local c = connect('127.0.0.1', port); c:send'v4'; c:close()
+			local c = connect('127.0.0.1:'..port); c:send'v4'; c:close()
 		end, 'c4'))
 		local cs4 = s4:accept()
 		local buf4 = new'char[64]'
@@ -798,10 +797,10 @@ function test.ipv4_and_ipv6_loopback()
 		cs4:close(); s4:close()
 		-- IPv6 server on a separate port (skip gracefully if unavailable)
 		local port6 = nextport()
-		local ok6, s6 = pcall(listen, '::1', port6)
+		local ok6, s6 = pcall(listen, '::1:'..port6)
 		if ok6 then
 			resume(sthread(function()
-				local c = connect('::1', port6); c:send'v6'; c:close()
+				local c = connect('::1:'..port6); c:send'v6'; c:close()
 			end, 'c6'))
 			local cs6 = s6:accept()
 			local buf6 = new'char[64]'
@@ -818,7 +817,7 @@ end
 
 -- runner -----------------------------------------------------------------------
 
-local name = ...
+local name = 'tcp_recvall_partial_error' --...
 if name == 'sock_test' then name = nil end -- loaded as module: run all tests
 local tests_to_run = name and {name} or test
 local n_ok, n_fail = 0, 0

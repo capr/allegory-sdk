@@ -1,12 +1,12 @@
 --[=[
 
-	Portable async socket API Linux (epoll).
+	Async sockets and coroutine scheduler (epoll-based).
 	Written by Cosmin Apreutesei. Public Domain.
 	TLS support in sock_bearssl.lua.
 
 ADDRESSES
-	sockaddr('unix:PATH') -> sa            make a sockaddr for a unix socket
-	sockaddr('ip:port') -> sa              make a sockaddr for a inet/inet6 socket
+	[try_]sockaddr('unix:PATH') -> sa      make a sockaddr for a unix socket
+	[try_]sockaddr('ip:port') -> sa        make a sockaddr for a inet/inet6 socket
 	sa:family() -> 'inet|inet6|unix'       socket family
 	sa:port() -> port|nil                  port (for inet/inet6 family)
 	sa:tostring() -> ip|ip6|path           string representation
@@ -16,17 +16,17 @@ SOCKETS
 	s:closed() -> t|f                      check if the socket is closed
 	s:onclose(fn)                          exec fn after the socket is closed
 	s:[try_]bind(addr)                     bind socket to an address
-	s:[try_]setopt(opt, val)               set socket option ('so_*', 'tcp_*', 'ip_*', etc.)
+	s:[try_]setopt(opt, val)               set socket option ('so_*', 'tcp_*', etc.)
 	s:[try_]getopt(opt) -> val             get socket option
 	s:debug([protocol])                    enable debugging
 TCP
 	tcp([family='inet'], [opt]) -> tcp              make a SOCK_STREAM socket
-	[try_]connect([tcp, ], addr, [timeout]) -> tcp  (create tcp socket and) connect
-	listen([tcp, ], addr, ...) -> tcp               (create tcp socket and) listen
+	[try_]connect([tcp, ], addr, [timeout]) -> tcp       (create tcp socket and) connect
+	listen([tcp, ], addr, [backlog], [onaccept]) -> tcp  (create tcp socket and) listen
 	tcp:[try_]connect(addr)                         connect to an address
 	tcp:[try_]send(s|buf, [len], [flags]) -> true   send bytes to connected address
 	tcp:[try_]recv(buf, maxlen) -> len              receive bytes
-	tcp:[try_]listen([backlog, ]addr, [onaccept])   put socket in listening mode
+	tcp:[try_]listen(addr, [backlog], [onaccept])   put socket in listening mode
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
 	tcp:[try_]recvn(buf, n)                         receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
@@ -41,7 +41,7 @@ UDP
 THREADS
 	thread(func[, fmt, ...]) -> co         create a coroutine for async I/O
 	resume(thread, ...)                    resume thread
-	yield(...) -> ...                      safe yield (see [coro])
+	yield(...) -> ...                      safe yield (see coro.lua)
 	suspend() -> ...                       suspend thread
 	cowrap(f) -> wrapper                   see coro.safewrap()
 	currentthread() -> co, is_main         current coroutine and whether it's the main one
@@ -81,7 +81,7 @@ MULTI-THREADING (WITH OS THREADS)
 
 ------------------------------------------------------------------------------
 
-The `addr` arg is either a sockaddr (sa) or a string of form 'ip:port'
+The addr arg is either a sockaddr (sa) or a string of form 'ip:port'
 or 'unix:path'.
 
 Some error messages are normalized across platforms, like 'access_denied'
@@ -96,12 +96,12 @@ s:[try_]close()
 	Close the connection and free the socket.
 
 	For TCP sockets, if 1) there's unread incoming data (i.e. recv() hasn't
-	returned 0 yet), or 2) `linger` socket option was set with a zero timeout,
+	returned 0 yet), or 2) so_linger socket option was set with a zero timeout,
 	then a TCP RST packet is sent to the client, otherwise a FIN is sent.
 
 s:[try_]bind(addr)
 
-	Bind socket to an interface/port (which default to '*' and 0 respectively
+	Bind socket to an interface/port (which defaults to '0.0.0.0:0' / ':::0'
 	meaning all interfaces and a random port).
 
 s:setexpires(clock|nil, ['r'|'w'])
@@ -109,15 +109,15 @@ s:settimeout(seconds|nil, ['r'|'w'])
 
 	Set or clear the expiration clock for all subsequent I/O operations.
 	If the expiration clock is reached before an operation completes,
-	`nil, 'timeout'` is returned.
+	nil,'timeout' is returned.
 
 tcp|udp:[try_]connect(addr, ...)
 
-	Connect to an address, binding the socket to `('*', 0)` if not bound already.
+	Connect to an address, binding the socket to ('*', 0) if not bound already.
 
 	For UDP sockets, this has the effect of filtering incoming packets so that
 	only those coming from the connected address get through the socket. Also,
-	you can call connect() multiple times (use `('*', 0)` to switch back to
+	you can call connect() multiple times (use ('*', 0) to switch back to
 	unfiltered mode).
 
 tcp:[try_]send(s|buf, [len], [flags]) -> true
@@ -136,24 +136,24 @@ tcp|udp:[try_]recv(buf, maxlen, [flags]) -> len
 	With TCP, returning 0 means that the socket was closed on the other side.
 	With UDP it just means that an empty packet was received.
 
-tcp:[try_]listen([backlog, ]addr, port, [onaccept])
+tcp:[try_]listen(addr, [backlog], [onaccept])
 
 	Put the socket in listening mode, binding the socket if not bound already
-	(in which case `addr` is ignored). The `backlog` defaults
-	to `1/0` which means "use the maximum allowed".
+	(in which case addr is ignored). The backlog defaults
+	to 1/0 which means "use the maximum allowed".
 
 tcp:[try_]accept() -> ctcp | nil,err,[retry]
 
 	Accept a client connection. The connection socket has additional fields:
-	`remote_addr`, `remote_port`, `local_addr`, `local_port`.
+	remote_addr, local_addr.
 
 	A third return value indicates that the error is a network error and thus
 	the call can be retried.
 
 tcp:[try_]recvn(buf, len) -> true
 
-	Repeat recv until `len` bytes are received.
-	Partial reads are signaled with `nil, err, readlen`.
+	Repeat recv until len bytes are received.
+	Partial reads are signaled with nil,err,readlen.
 
 tcp:[try_]recvall() -> buf,len | nil,err,buf,len
 
@@ -179,14 +179,14 @@ tcp:[try_]shutdown(['r'|'w'|'rw'])
 	data is sent (unlike RST which is sent immediately). When a FIN is received
 	recv() returns 0.
 
-	Calling close() without shutdown may send a RST (see the notes on `close()`
+	Calling close() without shutdown may send a RST (see the notes on close()
 	for when that can happen) which may cause any data that is pending either
 	on the sender side or on the receiving side to be discarded (that's how TCP
 	works: RST has that data-cutting effect).
 
 	Required for lame protocols like HTTP with pipelining: a HTTP server
 	that wants to close the connection before honoring all the received
-	pipelined requests needs to call `s:shutdown'w'` (which sends a FIN to
+	pipelined requests needs to call s:shutdown'w' (which sends a FIN to
 	the client) and then continue to receive (and discard) everything until
 	a recv that returns 0 comes in (which is a FIN from the client, as a reply
 	to the FIN from the server) and only then it can close the connection without
@@ -201,7 +201,7 @@ thread(func[, fmt, ...]) -> co
 
 	Create a coroutine for performing async I/O. The coroutine must be resumed
 	to start. When the coroutine finishes, the control is transfered to
-	the I/O thread (the thread that called `start()`).
+	the I/O thread (the thread that called start()).
 
 	Full-duplex I/O on a socket can be achieved by performing reads in one thread
 	and writes in another.
@@ -223,7 +223,7 @@ poll([ignore_interrupts]) -> true | false,'empty'
 
 start([ignore_interrupts])
 
-	Start polling. Stops when no more I/O or `stop()` was called.
+	Start polling. Stops when no more I/O or stop() was called.
 
 stop()
 
@@ -235,14 +235,14 @@ wait_until(t)
 
 wait(s) -> ...
 
-	Wait `s` seconds without blocking other threads.
+	Wait s seconds without blocking other threads.
 
 wait_job() -> sj
 
 	Make an interruptible waiting job. Put the current thread to sleep using
-	`sj:wait()` or `sj:wait_until()` and then from another thread call
-	`sj:resume()` to resume the waiting thread. Any arguments passed to
-	`sj:resume()` will be returned by `wait()`.
+	sj:wait() or sj:wait_until() and then from another thread call
+	sj:resume() to resume the waiting thread. Any arguments passed to
+	sj:resume() will be returned by wait().
 
 MULTI-THREADING --------------------------------------------------------------
 
@@ -254,8 +254,8 @@ epoll_fd([epfd]) -> epfd
 	threads is more efficient for the kernel than having one epfd per thread.
 
 	To share the epfd with another Lua state running on a different thread,
-	get the epfd with `epoll_fd()`, copy it over to the other state,
-	then set it with `epoll_fd(copied_epfd)`.
+	get the epfd with epoll_fd(), copy it over to the other state,
+	then set it with epoll_fd(copied_epfd).
 
 ]=]
 
@@ -263,6 +263,7 @@ if not ... then require'sock_test'; return end
 
 require'glue'
 require'heap'
+require'ipv6'
 local coro = require'coro'
 coro.live  = live
 coro.pcall = pcall
@@ -284,8 +285,8 @@ local coro_finish   = coro.finish
 local C = C
 
 local socket = {debug_prefix = 'S'} --common socket methods
-local tcp = {type = 'tcp_socket'}
-local udp = {type = 'udp_socket'}
+local tcp = {type = 'tcp_socket', socktype = 'tcp'}
+local udp = {type = 'udp_socket', socktype = 'udp'}
 local wait_job_class = {type = 'wait_job', debug_prefix = 'W'}
 
 function issocket(s)
@@ -297,26 +298,26 @@ end
 
 cdef[[
 struct sockaddr_in {
-	short          family;
+	short          family_num;
 	uint8_t        port_bytes[2];
 	uint8_t        ip_bytes[4];
 	char           _zero[8];
 };
 struct sockaddr_in6 {
-	short           family;
+	short           family_num;
 	uint8_t         port_bytes[2];
 	unsigned long   flowinfo;
 	uint8_t         ip_bytes[16];
 	unsigned long   scope_id;
 };
 struct sockaddr_un {
-	short family;
+	short family_num;
 	char  path[108];
 };
 typedef struct sockaddr {
 	union {
 		struct {
-			short   family;
+			short   family_num;
 			uint8_t port_bytes[2];
 		};
 		struct sockaddr_in  addr_in;
@@ -329,39 +330,44 @@ typedef struct sockaddr {
 local sockaddr_ct = ctype'sockaddr'
 
 function issockaddr(sa)
-	return isctype(sa, sockaddr_ct)
+	return isctype(sockaddr_ct, sa)
 end
 
-local AF_UNIX     = 1
-local AF_INET     = 2
-local AF_INET6    = 10
-local SOCK_STREAM = 1
-local SOCK_DGRAM  = 2
-local IPPROTO_TCP = 6
-local IPPROTO_UDP = 17
+local AF_UNIX      = 1
+local AF_INET      = 2
+local AF_INET6     = 10
+local SOCK_STREAM  = 1
+local SOCK_DGRAM   = 2
+local IPPROTO_TCP  = 6
+local IPPROTO_UDP  = 17
+local IPPROTO_IP   = 0
+local IPPROTO_IPV6 = 41
 
+local unix_path_maxlen = sizeof(sockaddr_ct().addr_un.path)
 local function sockaddr_from_unix_path(path)
+	if path == '' or #path + 1 >= unix_path_maxlen then return nil end
 	local sa = sockaddr_ct()
-	sa.family = AF_UNIX
-	assertf(#path < sizeof(sa.addr_un.path), 'unix socket path too long')
+	sa.family_num = AF_UNIX
 	copy(sa.addr_un.path, path)
 	return sa
 end
 
-local function check_range(n, ip)
-	assertf(n and n >= 0 and n <= 255, 'invalid ip address: %s', ip)
+local function ipv4_tobin(s)
+	local n1, n2, n3, n4 = s:match'^(%d+)%.(%d+)%.(%d+)%.(%d+)$'
+	if not n1 then return nil end --invalid
+	n1 = tonumber(n1)
+	n2 = tonumber(n2)
+	n3 = tonumber(n3)
+	n4 = tonumber(n4)
+	if n1 > 255 or n2 > 255 or n3 > 255 or n4 > 255 then return nil end --invalid
+	return char(n1, n2, n3, n4)
 end
 local function sockaddr_from_ip4(ip, port)
+	local s = ipv4_tobin(ip)
+	if not s then return nil end
 	local sa = sockaddr_ct()
-	sa.family = AF_INET
-	local b = sa.addr_in.ip_bytes
-	local i = 0
-	local n1, n2, n3, n4 = ip:match'^(%d+)%.(%d+)%.(%d+)%.(%d+)$'
-	assertf(n1, 'invalid ip address: %s', ip)
-	b[0] = check_range(tonumber(n1), ip)
-	b[1] = check_range(tonumber(n2), ip)
-	b[2] = check_range(tonumber(n3), ip)
-	b[3] = check_range(tonumber(n4), ip)
+	sa.family_num = AF_INET
+	copy(sa.addr_in.ip_bytes, s, 4)
 	if port then
 		sa.port_bytes[0] = shr(port, 8)
 		sa.port_bytes[1] = band(port, 0xff)
@@ -370,13 +376,11 @@ local function sockaddr_from_ip4(ip, port)
 end
 
 local function sockaddr_from_ip6(ip, port)
+	local s = ipv6_tobin(ip)
+	if not s then return nil end
 	local sa = sockaddr_ct()
-	sa.family = AF_INET6
-	local bin = assert(ipv6_tobin(ip), 'invalid ip6 address')
-	local b = sa.addr_in6.ip_bytes
-	for i = 0, 15 do
-		b[i] = bin:byte(i + 1)
-	end
+	sa.family_num = AF_INET6
+	copy(sa.addr_in6.ip_bytes, s, 16)
 	if port then
 		sa.port_bytes[0] = shr(port, 8)
 		sa.port_bytes[1] = band(port, 0xff)
@@ -384,57 +388,61 @@ local function sockaddr_from_ip6(ip, port)
 	return sa
 end
 
-local function sockaddr(s)
+function try_sockaddr(s)
 	if issockaddr(s) then return s end --pass-through
 	if s:starts'unix:' then
 		return sockaddr_from_unix_path(s:sub(6))
 	else
 		local ip, port = s:match'^(.*):(%d+)$'
 		port = port and tonumber(port)
-		assertf(ip and port, 'invalid ip:port address: %s', s)
+		if not (ip and port) then return nil end
 		if s:has'.' then
 			return sockaddr_from_ip4(ip, port)
 		elseif s:has':' then
 			return sockaddr_from_ip6(ip, port)
-		else
-			assertf(false, 'invalid address: %s', s)
 		end
 	end
+end
+function sockaddr(s)
+	return assertf(try_sockaddr(s), 'invalid address: %s', s)
 end
 
 local sa = {}
 function sa:family()
 	return (
-		self.family == AF_INET and 'inet' or
-		self.family == AF_INET6 and 'inet6' or
-		self.family == AF_UNIX and 'unix'
+		self.family_num == AF_INET and 'inet' or
+		self.family_num == AF_INET6 and 'inet6' or
+		self.family_num == AF_UNIX and 'unix'
 		or nil
 	)
 end
 function sa:port()
-	if self.family == AF_INET or self.family == AF_INET6 then
+	if self.family_num == AF_INET or self.family_num == AF_INET6 then
 		return self.port_bytes[0] * 0x100 + self.port_bytes[1]
 	end
 end
 function sa:size()
 	return (
-		self.family == AF_INET and sizeof'struct sockaddr_in' or
-		self.family == AF_INET6 and sizeof'struct sockaddr_in6' or
-		self.family == AF_UNIX and offsetof('struct sockaddr_un', 'path')
-			+ strlen(self.addr_un.path)
+		self.family_num == AF_INET and sizeof'struct sockaddr_in' or
+		self.family_num == AF_INET6 and sizeof'struct sockaddr_in6' or
+		self.family_num == AF_UNIX and offsetof('struct sockaddr_un', 'path')
+			+ strlen(self.addr_un.path, sizeof(self.addr_un.path)) + 1
 		or nil
 	)
 end
-function sa:tostring()
-	if self.family == AF_INET then
+function sa:ip()
+	if self.family_num == AF_INET then
 		local b = self.addr_in.ip_bytes
-		return format('%d.%d.%d.%d', b[0], b[1], b[2], b[3])..':'..self:port()
-	elseif self.family == AF_INET6 then
+		return format('%d.%d.%d.%d', b[0], b[1], b[2], b[3])
+	elseif self.family_num == AF_INET6 then
 		local b = self.addr_in6.ip_bytes
-		return ipv6_tostring(str(b, 16), true, false)..':'..self:port()
-	elseif self.family == AF_UNIX then
+		return ipv6_tostring(str(b, 16), true, false)
+	elseif self.family_num == AF_UNIX then
 		return str(self.addr_un.path)
 	end
+end
+function sa:tostring()
+	return self:ip()..(self:port() and ':'..self:port() or '')
 end
 
 metatype('struct sockaddr', {__index = sa})
@@ -463,9 +471,9 @@ local _poll, wait_io, cancel_wait_io, waiting
 local SOCK_NONBLOCK  = 0x000800 --async I/O
 local SOCK_CLOEXEC   = 0x080000 --close-on-exec (non-inheritable on exec())
 
-local function wrap_socket(opt, class, s)
+local function wrap_socket(opt, class, s, family)
 	local s = object(class, {
-		s = s, issocket = true,
+		s = s, family = family, issocket = true,
 		check_io = check_io, checkp = checkp, protect = protect,
 		r = 0, w = 0,
 	}, opt)
@@ -479,8 +487,8 @@ local function create_socket(st, family, class, opt)
 		assert(false)
 	local s = C.socket(af, bor(st, SOCK_NONBLOCK, SOCK_CLOEXEC), 0)
 	assert(check_errno(s ~= -1))
-	local s = wrap_socket(opt, class, s)
-	live(s, '%s fd=%d', s:socktype(), s.s)
+	local s = wrap_socket(opt, class, s, family)
+	live(s, '%s/%s fd=%d', s.socktype, family, s.s)
 	return s
 end
 local function create_tcp(family, opt)
@@ -490,7 +498,7 @@ local function create_udp(family, opt)
 	return create_socket(SOCK_DGRAM, family or 'inet', udp, opt)
 end
 
---NOTE: close() returns `false` on error but it should be ignored.
+--NOTE: close() returns false on error but it should be ignored.
 function socket:try_close()
 	if not self.s then return true end
 	_sock_unregister(self)
@@ -593,6 +601,8 @@ local function make_async(for_writing, returns_n, func, wait_errno)
 			end
 			local errno = errno()
 			if errno == wait_errno then
+				pr('-WAIT', self, for_writing,
+					self.recv_expires and self.recv_expires - clock())
 				if for_writing then
 					if self.send_expires then
 						send_expires_heap:push(self)
@@ -616,7 +626,7 @@ local function make_async(for_writing, returns_n, func, wait_errno)
 	end
 end
 
-local _connect = make_async(true, false, function(self, sa)
+local socket_connect = make_async(true, false, function(self, sa)
 	return C.connect(self.s, sa, sa:size())
 end, EINPROGRESS)
 
@@ -624,12 +634,12 @@ function tcp:try_connect(addr)
 	if not self.s then return nil, 'closed' end
 	local sa = sockaddr(addr)
 	local addr_s = sa:tostring()
-	log('', 'sock', 'connect?', '%-4s %s:%s', self, addr_s)
-	if not self.bound_addr then
-		local ok, err = self:try_bind(sa)
+	log('', 'sock', 'connect?', '%-4s %s', self, addr_s)
+	if not self.bound_addr and self.family ~= 'unix' then
+		local ok, err = self:try_bind()
 		if not ok then return false, err end
 	end
-	local ret, err = _connect(self, sa)
+	local ret, err = socket_connect(self, sa)
 	local ok = ret == 0
 	if not ok then return false, err end
 	self.remote_addr = addr_s
@@ -651,18 +661,18 @@ do
 	local ENETUNREACH   = 101
 
 	local nbuf = new'int[1]'
-	local accept_buf = sockaddr_ct()
-	local accept_buf_size = sizeof(accept_buf)
+	local accept_sa = sockaddr_ct()
+	local accept_sa_size = sizeof(accept_sa)
 
-	local tcp_accept = make_async(false, false, function(self)
-		nbuf[0] = accept_buf_size
-		local r = C.accept4(self.s, accept_buf, nbuf, bor(SOCK_NONBLOCK, SOCK_CLOEXEC))
+	local socket_accept = make_async(false, false, function(self)
+		nbuf[0] = accept_sa_size
+		local r = C.accept4(self.s, accept_sa, nbuf, bor(SOCK_NONBLOCK, SOCK_CLOEXEC))
 		return r
 	end, EWOULDBLOCK)
 
 	function tcp:try_accept(opt)
 		if not self.s then return nil, 'closed' end
-		local s, err, errno = tcp_accept(self)
+		local s, err, errno = socket_accept(self)
 		local retry =
 			   errno == ENETDOWN
 			or errno == EPROTO
@@ -675,23 +685,21 @@ do
 		if not s then
 			return nil, err, retry
 		end
-		local s = wrap_socket(opt, tcp, s)
+		local s = wrap_socket(opt, tcp, s, self.family)
 		local ok, err = _sock_register(s)
 		if not ok then
 			s:try_close()
 			return nil, err
 		end
-		local ra = accept_buf:tostring()
-		local rp = accept_buf:port()
+		local ra = accept_sa:tostring()
 		--get local addr
-		nbuf[0] = accept_buf_size
-		local ok, err = check_errno(C.getsockname(s.s, accept_buf, nbuf) == 0)
+		nbuf[0] = accept_sa_size
+		local ok, err = check_errno(C.getsockname(s.s, accept_sa, nbuf) == 0)
 		if not ok then
 			s:try_close()
 			return nil, err
 		end
-		local la = accept_buf:addr():tostring()
-		local lp = accept_buf:port()
+		local la = accept_sa:tostring()
 		self.n = self.n + 1
 		self.sockets[s] = true
 		self.next_i = (self.next_i or 0) + 1
@@ -733,16 +741,15 @@ function socket:try_recv(buf, len, flags)
 	return socket_recv(self, buf, len, flags)
 end
 
-local udp_sendto = make_async(true, true, function(self, ai, buf, len, flags)
-	return C.sendto(self.s, buf, len, flags or 0, ai.addr, ai.addrlen)
+local udp_sendto = make_async(true, true, function(self, sa, buf, len, flags)
+	return C.sendto(self.s, buf, len, flags or 0, sa, sa:size())
 end, EWOULDBLOCK)
 
 function udp:try_sendto(addr, buf, len, flags)
 	if not self.s then return nil, 'closed' end
 	len = len or #buf
-	local ai, ext_ai = self:try_getaddrinfo(host, port)
-	if not ai then return nil, ext_ai end
-	local len, err = udp_sendto(self, ai, buf, len, flags)
+	local sa = sockaddr(addr)
+	local len, err = udp_sendto(self, sa, buf, len, flags)
 	if not len then return nil, err end
 	return len
 end
@@ -874,6 +881,7 @@ do
 			socket.send_thread = nil
 		else
 			if socket.recv_expires then
+				pr('WAKING', socket)
 				assert(recv_expires_heap:remove(socket))
 				socket.recv_expires = nil
 			end
@@ -893,7 +901,11 @@ do
 			if not socket then
 				break
 			end
-			if socket[EXPIRES] - t <= 0.01 then --arbitrary threshold.
+			--this threshold of 0.01 assumes that the current loop will take more
+			--than 20ms to complete, so might as well expire some jobs now
+			--because the next loop might just be a bit too late for them.
+			pr('PEEK', socket, socket[EXPIRES] - t, socket[EXPIRES] - t <= 0.01)
+			if socket[EXPIRES] - t <= 0.01 then
 				assert(heap:pop())
 				socket[EXPIRES] = nil
 				local thread = socket[THREAD]
@@ -918,21 +930,19 @@ do
 		local sx = ss and ss.send_expires
 		local rx = rs and rs.recv_expires
 		local expires = min(sx or 1/0, rx or 1/0)
+		pr('POOL-RX', rx and rx - clock(), recv_expires_heap:length())
 		local timeout = expires < 1/0 and max(0, expires - clock()) or 1/0
 
 		local timeout_ms = max(timeout * 1000, 0)
 		if timeout_ms > 0x7fffffff then timeout_ms = -1 end --infinite
 
 		local n = C.epoll_wait(epoll_fd(), events, maxevents, timeout_ms)
-		if n == -1 then
-			return check_errno()
-		elseif n == 0 then
-			--handle timed-out ops.
-			local t = clock()
-			check_heap(send_expires_heap, 'send_expires', 'send_thread', t)
-			check_heap(recv_expires_heap, 'recv_expires', 'recv_thread', t)
-			return true
-		end
+		if n == -1 then return check_errno() end
+		--handle timed-out ops.
+		local t = clock()
+		check_heap(send_expires_heap, 'send_expires', 'send_thread', t)
+		check_heap(recv_expires_heap, 'recv_expires', 'recv_thread', t)
+		--handle ready ops.
 		for i = 0, n-1 do
 			local e = events[i].events
 			local si = events[i].data.u32
@@ -941,8 +951,8 @@ do
 			--threads because EPOLL{IN|OUT} might never follow, which is why
 			--we check {RECV|SEND}_MASK instead of EPOLL{IN|OUT} alone.
 			local has_err = band(e, EPOLLERR) ~= 0
-			if band(e, RECV_MASK) ~= 0 then wake(socket, false, has_err) end
-			if band(e, SEND_MASK) ~= 0 then wake(socket, true , has_err) end
+			if band(e, RECV_MASK) ~= 0 then pr('WAKE', socket, has_err); wake(socket, false, has_err) end
+			if band(e, SEND_MASK) ~= 0 then pr('WAKE', socket, has_err); wake(socket, true , has_err) end
 		end
 		return true
 	end
@@ -970,8 +980,12 @@ int bind(SOCKET s, const sockaddr*, int namelen);
 
 function socket:try_bind(addr)
 	assert(not self.bound_addr)
+	addr = addr or
+		self.family == 'inet'  and '0.0.0.0:0' or
+		self.family == 'inet6' and ':::0'
+		or nil
 	local sa = sockaddr(addr)
-	local ok, err = check_errno(C.bind(self.s, sa, sizeof(sa)) == 0)
+	local ok, err = check_errno(C.bind(self.s, sa, sa:size()) == 0)
 	if not ok then return false, err end
 	self.bound_addr = sa:tostring()
 	--epoll_ctl() must be called after bind() for some reason.
@@ -984,26 +998,24 @@ cdef[[
 int listen(SOCKET s, int backlog);
 ]]
 
-function tcp:try_listen(backlog, addr, onaccept)
-	if not isnum(backlog) then
-		backlog, addr, onaccept, addr_flags = 1/0, backlog, addr, onaccept
-	end
-	log('', 'sock', 'listen?', '%-4s %s:%d', self, addr:tostring(), addr:port())
+function tcp:try_listen(addr, backlog, onaccept)
+	local sa = sockaddr(addr)
+	log('', 'sock', 'listen?', '%-4s %s', self, sa:tostring())
 	if not self.bound_addr then
-		local ok, err = self:try_bind(addr)
+		local ok, err = self:try_bind(sa)
 		if not ok then return nil, err end
 	end
 	backlog = clamp(backlog or 1/0, 0, 0x7fffffff)
 	local ok = C.listen(self.s, backlog) == 0
 	if not ok then return check_errno() end
-	log('note', 'sock', 'listen', '%-4s %s:%d', self, self.bound_addr)
-	live(self, 'listen %s:%d', self.bound_addr)
+	log('note', 'sock', 'listen', '%-4s %s', self, self.bound_addr)
+	live(self, 'listen %s', self.bound_addr)
 	self.n = 0  --live client connection count
 	self.sockets = {} --live client connections: {socket->true}
 
 	if onaccept then
 		repeat
-			local ctcp, err = self:accept()
+			local ctcp, err = self:try_accept()
 			if not ctcp then
 				if not self:closed() then
 					--transient error. let it retry but pause a little
@@ -1079,14 +1091,8 @@ local function set_linger(v)
 end
 
 local SOL_SOCKET  = 1
-local IPPROTO_IP  = 0
-local IPPROTO_TCP = 6
-local IPPROTO_UDP = 17
-local IPPROTO_IPV6 = 41
 
-local OPT, get_opt, set_opt
-
-OPT = {
+local OPT = {
 	--SOL_SOCKET options (so_ prefix)
 	so_reuseaddr      = 2,  --allow local address reuse
 	so_type           = 3,  --get socket type (RO)
@@ -1126,7 +1132,7 @@ OPT = {
 	udp_cork          =  1, --cork output (accumulate datagrams)
 }
 
-get_opt = {
+local get_opt = {
 	--SOL_SOCKET
 	so_reuseaddr      = get_bool,
 	so_type           = get_int,
@@ -1165,7 +1171,7 @@ get_opt = {
 	udp_cork          = get_bool,
 }
 
-set_opt = {
+local set_opt = {
 	--SOL_SOCKET
 	so_reuseaddr      = set_bool,
 	so_broadcast      = set_bool,
@@ -1225,13 +1231,19 @@ function socket:try_getopt(k)
 	if not ok then return nil, err end
 	return get(buf, szbuf[0])
 end
+function socket:getopt(k) --can't wrap with unprotect_io because it returns false
+	local v, err = self:try_getopt(k)
+	check_io(self, not (v == nil and err), err)
+	return v
+end
 
 function socket:try_setopt(k, v)
 	local opt, level = parse_opt(k)
 	local set = assertf(set_opt[k], 'read-only socket option: %s', k)
 	local buf, sz = set(v)
-	return check_errno(C.setsockopt(self.s, level, opt, buf, sz))
+	return check_errno(C.setsockopt(self.s, level, opt, buf, sz) == 0)
 end
+socket.setopt = unprotect_io(socket.try_setopt)
 
 end --do
 
@@ -1290,11 +1302,11 @@ end
 --sleeping & timers ----------------------------------------------------------
 
 function wait_until(expires)
-	wait_job():wait_until(expires)
+	return wait_job():wait_until(expires)
 end
 
 function wait(timeout)
-	wait_job():wait(timeout)
+	return wait_job():wait(timeout)
 end
 
 function runat(t, f, ...)
@@ -1400,8 +1412,6 @@ function socket:settimeout(s, rw)
 	self:setexpires(s and clock() + s, rw)
 end
 
-socket.getopt  = unprotect_io(socket.try_getopt)
-socket.setopt  = unprotect_io(socket.try_setopt)
 socket.close   = unprotect_io(socket.try_close)
 socket.bind    = unprotect_io(socket.try_bind)
 socket.recv    = unprotect_io(socket.try_recv)
@@ -1434,19 +1444,14 @@ _G.socket = create_socket
 _G.tcp    = create_tcp
 _G.udp    = create_udp
 
-function try_connect(self, host, port, timeout)
+function try_connect(self, addr, timeout)
 	if not issocket(self) then
-		local host, port, timeout = self, host, port
-		local ai, ext_ai = try_getaddrinfo(host, port)
-		if not ai then return nil, ext_ai end
-		local s = create_socket(ai)
-		local s, err = try_connect(s, ai, nil, timeout)
-		if not ext_ai then ai:free() end
-		if not s then return nil, err end
-		return s
+		self, addr, timeout = nil, self, addr
 	end
+	local sa = sockaddr(addr)
+	self = self or create_tcp(sa:family())
 	self:settimeout(timeout)
-	local ok, err = self:try_connect(host, port)
+	local ok, err = self:try_connect(addr)
 	if not ok then
 		self:try_close()
 		return nil, err
@@ -1458,26 +1463,22 @@ function connect(...)
 	return check_io(nil, try_connect(...))
 end
 
-function listen(self, host, port, ...)
+function listen(self, addr, backlog, onaccept)
 	if not issocket(self) then
-		local host, port = self, host
-		local ai, ext_ai = try_getaddrinfo(host, port)
-		if not ai then return nil, ext_ai end
-		local s = create_socket(ai)
-		listen(s, ai, nil, ...)
-		if not ext_ai then ai:free() end
-		return s
+		self, addr, backlog, onaccept = nil, self, addr, backlog
 	end
-	if ai:family() == 'unix' then
+	local sa = sockaddr(addr)
+	self = self or create_tcp(sa:family())
+	if sa:family() == 'unix' then
 		--remove the socket file to emulate reuseaddr.
-		local socket_path = ai:tostring()
+		local socket_path = sa:tostring()
 		if file_is(socket_path, 'socket') then
 			try_rmfile(socket_path)
 		end
 	else
 		self:setopt('so_reuseaddr', true)
 	end
-	return self:listen(host, port, ...)
+	return self:listen(addr, backlog, onaccept)
 end
 
 --coroutine-based scheduler --------------------------------------------------
