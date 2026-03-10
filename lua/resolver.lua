@@ -23,8 +23,7 @@ resolver(t) -> r
 	Create a resolver object. Options:
 
 	* servers: a list (space-separated string or array) of DNS server IP addresses.
-	  Each entry can be either a hostname or a table of form
-	  `{host=, [port=], [tcp_only=true]}`.
+	  Each entry can be either an 'ip:port' or a table of form `{addr=, [tcp_only=true]}`.
 	* max_cache_entries: max. number of response cache entries (defaults to 10K).
 
 r:[try_]query(name,[type],[timeout] | t) -> answers
@@ -397,7 +396,7 @@ local function tcp_query(rs, ns, q)
 	local s = tcp()
 	s:setexpires(q.expires)
 
-	s:connect(ns.ai)
+	s:connect(ns.addr)
 	s:send(u16_str(#q.s) .. q.s)
 
 	local len_buf = u8a(2)
@@ -563,22 +562,19 @@ function resolver(opt)
 		rs.dbgr = noop
 	end
 
-	local servers = collect(words(rs.servers))
-
 	rs.nst = {}
 	for i,ns in ipairs(rs.servers) do
-		local host, port, tcp_only
+		local addr, tcp_only
 		if istab(ns) then
-			host = ns.host or ns[1]
-			port = ns.port or ns[2] or 53
+			addr = ns.addr
 			tcp_only = ns.tcp_only
 		else
-			host, port = ns, 53
+			addr = ns
 		end
-		local ai = getaddrinfo(host, port)
+		if not addr:find':%d+$' then addr = addr..':53' end
 		local udp = udp()
-		udp:connect(ai)
-		local ns = {ai = ai, udp = udp, tcp_only = tcp_only, queue = {}}
+		udp:connect(addr)
+		local ns = {addr = addr, udp = udp, tcp_only = tcp_only, queue = {}}
 		ns.scheduler = thread(function()
 			schedule(rs, ns)
 		end, 'N'..i)
@@ -752,7 +748,7 @@ if not ... then
 			'10.0.0.10',
 			'1.1.1.1',
 			'8.8.8.8',
-			{host = '8.8.4.4', port = 53},
+			{addr = '8.8.4.4'},
 		},
 		--tcp_only = true,
 		--debug = true,

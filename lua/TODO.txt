@@ -13,7 +13,6 @@ SIMPLIFY / REVIEW
 * schema test?
 
 * fix tests that used to work
-	os_thread
 	smtp
 
 * inline tests
