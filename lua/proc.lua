@@ -3,28 +3,38 @@
 	Process & IPC API for Linux.
 	Written by Cosmin Apreutesei. Public Domain.
 
+EXEC/KILL/PROCESS INFO
 	[try_]exec(opt | cmd,...) -> p                   spawn a child process in background
-	[try_]exec_luafile(opt | script,...) -> p        spawn a process running a Lua script
-	  p.pid                                    process ID
-	  p:kill([signal=SIGTERM])                 kill process
-	  p:wait([expires]) -> status              wait for a process to finish
-	  p:status() -> active|finished|killed|forgotten    process status
-	  p:exit_code() -> code | nil,status       get process exit code
-	  p:forget()                               close process handles
-
-	[try_]kill(pid, [signal=SIGTERM])          kill a process
-
+	[try_]exec_luafile(opt | script_file,...) -> p   spawn a process running a Lua script
+	[try_]exec_lua(opt | script_code, ...)           spawn a process running Lua code
+		p.pid                                        process ID
+		p:kill([signal=SIGTERM])                     kill process
+		p:status() -> status                         active, finished, killed, forgotten
+		p:wait([expires]) -> status                  wait for a process to finish
+		p:exit_code() -> code | nil,status           get process exit code
+		p:forget()                                   close process handles
+		p:info() -> t                                parse /proc/PID/stat
+	[try_]kill(pid, [signal=SIGTERM])                kill a process
+	proc_info([pid]) -> t                            parse /proc/PID/stat
+ENV VARS
 	env(k) -> v                                get env. var
 	env(k, v)                                  set env. var
 	env(k, false)                              delete env. var
 	env() -> env                               get all env. vars
-
+CMDLINE SPLIT/QUOTE
 	cmdline_split_args(s) -> {arg1,...}        unquote and split args
 	cmdline_escape(s) -> s                     escape string (but don't quote)
 	cmdline_quote_arg(s) -> s                  quote as cmdline arg
 	cmdline_quote_args(...) -> s               quote as cmdline args
 	cmdline_quote_cmd(cmd) -> s                quote command
 	cmdline_quote_vars({k->v}, [format]) -> s  quote as var assignments
+OS INFO
+	os_info() -> t                             parse /proc/* files
+DAEMONIZE
+	daemonize() -> pid                         daemonize current process
+	daemonized -> true | false                 is current process daemonized?
+
+------------------------------------------------------------------------------
 
 [try_]exec(opt | cmd, [env], [cur_dir], [stdin], [stdout], [stderr], [autokill]) -> p
 
@@ -46,35 +56,19 @@
 		autokill
 			kills the process when the calling process exits.
 
-[try_]exec_luafile(opt | script,...) -> p
+[try_]exec_luafile(opt | script_file,...) -> p
+[try_]exec_lua(opt | script_code,...) -> p
 
 	Spawn a process running a Lua script, using the same LuaJIT executable
 	as that of the running process. The process starts in the current directory
 	unless otherwise specified. The arguments and options are the same as for
 	`exec()`, except that `cmd` must be a Lua file instead of an executable file.
 
-proc_info([pid]) -> t
-proc:info() -> t
-
-	Get process info fro `/proc/PID/stat`.
-
-os_info() -> t
-
-	Get OS info.
-
-daemonize() -> pid
-daemonized -> true | false
-
-	Daemonize current process.
-
 --NOTES ----------------------------------------------------------------------
 
 #### Env vars
 
 Env vars are case-sensitive on POSIX.
-
-Use `env()` to read variables instead of `os.getenv()` because the latter
-won't see the changes made to variables in the current process.
 
 #### Exit codes
 
@@ -234,10 +228,10 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 
 	--copy the args list to a char*[] buffer.
 	local arg_buf, arg_ptr
-	if args then
+	do
 		local n = #cmd + 1
-		local m = #args + 1
-		for i,s in ipairs(args) do
+		local m = args and #args + 1 or 1
+		for i,s in ipairs(args or empty) do
 			n = n + #s + 1
 		end
 		arg_buf = u8a(n)
@@ -246,7 +240,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 		copy(arg_buf, cmd, #cmd + 1)
 		arg_ptr[0] = arg_buf
 		n = n + #cmd + 1
-		for i,s in ipairs(args) do
+		for i,s in ipairs(args or empty) do
 			copy(arg_buf + n, s, #s + 1)
 			arg_ptr[i] = arg_buf + n
 			n = n + #s + 1
@@ -277,6 +271,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 			n = n + 1
 			copy(env_buf + n, v, #v + 1)
 			n = n + #v + 1
+			i = i + 1
 		end
 		env_ptr[m] = nil
 	end
@@ -405,7 +400,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 		if out_wf then check(C.dup2(out_wf.fd, 1) == 1) end
 		if err_wf then check(C.dup2(err_wf.fd, 2) == 2) end
 
-		C.execvpe(cmd, arg_ptr, env_ptr)
+		C.execvpe(cmd, arg_ptr, env_ptr or C.environ)
 
 		--if we got here then exec failed.
 		check()
