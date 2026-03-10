@@ -41,6 +41,7 @@ require'sock'
 require'signal'
 require'termios'
 require'rect'
+require'proc'
 
 ui = {}
 
