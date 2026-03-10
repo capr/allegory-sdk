@@ -39,6 +39,8 @@ end
 local function test_pthread_creation()
 	local state = luastate()
 	state:openlibs()
+	state:push{[0] = arg[0]} --used to make `rel_scriptdir`
+	state:setglobal'arg'
 	state:push(function()
    	require'glue'
 		local function worker() end

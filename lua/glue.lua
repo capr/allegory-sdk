@@ -1874,15 +1874,19 @@ function autoload(t, k, v)
 	return t
 end
 
+do
+local arg = rawget(_G, 'arg')
+local arg0 = arg and arg[0]
+
 --get script's directory, based on arg[0].
 --NOTE: the path is not absolute, but relative to the starting current directory!
-local arg0 = rawget(_G, 'arg')[0]
 local dir = arg0:gsub('[/\\]?[^/\\]+$', '') --remove file name
 rel_scriptdir = dir == '' and '.' or dir
 
 --get script's name without Lua file extension, based on arg[0].
 --NOTE: for bundled executables, this returns the executable's name.
 scriptname = arg0:gsub('%.lua$', ''):match'[^/\\]+$'
+end
 
 function add_searchpath(searchpath, path, index, ext, init, prefix)
 	index = index or 1
