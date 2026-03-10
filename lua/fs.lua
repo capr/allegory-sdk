@@ -25,6 +25,11 @@ PIPES
 	[try_]mkfifo(path|{path=,...}) -> true        create a named pipe
 STDIN/OUT/ERR ASYNC PIPES
 	std{in|out|err}_async_pipe() -> pipe          get stdin/out/err as async pipes
+EVENTFD
+	eventfd([initval], [flags]) -> f              create an eventfd
+	f:[try_]read_value() -> n                     read counter (async)
+	f:[try_]write_value([n])                      add n (default 1) to counter (async)
+	EFD_SEMAPHORE                                 flag for semaphore mode
 FILE I/O
 	f:[try_]read(buf, len) -> readlen             read data from file
 	f:[try_]readn(buf, n)                         read exactly n bytes
@@ -548,6 +553,7 @@ function file_wrap_fd(fd, opt)
 		debug_prefix = opt.debug_prefix
 			or opt.type == 'file' and 'F'
 			or opt.type == 'pipe' and 'P'
+			or opt.type == 'efd' and 'E'
 			or opt.type == 'pidfile' and 'D',
 		w = 0, r = 0,
 	}, opt)
@@ -625,7 +631,10 @@ function try_open(path, mode)
 	local rw = getbit(flags, o_bits.rdwr)
 	assert(not (wo and rw),
 		'open(): conflicting flags: wronly + rdwr')
-	opt.quiet = repl(opt.quiet, nil, opt.type == 'pipe' or not (wo or rw))
+	opt.quiet = repl(opt.quiet, nil,
+		opt.type == 'pipe' or
+		opt.type == 'efd' or
+		not (wo or rw))
 	local perms = parse_perms(opt.perms) or default_file_perms
 	local c_open = opt.open or C.open
 	local fd = c_open(opt.path, flags, perms)
@@ -714,6 +723,43 @@ end
 stdin_async_pipe  = memoize(function() return file_wrap_fd(0, {type = 'pipe', async = true, debug_prefix = '<stdin>' }) end)
 stdout_async_pipe = memoize(function() return file_wrap_fd(1, {type = 'pipe', async = true, debug_prefix = '<stdout>'}) end)
 stderr_async_pipe = memoize(function() return file_wrap_fd(2, {type = 'pipe', async = true, debug_prefix = '<stderr>'}) end)
+
+--eventfd --------------------------------------------------------------------
+
+cdef'int eventfd(unsigned int initval, int flags);'
+
+EFD_SEMAPHORE = 1
+
+local function try_eventfd(initval, flags)
+	local fd = C.eventfd(initval or 0, bor(O_CLOEXEC, flags or 0))
+	if fd == -1 then return check_errno() end
+	local f, err = file_wrap_fd(fd, {
+		type = 'efd', async = true, debug_prefix = 'E', quiet = true,
+	})
+	if not f then
+		C.close(fd)
+		return nil, err
+	end
+	local rbuf = new'uint64_t[1]'
+	local wbuf = new'uint64_t[1]'
+	f.try_read_value = function(f)
+		local len, err = f:try_readn(rbuf, 8)
+		if not len then return nil, err end
+		return tonumber(rbuf[0])
+	end
+	f.read_value = unprotect_io(f.try_read_value)
+	f.try_write_value = function(f, n)
+		wbuf[0] = n or 1
+		local ok, err = f:try_write(wbuf, 8)
+		if not ok then return nil, err end
+		return true
+	end
+	f.write_value = unprotect_io(f.try_write_value)
+	return f
+end
+function eventfd(...)
+	return assert(try_eventfd(...))
+end
 
 --i/o ------------------------------------------------------------------------
 
