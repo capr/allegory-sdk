@@ -1593,8 +1593,8 @@ end
 --with negative timestamps. They're Y2038-safe though.
 function time(utc, y, m, d, h, M, s, isdst)
 	if utc ~= nil and utc ~= true and utc ~= false then --shift arg#1
-		       utc, y, m, d, h, M, s, isdst =
-		false, utc, y, m, d, h, M, s
+		     utc, y, m, d, h, M, s, isdst =
+		nil, utc, y, m, d, h, M, s
 	end
 	local t
 	if y then

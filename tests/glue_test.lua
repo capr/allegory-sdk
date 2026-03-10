@@ -400,9 +400,7 @@ do
 	local t_local = time(false, 2000, 6, 15, 12, 0, 0)
 	local t_utc   = time(true,  2000, 6, 15, 12, 0, 0)
 	local diff = utc_diff(t_local)
-	if diff then
-		assert(math.abs((t_utc - t_local) - diff) < 1)
-	end
+	assert(math.abs((t_utc - t_local) - diff) == 0)
 end
 
 --utc_diff: returns a number (may vary by timezone/DST but is always valid)
