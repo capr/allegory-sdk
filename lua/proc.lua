@@ -205,7 +205,7 @@ function cmdline_split_args(s) --parse a shell-like command string into cmd, arg
 	return t[1], args
 end
 
-function _exec(t, env, dir, stdin, stdout, stderr, autokill)
+local function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 
 	local cmd, args
 	if istab(t) then
