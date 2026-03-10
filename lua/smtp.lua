@@ -28,18 +28,15 @@ local client = {
 	sendmail_timeout = 60,
 	domain = 'localhost', --client's domain (useless)
 	xmailer = 'allegory-sdk smtp client',
-	tls_options = {
-		ca_file = ca_file_path,
-	},
 }
 
 function smtp_connect(t)
 
 	local self = object(client, {}, t)
-	self.host_addr = check_io(nil, try_resolve(self.host))
+	self.addr = check_io(nil, try_resolve(self.host))
 	self.f = tcp()
 	self.f:settimeout(self.connect_timeout)
-	self.f:connect(self.host_addr, self.port or self.tls and 465 or 587)
+	self.f:connect(self.addr..':'..(self.port or self.tls and 465 or 587))
 	if self.tls then
 		self.f = self.f:check_io(client_stcp(self.f, self.host, self.tls_options))
 	end

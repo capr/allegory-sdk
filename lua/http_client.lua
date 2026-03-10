@@ -83,9 +83,6 @@ local client = {
 	max_cookie_length = 8192,
 	max_cookies = 1e6,
 	max_cookies_per_host = 1000,
-	tls_options = {
-		ca_file = ca_file_path,
-	},
 }
 
 --targets --------------------------------------------------------------------

@@ -4,9 +4,8 @@ require'resolver'
 require'sock'
 require'logging'
 require'multipart'
-logging.filter.tls = true
-config('ca_file', exedir()..'/../tests/cacert.pem')
 
+logging.filter.tls = true
 logging.debug = true
 
 config('smtp_host' , 'mail.bpnpart.com')

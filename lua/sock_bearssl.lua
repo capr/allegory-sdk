@@ -571,22 +571,6 @@ local BR_SSL_BUFSIZE_BIDI = (16384 + 325) + (16384 + 85)
 
 local min = math.min
 
-local function P(s)
-	return exists(s) and s or nil
-end
-function ca_file_path()
-	return config'ca_file'
-		or P(varpath'cacert.pem')
-		or P'/etc/ssl/certs/ca-certificates.crt'                --Debian/Ubuntu/Gentoo etc.
-		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --Fedora/RHEL 7
-		or P'/etc/pki/tls/certs/ca-bundle.crt'                  --Fedora/RHEL 6
-		or P'/etc/ssl/ca-bundle.pem'                            --OpenSUSE
-		or P'/etc/pki/tls/cacert.pem'                           --OpenELEC
-		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --CentOS/RHEL 7
-		or P'/etc/ssl/cert.pem'                                 --Alpine Linux
-		or P(indir(exedir(), '../../etc/ca-certificates.crt'))  --bundled (outdated)
-end
-
 --PEM parsing ----------------------------------------------------------------
 
 local _pem_acc     -- uint8_t* write head
@@ -799,6 +783,25 @@ end
 
 local load_once = memoize(load)
 
+local function P(s)
+	return exists(s) and s or nil
+end
+local function os_ca_file(path)
+	return P(varpath'cacert.pem')                              --updated via update_ca_file()
+		or P'/etc/ssl/certs/ca-certificates.crt'                --Debian/Ubuntu/Gentoo etc.
+		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --Fedora/RHEL 7
+		or P'/etc/pki/tls/certs/ca-bundle.crt'                  --Fedora/RHEL 6
+		or P'/etc/ssl/ca-bundle.pem'                            --OpenSUSE
+		or P'/etc/pki/tls/cacert.pem'                           --OpenELEC
+		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --CentOS/RHEL 7
+		or P'/etc/ssl/cert.pem'                                 --Alpine Linux
+end
+local load_ca = memoize(function(ca_file)
+	ca_file = ca_file or config'ca_file' or os_ca_file()
+	if ca_file then ca = load_once(ca_file) end
+	return assert(ca, 'tls_client: ca or ca_file required')
+end)
+
 local function cert_key_opt(opt, required)
 	local cert = opt and (opt.cert or opt.cert_file and load_once(opt.cert_file))
 	local key  = opt and (opt.key  or opt.key_file  and load_once(opt.key_file))
@@ -812,6 +815,7 @@ end
 -- Returns (sc, eng_ptr, keepalive) or (nil, err).
 -- eng_ptr is br_ssl_engine_context* (== sc cast, since eng is first field).
 local function make_client_ctx(opt)
+	opt = opt or empty
 	local keepalive = {}
 	local sc  = new('br_ssl_client_context')
 	local xc  = new('br_x509_minimal_context')
@@ -821,9 +825,8 @@ local function make_client_ctx(opt)
 	keepalive[#keepalive + 1] = xc
 	keepalive[#keepalive + 1] = buf
 
-	if not (opt and opt.insecure_noverifycert) then
-		local ca = opt and (opt.ca or opt.ca_file and load_once(opt.ca_file))
-		assert(ca, 'tls_client: ca or ca_file required')
+	if not opt.insecure_noverifycert then
+		local ca = opt.ca or load_ca(opt.ca_file)
 		local ta, ta_n, ta_kp = load_trust_anchors(ca)
 		if not ta then return nil, ta_n end
 		for _, v in ipairs(ta_kp) do keepalive[#keepalive + 1] = v end
