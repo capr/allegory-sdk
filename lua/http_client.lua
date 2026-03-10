@@ -213,7 +213,7 @@ function client:connect_now(target)
 	if not ip then
 		return nil, 'lookup failed for "'..host..'": '..tostring(err)
 	end
-	local ok, err = tcp:connect(ip, port, expires)
+	local ok, err = tcp:connect(ip..':'..port, expires)
 	self:dp(target, '+CO', '%s %s', tcp, err or '')
 	if not ok then
 		self:dec_conn_count(target)
