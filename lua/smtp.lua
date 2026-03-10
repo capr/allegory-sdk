@@ -40,7 +40,7 @@ function smtp_connect(t)
 	if self.tls then
 		self.f = self.f:check_io(client_stcp(self.f, self.host, self.tls_options))
 	end
-	self.b = pbuffer{f = self.f}
+	self.b = pbuffer{f = self.f, lineterm = '\r\n'}
 	self.f:onclose(function()
 		self.b:free()
 		self.b = nil

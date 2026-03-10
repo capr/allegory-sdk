@@ -11,7 +11,7 @@
 		pb.f                              opened file or socket
 		pb.readahead                      read-ahead size (64K)
 		pb.linesize                       max. line size for haveline() (8K)
-		pb.lineterm                       line terminator ('\n')
+		pb.lineterm                       line terminator (nil)
 		pb.dict, pb.metatable             see string.buffer doc
 
 	pb:put([str|num|obj], ...)           push values to buffer
@@ -299,11 +299,12 @@ function pb:seek(offset)
 end
 
 pb.linesize = 8192
-pb.lineterm = '\n'
+pb.lineterm = nil
 function pb:haveline() --for line-based protocols like http.
+	local lineterm = assert(self.lineterm, 'lineterm not set')
 	local i = 0
 	::again::
-	local s = self:getto(self.lineterm, i, self.linesize)
+	local s = self:getto(lineterm, i, self.linesize)
 	if s then return s end
 	i = #self
 	self:checkp(i < self.linesize, 'line too long')

@@ -768,6 +768,7 @@ function _G.http(t)
 	self.b = pbuffer{
 		f = self.f,
 		readahead = self.recv_buffer_size,
+		lineterm = '\r\n',
 	} --for reading only
 
 	return self
