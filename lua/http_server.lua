@@ -41,13 +41,13 @@ http_redirect(url, [status=303])  raise http redirect error
 CONFIG
 
 	host                           'localhost'
-	http_addr                      '*'
+	http_addr                      '0.0.0.0'
 	http_port                      80
 	http_unix_socket
 	http_unix_socket_perms
 	http_unix_socket_user
 	http_unix_socket_group
-	https_addr                     '*' (set to false to disable)
+	https_addr                     '0.0.0.0' (set to false to disable)
 	https_port                     443
 	https_unix_socket
 	https_unix_socket_perms
@@ -111,7 +111,7 @@ function http_server(...)
 	local listen = {}
 
 	if config'http_addr' ~= false then
-		local http_addr = config('http_addr', '*')
+		local http_addr = config('http_addr', '0.0.0.0')
 		add(listen, {
 			host = host,
 			addr = http_addr,
@@ -124,7 +124,7 @@ function http_server(...)
 	end
 
 	if config'https_addr' ~= false then
-		local https_addr = config('https_addr', '*')
+		local https_addr = config('https_addr', '0.0.0.0')
 		local crt_file = config'https_crt_file' or varpath(host..'.crt')
 		local key_file = config'https_key_file' or varpath(host..'.key')
 		if host == 'localhost'
@@ -287,7 +287,7 @@ function http_server(...)
 		if tls then
 			local opt = update(self.tls_options, listen_opt.tls_options)
 			local stcp = server_stcp(tcp, opt)
-			live(stcp, 'listen %s:%d', tcp.bound_addr, tcp.bound_port)
+			live(stcp, 'listen %s', tcp.bound_addr)
 			tcp = stcp
 		end
 		push(self.sockets, tcp)

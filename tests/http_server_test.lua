@@ -7,21 +7,17 @@ local server = http_server{
 	listen = {
 		{
 			host = 'localhost',
-			addr = '127.0.0.1',
+			--addr = '127.0.0.1',
 			port = 80,
 		},
 		{
 			host = 'localhost',
-			addr = '127.0.0.1',
+			--addr = '127.0.0.1',
 			port = 443,
 			tls = true,
 			tls_options = {
-				keypairs = {
-					{
-						cert_file = exedir()..'/../tests/localhost.crt',
-						key_file  = exedir()..'/../tests/localhost.key',
-					},
-				},
+				cert_file = exedir()..'/../tests/localhost.crt',
+				key_file  = exedir()..'/../tests/localhost.key',
 			},
 		},
 	},
