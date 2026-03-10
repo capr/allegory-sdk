@@ -2,6 +2,8 @@
 --http header values parsing and formatting.
 --Written by Cosmin Apreutesei. Public Domain.
 
+if not ... then require'http_headers_test'; return end
+
 require'glue'
 require'base64'
 require'http_date'
@@ -523,7 +525,7 @@ parse.x_forwarded_port          = int
 --parsing API
 
 function headers.parse_header(k, v)
-	local uk = k:gsub('-', '_')
+	local uk = k:lower():gsub('-', '_')
 	if parse[uk] then return parse[uk](v) end
 	return v --unknown header, return unparsed
 end
@@ -687,7 +689,7 @@ function format.set_cookie(t)
 		assert(token(k), 'invalid cookie name')
 		local v = assert(cookie_value(c.value), 'invalid cookie value')
 		local t = {}
-		for k,v in pairs(c.attrs) do
+		for k,v in pairs(c.attrs or empty) do
 			assert(not k:find'[%z\1-\32\127;=]', 'invalid cookie attribute name')
 			if v == true then
 				t[#t+1] = k
