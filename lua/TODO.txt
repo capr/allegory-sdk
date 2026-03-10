@@ -2,6 +2,11 @@ SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
 * make test-all report modules that don't output anything which means they have no tests.
 
+* http server is over-engineered, simplify radically.
+	* simplify header parsing and formatting
+	* simplify content-encoding chains: leave gzip & chunked.
+	*
+
 * http server + client hitting different parts
 
 * http server smoke test to look for memory leaks

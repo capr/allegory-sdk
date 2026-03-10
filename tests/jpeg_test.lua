@@ -2,11 +2,9 @@ require'glue'
 require'jpeg'
 require'fs'
 
-chdir(rel_scriptdir)
-
 local function test_load_save()
-	local infile = 'jpeg_test/progressive.jpg'
-	local outfile = 'jpeg_test/test.jpg'
+	local infile = exedir()..'/../tests/jpeg_test/progressive.jpg'
+	local outfile = exedir()..'/../tests/jpeg_test/test.jpg'
 	local f = open(infile)
 	local img = jpeg_open(f:unbuffered_reader())
 	local bmp = img:load()

@@ -3,7 +3,7 @@ require'glue'
 require'png'
 require'fs'
 
-chdir(rel_scriptdir)
+chdir(exedir()..'/../tests')
 
 local function load(file)
 	local f = open(file)

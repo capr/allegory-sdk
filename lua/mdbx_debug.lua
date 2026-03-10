@@ -1,5 +1,6 @@
 --go@ plink -t root@m1 sdk/bin/debian12/luajit sdk/tests/mdbx_schema_test.lua
 
+require'mdbx'
 logging.debug = true
 
 local function iscfunc(v)

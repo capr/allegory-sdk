@@ -2,7 +2,6 @@ pcall(require, "strict")
 require"csv"
 
 require'fs'
-chdir(rel_scriptdir)
 
 local errors = 0
 

@@ -2,7 +2,7 @@ require'glue'
 require'zip'
 require'fs'
 
-chdir(rel_scriptdir)
+chdir(exedir()..'/../tests')
 
 local function dump(z)
 	print('dir', 'comp', 'mtime', 'atime', 'btime', 'crc',

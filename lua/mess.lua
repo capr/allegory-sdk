@@ -115,8 +115,8 @@ function mess_listen(s, host, port, onaccept, onerror, server_name)
 
 	local server = {tcp = s}
 
-	s:setopt('reuseaddr', true)
-	s:listen(host, port)
+	s:setopt('so_reuseaddr', true)
+	s:listen(host..':'..port)
 
 	liveadd(s, server_name)
 
@@ -158,7 +158,7 @@ function mess_connect(s, host, port, timeout)
 		return mess_connect(tcp(), s, host, port)
 	end
 	s:settimeout(timeout)
-	s:connect(host, port)
+	s:connect(host..':'..port)
 	s:settimeout(nil)
 	return mess_protocol(s)
 end

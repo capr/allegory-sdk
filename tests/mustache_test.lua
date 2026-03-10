@@ -4,8 +4,6 @@ require'mustache'
 require'json'
 require'fs'
 
-chdir(rel_scriptdir)
-
 local function test_spec(t)
 	print(t.desc)
 	local ok, s = pcall(mustache_render, t.template, t.data, t.partials)
@@ -43,7 +41,7 @@ end
 local function test_specs()
 	local failed = 0
 	local total = 0
-	local dir = 'mustache_test'
+	local dir = exedir()..'/../tests/mustache_test'
 	for file in ls(dir) do
 		local path = dir..'/'..file
 		local doc

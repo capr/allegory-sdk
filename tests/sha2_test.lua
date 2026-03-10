@@ -3,7 +3,8 @@ require'glue'
 require'sha2'
 
 require'fs'
-chdir(rel_scriptdir)
+
+chdir(exedir()..'/../tests')
 
 sha = {
 	SHA256 = function(s) return tohex(sha256(s)) end,
@@ -12,6 +13,7 @@ sha = {
 }
 
 for file in io.popen('ls sha2_test/*.dat'):lines() do
+	pr(file)
 	local s = load(file)
 	local hashes = {}
 	do

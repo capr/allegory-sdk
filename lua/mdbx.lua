@@ -884,7 +884,7 @@ end
 if not ... then
 
 local function self_test()
-	local db = mdbx_open('testdb')
+	local db = mdbx_open(homedir()..'/testdb')
 
 	db:begin'w'
 	db:open_table('users', 'w')
@@ -893,7 +893,7 @@ local function self_test()
 	db:begin'w'
 	s = _('%03x %d foo bar', 32, 3141592)
 	local k = i32a(1, 123456789)
-	assert(db:try_put_raw('users', k, sizeof(k), s, #s))
+	assert(db:try_put_raw('users', cast(u8p, k), sizeof(k), s, #s))
 	db:commit()
 
 	db:begin()
@@ -904,7 +904,7 @@ local function self_test()
 	db:commit()
 
 	db:close()
-	pr'ok'
+	pr'mdbx ok'
 end
 
 local function test_dbi_semantics()

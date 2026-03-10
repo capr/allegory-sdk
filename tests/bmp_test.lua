@@ -47,7 +47,7 @@ local function show_iter(fname)
 end
 
 for i,d in ipairs{'good', 'bad', 'questionable'} do
-	for f,d in ls(indir(rel_scriptdir, 'bmp_test/'..d)) do
+	for f,d in ls(exedir()..'/../tests/bmp_test/'..d)) do
 		if f:find'%.bmp$' and not f:find'%-saved' then
 			local f = d:path()
 			show(f)
