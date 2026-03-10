@@ -450,27 +450,8 @@ unsigned char *br_ssl_engine_recvrec_buf(const br_ssl_engine_context *cc, size_t
 void br_ssl_engine_recvrec_ack(br_ssl_engine_context *cc, size_t len);
 void br_ssl_engine_flush(br_ssl_engine_context *cc, int force);
 void br_ssl_engine_close(br_ssl_engine_context *cc);
-void br_ssl_engine_set_default_rsavrfy(br_ssl_engine_context *cc);
-void br_ssl_engine_set_default_ecdsa(br_ssl_engine_context *cc);
 void br_ssl_engine_set_buffer(br_ssl_engine_context *cc,
 	void *iobuf, size_t iobuf_len, int bidi);
-void br_ssl_engine_set_buffers_bidi(br_ssl_engine_context *cc,
-	void *ibuf, size_t ibuf_len, void *obuf, size_t obuf_len);
-void br_ssl_engine_set_versions(br_ssl_engine_context *cc,
-	unsigned version_min, unsigned version_max);
-void br_ssl_engine_inject_entropy(br_ssl_engine_context *cc,
-	const void *data, size_t len);
-unsigned br_ssl_engine_current_state(const br_ssl_engine_context *cc);
-unsigned char *br_ssl_engine_sendapp_buf(const br_ssl_engine_context *cc, size_t *len);
-void br_ssl_engine_sendapp_ack(br_ssl_engine_context *cc, size_t len);
-unsigned char *br_ssl_engine_recvapp_buf(const br_ssl_engine_context *cc, size_t *len);
-void br_ssl_engine_recvapp_ack(br_ssl_engine_context *cc, size_t len);
-unsigned char *br_ssl_engine_sendrec_buf(const br_ssl_engine_context *cc, size_t *len);
-void br_ssl_engine_sendrec_ack(br_ssl_engine_context *cc, size_t len);
-unsigned char *br_ssl_engine_recvrec_buf(const br_ssl_engine_context *cc, size_t *len);
-void br_ssl_engine_recvrec_ack(br_ssl_engine_context *cc, size_t len);
-void br_ssl_engine_flush(br_ssl_engine_context *cc, int force);
-void br_ssl_engine_close(br_ssl_engine_context *cc);
 typedef struct br_ssl_session_cache_class_ br_ssl_session_cache_class;
 typedef struct {
 	const br_ssl_session_cache_class *vtable;
@@ -482,8 +463,6 @@ typedef struct {
 } br_ssl_session_cache_lru;
 void br_ssl_session_cache_lru_init(br_ssl_session_cache_lru *cc,
 	unsigned char *store, size_t store_len);
-void br_ssl_session_cache_lru_forget(
-	br_ssl_session_cache_lru *cc, const unsigned char *id);
 void br_ssl_engine_set_suites(br_ssl_engine_context *cc,
 	const uint16_t *suites, size_t suites_num);
 
@@ -585,6 +564,8 @@ void br_ssl_server_init_full_ec(br_ssl_server_context *cc,
 	const br_x509_certificate *chain, size_t chain_len,
 	unsigned cert_issuer_key_type, const br_ec_private_key *sk);
 int br_ssl_server_reset(br_ssl_server_context *cc);
+void br_ssl_server_set_cache(br_ssl_server_context *cc,
+	const br_ssl_session_cache_class **vtable);
 void br_ssl_server_set_cache(br_ssl_server_context *cc,
 	const br_ssl_session_cache_class **vtable);
 ]]
@@ -883,7 +864,8 @@ local function make_client_ctx(opt)
 	end
 
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
-	C.br_ssl_engine_set_versions(eng, BR_TLS12, BR_TLS12)
+	eng.version_min = BR_TLS12
+	eng.version_max = BR_TLS12
 	local suites = {
 		BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
 		BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
@@ -932,7 +914,8 @@ local function make_server_ctx(chain, chain_n, sk, kt, issuer_kt, cache)
 		C.br_ssl_server_init_full_ec(sc, chain, chain_n, issuer_kt, sk)
 	end
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
-	C.br_ssl_engine_set_versions(eng, BR_TLS12, BR_TLS12)
+	eng.version_min = BR_TLS12
+	eng.version_max = BR_TLS12
 	if cache then
 		C.br_ssl_server_set_cache(sc, cache)
 	end
