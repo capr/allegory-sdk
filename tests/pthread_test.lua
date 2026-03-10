@@ -30,6 +30,8 @@ end
 local function create_thread(worker, args, attrs)
 	local state = luastate()
 	state:openlibs()
+	state:push{[0] = arg[0]} --used to make `rel_scriptdir`
+	state:setglobal'arg'
 	state:push(function(worker, args)
 		local ffi = require'ffi'
 		local function pass(...)

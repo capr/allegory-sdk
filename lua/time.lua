@@ -38,35 +38,32 @@ ffi.cdef[[
 typedef struct {
 	long s;
 	long ns;
-} time_timespec;
+} timespec;
 
-int time_nanosleep(time_timespec*, time_timespec *) asm("nanosleep");
+int nanosleep(timespec*, timespec *);
+int clock_gettime(int clock_id, timespec *tp);
 ]]
 
 local EINTR = 4
 
-local t = ffi.new'time_timespec'
+local t = ffi.new'timespec'
 
 function sleep(s)
 	local int, frac = math.modf(s)
 	t.s = int
 	t.ns = frac * 1e9
-	local ret = C.time_nanosleep(t, t)
+	local ret = C.nanosleep(t, t)
 	while ret == -1 and ffi.errno() == EINTR do --interrupted
-		ret = C.time_nanosleep(t, t)
+		ret = C.nanosleep(t, t)
 	end
 	assert(ret == 0)
 end
-
-ffi.cdef[[
-int time_clock_gettime(int clock_id, time_timespec *tp) asm("clock_gettime");
-]]
 
 local CLOCK_REALTIME = 0
 local CLOCK_MONOTONIC = 1
 
 local ok, rt_C = pcall(ffi.load, 'rt')
-local clock_gettime = (ok and rt_C or C).time_clock_gettime
+local clock_gettime = (ok and rt_C or C).clock_gettime
 
 local function tos(t)
 	return tonumber(t.s) + tonumber(t.ns) / 1e9

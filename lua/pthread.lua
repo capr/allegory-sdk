@@ -34,7 +34,7 @@ READ/WRITE LOCKS
 	rwlock:tryreadlock() -> true | false          try to lock for reading
 	rwlock:unlock()                               unlock the r/w lock
 SEMAPHORES
-	sem([value]) -> sem                           create a semaphore (process-private)
+	semaphore([value]) -> sem                     create a semaphore (process-private)
 	sem:free()                                    destroy a semaphore
 	sem:post()                                    increment (signal)
 	sem:wait([expires]) -> true | false           decrement (wait) until `expires` (*)
@@ -100,13 +100,12 @@ The good news is that this is really all you need for most apps.
 
 if not ... then return require'pthread_test' end
 
-local ffi = require'ffi'
-local lib = 'pthread'
-local C = ffi.C
-assert(ffi.abi'64bit')
-assert(ffi.os == 'Linux')
+require'glue'
+assert(Linux)
 
-ffi.cdef[[
+local C = C
+
+cdef[[
 typedef long int time_t;
 
 enum {
@@ -206,17 +205,6 @@ typedef struct {
 struct sched_param {
 	int sched_priority;
 };
-]]
-
-local EBUSY     = 16
-local ETIMEDOUT = 110
-local EAGAIN    = 11
-
-ffi.cdef[[
-typedef struct {
-	time_t s;
-	long ns;
-} timespec;
 
 int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*func)(void *), void *arg);
 real_pthread_t pthread_self(void);
@@ -283,46 +271,45 @@ int pthread_setaffinity_np(pthread_t thread, size_t cpusetsize, const cpu_set_t 
 int pthread_getaffinity_np(pthread_t thread, size_t cpusetsize, cpu_set_t *cpuset);
 ]]
 
---helpers
+local EBUSY     = 16
+local ETIMEDOUT = 110
+local EAGAIN    = 11
 
-local function check(ok, ret)
-	if ok then return end
-	error(string.format('pthread error: %d\n%s', ret, debug.traceback()), 3)
-end
+--helpers
 
 --return-value checker for '0 means OK' functions
 local function checkz(ret)
-	check(ret == 0, ret)
+	assert(check_errno(ret == 0, ret))
 end
 
 --return-value checker for 'try' functions
 local function checkbusy(ret)
-	check(ret == 0 or ret == EBUSY, ret)
+	assert(check_errno(ret == 0 or ret == EBUSY, ret))
 	return ret == 0
 end
 
 --return-value checker for 'timedwait' functions
 local function checktimeout(ret)
-	check(ret == 0 or ret == ETIMEDOUT, ret)
+	assert(check_errno(ret == 0 or ret == ETIMEDOUT, ret))
 	return ret == 0
 end
 
---errno-based checkers for sem_* functions (which return -1/errno instead of errno directly)
+--errno-based checkers for sem_* functions which set errno().
 local function checkz_sem(ret)
-	check(ret == 0, ffi.errno())
+	assert(check_errno(ret == 0))
 end
 
 local function checkbusy_sem(ret)
 	if ret == 0 then return true end
-	local err = ffi.errno()
-	check(err == EAGAIN, err)
+	local err = errno()
+	assert(check_errno(err == EAGAIN, err))
 	return false
 end
 
 local function checktimeout_sem(ret)
 	if ret == 0 then return true end
-	local err = ffi.errno()
-	check(err == ETIMEDOUT, err)
+	local err = errno()
+	assert(check_errno(err == ETIMEDOUT, err))
 	return false
 end
 
@@ -367,6 +354,10 @@ function pthread(func_cb, attrs, ud)
 	end
 	checkz(ret)
 	return thread
+end
+
+function pthread_yield()
+	checkz(C.sched_yield())
 end
 
 --current thread
@@ -542,7 +533,7 @@ local ts
 --NOTE: `time` is time per os.time(), not a time period.
 function cond.wait(cond, mutex, time)
 	if time then
-		ts = ts or ffi.new'timespec'
+		ts = ts or new'timespec'
 		return checktimeout(C.pthread_cond_timedwait(cond, mutex, timespec(time, ts)))
 	else
 		checkz(C.pthread_cond_wait(cond, mutex))
@@ -596,7 +587,7 @@ ffi.metatype('pthread_rwlock_t', {__index = rwlock})
 
 local sem = {}
 
-function _G.sem(value, space)
+function _G.semaphore(value, space)
 	local s = space or ffi.new'sem_t'
 	checkz_sem(C.sem_init(s, 0, value or 0))
 	if not space then
@@ -658,13 +649,8 @@ end
 
 function barrier.wait(b)
 	local ret = C.pthread_barrier_wait(b)
-	check(ret == 0 or ret == C.PTHREAD_BARRIER_SERIAL_THREAD, ret)
+	assert(check_errno(ret == 0 or ret == C.PTHREAD_BARRIER_SERIAL_THREAD, ret))
 	return ret == C.PTHREAD_BARRIER_SERIAL_THREAD
 end
 
 ffi.metatype('pthread_barrier_t', {__index = barrier})
-
-local SC = ffi.C
-function pthread_yield()
-	checkz(SC.sched_yield())
-end
