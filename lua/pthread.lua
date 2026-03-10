@@ -44,17 +44,6 @@ BARRIERS
 	barrier(count) -> barrier                     create a barrier for `count` threads
 	barrier:free()                                destroy a barrier
 	barrier:wait() -> true | false                wait; one thread returns true
-SPINLOCKS
-	spinlock() -> spinlock                        create a spinlock
-	spinlock:free()                               destroy a spinlock
-	spinlock:lock()                               lock
-	spinlock:unlock()                             unlock
-	spinlock:trylock() -> true | false            try to lock or return false
-THREAD-LOCAL STORAGE
-	pthread_key([destructor_cb]) -> key           create a TLS key
-	pthread_key_free(key)                         delete the key
-	pthread_key_get(key) -> void*                 get thread-specific value
-	pthread_key_set(key, void*)                   set thread-specific value
 THREAD EXTRAS
 	th:name([name])                               get/set thread name (max 15 chars)
 	th:affinity([{cpu, ...}])                     get/set CPU affinity mask
@@ -189,9 +178,6 @@ typedef struct pthread_rwlockattr_t {
 	};
 } pthread_rwlockattr_t;
 
-typedef struct { int _; } pthread_spinlock_t;
-typedef unsigned int pthread_key_t;
-
 typedef struct {
 	union {
 		char __size[32];
@@ -289,17 +275,6 @@ int sem_getvalue(sem_t *sem, int *sval);
 int pthread_barrier_init(pthread_barrier_t *b, const pthread_barrierattr_t *a, unsigned int count);
 int pthread_barrier_destroy(pthread_barrier_t *b);
 int pthread_barrier_wait(pthread_barrier_t *b);
-
-int pthread_spin_init(pthread_spinlock_t *l, int pshared);
-int pthread_spin_destroy(pthread_spinlock_t *l);
-int pthread_spin_lock(pthread_spinlock_t *l);
-int pthread_spin_unlock(pthread_spinlock_t *l);
-int pthread_spin_trylock(pthread_spinlock_t *l);
-
-int pthread_key_create(pthread_key_t *key, void (*destructor)(void*));
-int pthread_key_delete(pthread_key_t key);
-void *pthread_getspecific(pthread_key_t key);
-int pthread_setspecific(pthread_key_t key, const void *value);
 
 int pthread_setname_np(pthread_t thread, const char *name);
 int pthread_getname_np(pthread_t thread, char *name, size_t len);
@@ -688,58 +663,6 @@ function barrier.wait(b)
 end
 
 ffi.metatype('pthread_barrier_t', {__index = barrier})
-
---spinlocks
-
-local spinlock = {}
-
-function _G.spinlock(_, space)
-	local l = space or ffi.new'pthread_spinlock_t'
-	checkz(C.pthread_spin_init(l, C.PTHREAD_PROCESS_PRIVATE))
-	if not space then
-		ffi.gc(l, l.free)
-	end
-	return l
-end
-
-function spinlock.free(l)
-	checkz(C.pthread_spin_destroy(l))
-	ffi.gc(l, nil)
-end
-
-function spinlock.lock(l)
-	checkz(C.pthread_spin_lock(l))
-end
-
-function spinlock.unlock(l)
-	checkz(C.pthread_spin_unlock(l))
-end
-
-function spinlock.trylock(l)
-	return checkbusy(C.pthread_spin_trylock(l))
-end
-
-ffi.metatype('pthread_spinlock_t', {__index = spinlock})
-
---thread-local storage
-
-function pthread_key(destructor)
-	local key = ffi.new'pthread_key_t[1]'
-	checkz(C.pthread_key_create(key, destructor))
-	return key[0]
-end
-
-function pthread_key_free(key)
-	checkz(C.pthread_key_delete(key))
-end
-
-function pthread_key_get(key)
-	return C.pthread_getspecific(key)
-end
-
-function pthread_key_set(key, val)
-	checkz(C.pthread_setspecific(key, val))
-end
 
 local SC = ffi.C
 function pthread_yield()
