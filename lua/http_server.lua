@@ -13,16 +13,13 @@ http_server(opt1,...) -> server   Create a server object
 		lopt.port                     TCP port to listen to
 		lopt.tls                      use TLS over this port
 		lopt.tls_options            {opt->v}
-			tlsopt.cert_file           TLS cert file
-			tlsopt.key_file            TLS key file
+			see sock_bearssl.lua
 		lopt.unix_socket              unix socket file to listen to
 		lopt.unix_socket_perms        set perms on socket file after bind()
 		lopt.unix_socket_user         set user  on socket file after bind()
 		lopt.unix_socket_group        set group on socket file after bind()
 	opt.tls_options                tls_config(opt.tls_options)
-		.protocols                    'tlsv1.2'
-		.ciphers                      'CIPHER1 ...'
-		.prefer_ciphers_server        true
+		see sock_bearssl.lua
 	opt.max_line_size           -> http.max_line_size
 	opt.recv_buffer_size        -> http.recv_buffer_size
 	opt.debug                   -> http.debug
@@ -71,22 +68,6 @@ require'http'
 
 local server = {
 	type = 'http_server', http = http,
-	tls_options = {
-		protocols = 'tlsv1.2',
-		ciphers = [[
-			ECDHE-ECDSA-AES256-GCM-SHA384
-			ECDHE-RSA-AES256-GCM-SHA384
-			ECDHE-ECDSA-CHACHA20-POLY1305
-			ECDHE-RSA-CHACHA20-POLY1305
-			ECDHE-ECDSA-AES128-GCM-SHA256
-			ECDHE-RSA-AES128-GCM-SHA256
-			ECDHE-ECDSA-AES256-SHA384
-			ECDHE-RSA-AES256-SHA384
-			ECDHE-ECDSA-AES128-SHA256
-			ECDHE-RSA-AES128-SHA256
-		]],
-		prefer_ciphers_server = true,
-	},
 }
 
 function server:log(tcp, severity, module, event, fmt, ...)
@@ -285,7 +266,7 @@ function http_server(...)
 
 		local tls = listen_opt.tls
 		if tls then
-			local opt = update(self.tls_options, listen_opt.tls_options)
+			local opt = update(self.tls_options or {}, listen_opt.tls_options)
 			local stcp = server_stcp(tcp, opt)
 			live(stcp, 'listen %s', tcp.bound_addr)
 			tcp = stcp

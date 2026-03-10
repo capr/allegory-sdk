@@ -19,6 +19,8 @@ Config options (opt table)
 	cert[_file]            certificate PEM data or file (for server or mutual TLS)
 	key[_file]             private key PEM data or file (for server or mutual TLS)
 	cert_issuer_rsa        hint: server EC cert was issued by RSA CA (default: EC)
+	min_rsa_size           minimum RSA key size for server cert chains (default: 2048)
+	session_cache_entries  number of TLS session cache entries (default: 1024)
 	insecure_noverifycert  skip server certificate verification (client only)
 
 ]=]
@@ -164,6 +166,14 @@ typedef struct { const void *data; size_t len; } br_tls_prf_seed_chunk;
 typedef void (*br_tls_prf_impl)(void *dst, size_t len,
 	const void *secret, size_t secret_len, const char *label,
 	size_t seed_num, const br_tls_prf_seed_chunk *seed);
+
+/* protocol versions */
+enum {
+	BR_SSL30 = 0x0300,
+	BR_TLS10 = 0x0301,
+	BR_TLS11 = 0x0302,
+	BR_TLS12 = 0x0303,
+};
 
 /* ec */
 typedef struct { int curve; unsigned char *q; size_t qlen; } br_ec_public_key;
@@ -440,8 +450,42 @@ unsigned char *br_ssl_engine_recvrec_buf(const br_ssl_engine_context *cc, size_t
 void br_ssl_engine_recvrec_ack(br_ssl_engine_context *cc, size_t len);
 void br_ssl_engine_flush(br_ssl_engine_context *cc, int force);
 void br_ssl_engine_close(br_ssl_engine_context *cc);
+void br_ssl_engine_set_default_rsavrfy(br_ssl_engine_context *cc);
+void br_ssl_engine_set_default_ecdsa(br_ssl_engine_context *cc);
 void br_ssl_engine_set_buffer(br_ssl_engine_context *cc,
 	void *iobuf, size_t iobuf_len, int bidi);
+void br_ssl_engine_set_buffers_bidi(br_ssl_engine_context *cc,
+	void *ibuf, size_t ibuf_len, void *obuf, size_t obuf_len);
+void br_ssl_engine_set_versions(br_ssl_engine_context *cc,
+	unsigned version_min, unsigned version_max);
+void br_ssl_engine_inject_entropy(br_ssl_engine_context *cc,
+	const void *data, size_t len);
+unsigned br_ssl_engine_current_state(const br_ssl_engine_context *cc);
+unsigned char *br_ssl_engine_sendapp_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_sendapp_ack(br_ssl_engine_context *cc, size_t len);
+unsigned char *br_ssl_engine_recvapp_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_recvapp_ack(br_ssl_engine_context *cc, size_t len);
+unsigned char *br_ssl_engine_sendrec_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_sendrec_ack(br_ssl_engine_context *cc, size_t len);
+unsigned char *br_ssl_engine_recvrec_buf(const br_ssl_engine_context *cc, size_t *len);
+void br_ssl_engine_recvrec_ack(br_ssl_engine_context *cc, size_t len);
+void br_ssl_engine_flush(br_ssl_engine_context *cc, int force);
+void br_ssl_engine_close(br_ssl_engine_context *cc);
+typedef struct br_ssl_session_cache_class_ br_ssl_session_cache_class;
+typedef struct {
+	const br_ssl_session_cache_class *vtable;
+	unsigned char *store; size_t store_len, store_ptr;
+	unsigned char index_key[32];
+	const br_hash_class *hash;
+	int init_done;
+	uint32_t head, tail, root;
+} br_ssl_session_cache_lru;
+void br_ssl_session_cache_lru_init(br_ssl_session_cache_lru *cc,
+	unsigned char *store, size_t store_len);
+void br_ssl_session_cache_lru_forget(
+	br_ssl_session_cache_lru *cc, const unsigned char *id);
+void br_ssl_engine_set_suites(br_ssl_engine_context *cc,
+	const uint16_t *suites, size_t suites_num);
 
 /* ssl client */
 typedef struct br_ssl_client_context_ br_ssl_client_context;
@@ -490,7 +534,6 @@ void br_ssl_client_set_single_ec(br_ssl_client_context *cc,
 	const br_ec_impl *iec, br_ecdsa_sign iecdsa);
 
 /* ssl server */
-typedef struct br_ssl_server_context_ br_ssl_server_context;
 typedef struct br_ssl_server_policy_class_ br_ssl_server_policy_class;
 typedef struct {
 	const br_ssl_server_policy_class *vtable;
@@ -511,7 +554,7 @@ typedef struct {
 } br_ssl_server_policy_ec_context;
 typedef struct br_ssl_session_cache_class_ br_ssl_session_cache_class;
 typedef uint16_t br_suite_translated[2];
-struct br_ssl_server_context_ {
+typedef struct {
 	br_ssl_engine_context eng;
 	uint16_t client_max_version;
 	const br_ssl_session_cache_class **cache_vtable;
@@ -534,7 +577,7 @@ struct br_ssl_server_context_ {
 	const unsigned char *cur_dn; size_t cur_dn_len;
 	unsigned char hash_CV[64];
 	size_t hash_CV_len; int hash_CV_id;
-};
+} br_ssl_server_context;
 void br_ssl_server_init_full_rsa(br_ssl_server_context *cc,
 	const br_x509_certificate *chain, size_t chain_len,
 	const br_rsa_private_key *sk);
@@ -542,6 +585,8 @@ void br_ssl_server_init_full_ec(br_ssl_server_context *cc,
 	const br_x509_certificate *chain, size_t chain_len,
 	unsigned cert_issuer_key_type, const br_ec_private_key *sk);
 int br_ssl_server_reset(br_ssl_server_context *cc);
+void br_ssl_server_set_cache(br_ssl_server_context *cc,
+	const br_ssl_session_cache_class **vtable);
 ]]
 
 assert(sizeof'br_ssl_engine_context'   == 3616)
@@ -641,7 +686,7 @@ end
 -- Copy br_rsa_private_key fields into a new [1] array (pointer-compatible).
 -- The actual key bytes still live in skdc.key_data; skdc must stay alive.
 local function copy_rsa_sk(src, keepalive)
-	local sk = new('br_rsa_private_key[1]')
+	local sk = new'br_rsa_private_key[1]'
 	sk[0].n_bitlen = src.n_bitlen
 	sk[0].p  = src.p;  sk[0].plen  = src.plen
 	sk[0].q  = src.q;  sk[0].qlen  = src.qlen
@@ -803,8 +848,8 @@ local load_ca = memoize(function(ca_file)
 end)
 
 local function cert_key_opt(opt, required)
-	local cert = opt and (opt.cert or opt.cert_file and load_once(opt.cert_file))
-	local key  = opt and (opt.key  or opt.key_file  and load_once(opt.key_file))
+	local cert = opt.cert or opt.cert_file and load_once(opt.cert_file)
+	local key  = opt.key  or opt.key_file  and load_once(opt.key_file)
 	if required or (cert or key) then
 		assert(cert, 'tls_client: cert or cert_file required')
 		assert(key , 'tls_client: key or key_file required')
@@ -815,7 +860,6 @@ end
 -- Returns (sc, eng_ptr, keepalive) or (nil, err).
 -- eng_ptr is br_ssl_engine_context* (== sc cast, since eng is first field).
 local function make_client_ctx(opt)
-	opt = opt or empty
 	local keepalive = {}
 	local sc  = new('br_ssl_client_context')
 	local xc  = new('br_x509_minimal_context')
@@ -824,6 +868,9 @@ local function make_client_ctx(opt)
 	keepalive[#keepalive + 1] = sc
 	keepalive[#keepalive + 1] = xc
 	keepalive[#keepalive + 1] = buf
+
+	-- enforce RSA key size floor for server cert chains (default 2048).
+	xc.min_rsa_size = opt.min_rsa_size or 2048
 
 	if not opt.insecure_noverifycert then
 		local ca = opt.ca or load_ca(opt.ca_file)
@@ -836,6 +883,19 @@ local function make_client_ctx(opt)
 	end
 
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
+	C.br_ssl_engine_set_versions(eng, BR_TLS12, BR_TLS12)
+	local suites = {
+		BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	}
+	local n = #suites
+	local suites_buf = new('uint16_t[?]', n)
+	for i = 1, n do suites_buf[i - 1] = suites[i] end
+	C.br_ssl_engine_set_suites(eng, suites_buf, n)
 
 	local cert, key = cert_key_opt(opt)
 	if cert then
@@ -862,7 +922,7 @@ local function make_client_ctx(opt)
 	return sc, eng, keepalive
 end
 
-local function make_server_ctx(chain, chain_n, sk, kt, issuer_kt)
+local function make_server_ctx(chain, chain_n, sk, kt, issuer_kt, cache)
 	local sc  = new('br_ssl_server_context')
 	local buf = new('uint8_t[?]', BR_SSL_BUFSIZE_BIDI)
 	local eng = cast('br_ssl_engine_context*', sc) -- eng is first field
@@ -872,6 +932,22 @@ local function make_server_ctx(chain, chain_n, sk, kt, issuer_kt)
 		C.br_ssl_server_init_full_ec(sc, chain, chain_n, issuer_kt, sk)
 	end
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
+	C.br_ssl_engine_set_versions(eng, BR_TLS12, BR_TLS12)
+	if cache then
+		C.br_ssl_server_set_cache(sc, cache)
+	end
+	local suites = {
+		BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	}
+	local n = #suites
+	local suites_buf = new('uint16_t[?]', n)
+	for i = 1, n do suites_buf[i - 1] = suites[i] end
+	C.br_ssl_engine_set_suites(eng, suites_buf, n)
 	return sc, eng, {sc, buf}
 end
 
@@ -1036,6 +1112,7 @@ end
 --Public API -----------------------------------------------------------------
 
 function _G.client_stcp(tcp, host, opt)
+	opt = opt or empty
 	local sc, eng, keepalive = make_client_ctx(opt)
 	if not sc then return nil, eng end
 
@@ -1053,6 +1130,7 @@ function _G.client_stcp(tcp, host, opt)
 end
 
 function _G.server_stcp(tcp, opt)
+	opt = opt or empty
 	local cert, key = cert_key_opt(opt, true)
 	local keepalive = {}
 	local chain, chain_n, chain_kp = load_cert_chain(cert)
@@ -1069,11 +1147,22 @@ function _G.server_stcp(tcp, opt)
 	else
 		error('unsupported_key_type_'..kt)
 	end
-	local issuer_kt = opt and opt.cert_issuer_rsa and BR_KEYTYPE_RSA or BR_KEYTYPE_EC
+	local cache, cache_buf
+	local cache_entries = opt.session_cache_entries or 1024
+	if cache_entries > 0 then
+		local bufsize = cache_entries * 100 -- BearSSL uses 100 bytes per entry
+		cache = new'br_ssl_session_cache_lru'
+		cache_buf = u8a(bufsize)
+		C.br_ssl_session_cache_lru_init(cache, cache_buf, bufsize)
+		keepalive[#keepalive + 1] = cache
+		keepalive[#keepalive + 1] = cache_buf
+	end
+	local issuer_kt = opt.cert_issuer_rsa and BR_KEYTYPE_RSA or BR_KEYTYPE_EC
 	local s = object(server_stcp, {
 		tcp = tcp, s = tcp.s,
 		_chain = chain, _chain_n = chain_n,
 		_sk = sk, _kt = kt, _issuer_kt = issuer_kt,
+		_cache = cache,
 		_keepalive = keepalive,
 		check_io = check_io, checkp = checkp,
 		r = 0, w = 0,
