@@ -16,13 +16,8 @@ end})
 function test.env()
 	env('zz', '123')
 	env('zZ', '567')
-	if win then
-		assert(env('zz') == '567')
-		assert(env('zZ') == '567')
-	else
-		assert(env('zz') == '123')
-		assert(env('zZ') == '567')
-	end
+	assert(env('zz') == '123')
+	assert(env('zZ') == '567')
 	env('zz', false)
 	env('zZ', false)
 	assert(not env'zz')
@@ -174,15 +169,9 @@ os.exit(123)
 end
 
 function test.autokill()
-	if win then
-		assert(exec{cmd = 'notepad', autokill = true})
-		print'waiting 1s'
-		sleep(1)
-	else
-		assert(exec{cmd = '/bin/sleep 123', autokill = true})
-		print'waiting 2s'
-		sleep(2)
-	end
+	assert(exec{cmd = '/bin/sleep 123', autokill = true})
+	print'waiting 1s'
+	sleep(1)
 	print'done'
 end
 
@@ -195,18 +184,46 @@ function test_all()
 	end
 end
 
-function test.esc()
-	if win then
-		assert(cmdline_quote_arg[[a\"xx"yx\\\]] == [["a\\\"xx\"yx\\\\\\"]])
-	else
-		--TODO
+function test.cmdline_split_args()
+	local function check(s, ecmd, ...)
+		local eargs = select('#', ...) > 0 and {...} or nil
+		local cmd, args = cmdline_split_args(s)
+		assert(cmd == ecmd, string.format('cmd: %q ~= %q', tostring(cmd), tostring(ecmd)))
+		if eargs then
+			assert(args and #args == #eargs)
+			for i, v in ipairs(eargs) do
+				assert(args[i] == v, string.format('arg[%d]: %q ~= %q', i, tostring(args[i]), v))
+			end
+		else
+			assert(not args, 'expected no args')
+		end
+	end
+	check('/bin/ls',    '/bin/ls')                            -- no args
+	check('  /bin/ls  ', '/bin/ls')                          -- leading/trailing spaces
+	check('/bin/ls -la /tmp',                '/bin/ls', '-la', '/tmp')    -- multiple plain args
+	check('/bin/echo "hello world"',         '/bin/echo', 'hello world')  -- double-quoted arg with space
+	check("/bin/echo 'hello world'",         '/bin/echo', 'hello world')  -- single-quoted arg with space
+	check('/bin/echo "say \\"hi\\""',        '/bin/echo', 'say "hi"')     -- escaped quote inside dquoted
+	check('/bin/echo "back\\\\slash"',       '/bin/echo', 'back\\slash')  -- escaped backslash in dquoted
+	check("/bin/echo 'no \\escape here'",    '/bin/echo', 'no \\escape here') -- no escaping in squoted
+	check('/bin/echo foo\\ bar',             '/bin/echo', 'foo bar')      -- backslash-escaped space
+	check('/bin/echo un"quo"ted',            '/bin/echo', 'unquoted')     -- adjacent quoted+unquoted
+	check('cmd a b c',                       'cmd', 'a', 'b', 'c')        -- many args
+	check('cmd "" arg',                      'cmd', '', 'arg')             -- empty double-quoted arg
+	check("cmd '' arg",                      'cmd', '', 'arg')             -- empty single-quoted arg
+	check("cmd\t\ta\tb",                     'cmd', 'a', 'b')             -- tabs as whitespace
+	check([[cmd "foo"'bar'baz]],             'cmd', 'foobarbaz')           -- mixed adjacent segments
+	check('"/path to/cmd" arg',              '/path to/cmd', 'arg')        -- quoted cmd with space
+	assert(not cmdline_split_args(''))                                           -- empty string -> nil
+	assert(not cmdline_split_args('   '))                                        -- only spaces -> nil
+	-- roundtrip: cmdline_quote_cmd -> cmdline_split_args
+	local orig = {'/usr/bin/grep', 'hello world', "it's", 'back\\slash'}
+	local s = cmdline_quote_cmd(orig)
+	local cmd, args = cmdline_split_args(s)
+	assert(cmd == orig[1], 'roundtrip cmd')
+	for i = 2, #orig do
+		assert(args[i-1] == orig[i], string.format('roundtrip arg[%d]: %q ~= %q', i-1, tostring(args[i-1]), orig[i]))
 	end
 end
 
---test.env()
---test.esc()
---test.pipe()
---test.autokill()
---test.kill()
---test.exec_lua()
 test_all()

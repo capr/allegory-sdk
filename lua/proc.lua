@@ -3,8 +3,6 @@
 	Process & IPC API for Linux.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	Missing features: named mutexes, semaphores and events.
-
 	[try_]exec(opt | cmd,...) -> p                   spawn a child process in background
 	[try_]exec_luafile(opt | script,...) -> p        spawn a process running a Lua script
 	  p.pid                                    process ID
@@ -21,6 +19,7 @@
 	env(k, false)                              delete env. var
 	env() -> env                               get all env. vars
 
+	cmdline_split_args(s) -> {arg1,...}        unquote and split args
 	cmdline_escape(s) -> s                     escape string (but don't quote)
 	cmdline_quote_arg(s) -> s                  quote as cmdline arg
 	cmdline_quote_args(...) -> s               quote as cmdline args
@@ -112,6 +111,7 @@ require'glue'
 require'fs'
 require'sock'
 require'signal'
+local re = require'relabel'
 
 assert(Linux, 'platform not Linux')
 
@@ -186,6 +186,31 @@ local function close_fd(fd)
 	return C.close(fd) == 0
 end
 
+--A token is one or more adjacent pieces concatenated by the {~ ~} (Cs) capture.
+--A piece is one of: "..." (with \-escaping) | '...' (literal) | \char | plain chars.
+--Quotes and backslashes are stripped via -> '' (replacement with empty string).
+local split_args_patt = re.compile[[
+	args    <- {| (S* token)* S* |}
+	token   <- {~ piece+ ~}
+	piece   <- dquoted / squoted / escaped / plain
+	dquoted <- ('"' -> '') ('\' -> '' {.} / {[^"\]})* ('"' -> '')
+	squoted <- ("'" -> '') {[^']*} ("'" -> '')
+	escaped <- ('\' -> '') {.}
+	plain   <- {(!%s !['"\] .)+}
+	S       <- %s+
+]]
+
+function cmdline_split_args(s) --parse a shell-like command string into cmd, args
+	local t = split_args_patt:match(s) or {}
+	if not t[1] then return nil end
+	local args
+	if #t > 1 then
+		args = {}
+		for i = 2, #t do args[i-1] = t[i] end
+	end
+	return t[1], args
+end
+
 function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 
 	local cmd, args
@@ -200,17 +225,7 @@ function _exec(t, env, dir, stdin, stdout, stderr, autokill)
 			end
 		end
 	else
-		--TODO: implement unquote_args() instead of just splitting by space.
-		for s in t:gmatch'[^%s]+' do
-			if not cmd then
-				cmd = s
-			else
-				if not args then
-					args = {}
-				end
-				args[#args+1] = s
-			end
-		end
+		cmd, args = cmdline_split_args(t)
 	end
 
 	if dir and cmd:sub(1, 1) ~= '/' then
@@ -725,7 +740,7 @@ function cmdline_quote_cmd(cmd)
 	local t = {}
 	t[1] = cmd[1]
 	for i = 2, cmd.n or #cmd do
-		if cmd[i] then --nil and false args are skipped. pass '' to inject empt args.
+		if cmd[i] then --nil and false args are skipped. pass '' to inject empty args.
 			t[#t+1] = cmdline_quote_arg(cmd[i])
 		end
 	end
