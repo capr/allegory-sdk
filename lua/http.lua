@@ -65,7 +65,7 @@ local http_headers = require'http_headers'
 local http = {type = 'http_connection', debug_prefix = 'H'}
 
 function http:log(severity, module, event, fmt, ...)
-	if not logging or logging.filter[severity] then return end
+	if logging.filter[severity] then return end
 	local S = self.f or '-'
 	local dt = clock() - self.start_time
 	local s = fmt and _(fmt, logargs(...)) or ''
@@ -755,10 +755,10 @@ function _G.http(t)
 	if self.debug and self.debug.tracebacks then
 		self.f.tracebacks = true --for check_io()
 	end
-	if not (logging and self.debug and self.debug.protocol) then
+	if not (self.debug and self.debug.protocol) then
 		self.dp = noop
 	end
-	if logging and self.debug and self.debug.stream then
+	if self.debug and self.debug.stream then
 		self.f:debug'http'
 	end
 

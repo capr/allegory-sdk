@@ -202,6 +202,9 @@ end
 function client:connect_now(target)
 	local host, port, client_ip = target()
 	local tcp = tcp()
+	if target.http_args.debug and target.http_args.debug.stream then
+		tcp:debug'http'
+	end
 	if client_ip then
 		local ok, err = tcp:bind(client_ip)
 		if not ok then return nil, err end
@@ -339,7 +342,7 @@ end
 
 --cookie management ----------------------------------------------------------
 
-function client:accept_cookie(cookie, host)
+function client:accept_cookie(cookie, host, http)
 	return http:cookie_domain_matches_request_host(cookie.domain, host)
 end
 
@@ -362,7 +365,7 @@ function client:store_cookies(target, req, res)
 	local client_jar = self:cookie_jar(target.client_ip)
 	local host = target.host
 	for _,cookie in ipairs(cookies) do
-		if self:accept_cookie(cookie, host) then
+		if self:accept_cookie(cookie, host, req.http) then
 			local expires
 			if cookie.expires then
 				expires = cookie.expires
