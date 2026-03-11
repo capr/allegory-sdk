@@ -282,9 +282,6 @@ typedef struct {
 void br_skey_decoder_init(br_skey_decoder_context *ctx);
 void br_skey_decoder_push(br_skey_decoder_context *ctx,
 	const void *data, size_t len);
-]]
-
-ffi.cdef[[
 
 /* ssl record layer */
 typedef struct br_sslrec_in_class_      br_sslrec_in_class;
@@ -453,7 +450,7 @@ void br_ssl_engine_close(br_ssl_engine_context *cc);
 void br_ssl_engine_set_buffer(br_ssl_engine_context *cc,
 	void *iobuf, size_t iobuf_len, int bidi);
 typedef struct br_ssl_session_cache_class_ br_ssl_session_cache_class;
-typedef struct {
+typedef struct br_ssl_session_cache_lru_ {
 	const br_ssl_session_cache_class *vtable;
 	unsigned char *store; size_t store_len, store_ptr;
 	unsigned char index_key[32];
@@ -564,10 +561,6 @@ void br_ssl_server_init_full_ec(br_ssl_server_context *cc,
 	const br_x509_certificate *chain, size_t chain_len,
 	unsigned cert_issuer_key_type, const br_ec_private_key *sk);
 int br_ssl_server_reset(br_ssl_server_context *cc);
-void br_ssl_server_set_cache(br_ssl_server_context *cc,
-	const br_ssl_session_cache_class **vtable);
-void br_ssl_server_set_cache(br_ssl_server_context *cc,
-	const br_ssl_session_cache_class **vtable);
 ]]
 
 assert(sizeof'br_ssl_engine_context'   == 3616)
@@ -838,6 +831,14 @@ local function cert_key_opt(opt, required)
 	end
 end
 
+-- BearSSL cipher suite ids
+local BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xCCA9
+local BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256   = 0xCCA8
+local BR_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384       = 0xC02C
+local BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384         = 0xC030
+local BR_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256       = 0xC02B
+local BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256         = 0xC02F
+
 -- Returns (sc, eng_ptr, keepalive) or (nil, err).
 -- eng_ptr is br_ssl_engine_context* (== sc cast, since eng is first field).
 local function make_client_ctx(opt)
@@ -917,7 +918,8 @@ local function make_server_ctx(chain, chain_n, sk, kt, issuer_kt, cache)
 	eng.version_min = C.BR_TLS12
 	eng.version_max = C.BR_TLS12
 	if cache then
-		C.br_ssl_server_set_cache(sc, cache)
+		sc.cache_vtable = cast(voidp, cache)
+		assert(sc.cache_vtable[0] == cache[0].vtable)
 	end
 	local suites = {
 		BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
@@ -938,6 +940,9 @@ end
 
 local _szp = new'size_t[1]' -- shared; safe because reads are captured before yields
 
+local BR_ERR_RECV_FATAL_ALERT = 256
+local BR_ERR_SEND_FATAL_ALERT = 512
+
 -- Drive the engine until `target` state bits are set.
 -- Returns true, or nil+err on error/closed.
 local function engine_run(self, target)
@@ -950,7 +955,17 @@ local function engine_run(self, target)
 		end
 		if band(state, BR_SSL_CLOSED) ~= 0 then
 			local e = tonumber(eng.err)
-			return nil, e == 0 and 'eof' or 'ssl_error_'..e
+			local s
+			if e == 0 then
+				s = 'eof'
+			elseif e >= BR_ERR_SEND_FATAL_ALERT then
+				s = 'ssl_send_error_'..(e - BR_ERR_SEND_FATAL_ALERT)
+			elseif e >= BR_ERR_RECV_FATAL_ALERT then
+				s = 'ssl_recv_error_'..(e - BR_ERR_RECV_FATAL_ALERT)
+			else
+				s = 'ssl_error'..e
+			end
+			return nil, s
 		end
 		if band(state, BR_SSL_SENDREC) ~= 0 then
 			local buf = C.br_ssl_engine_sendrec_buf(eng, _szp)
@@ -1134,7 +1149,7 @@ function _G.server_stcp(tcp, opt)
 	local cache_entries = opt.session_cache_entries or 1024
 	if cache_entries > 0 then
 		local bufsize = cache_entries * 100 -- BearSSL uses 100 bytes per entry
-		cache = new'br_ssl_session_cache_lru'
+		cache = new'br_ssl_session_cache_lru[1]'
 		cache_buf = u8a(bufsize)
 		C.br_ssl_session_cache_lru_init(cache, cache_buf, bufsize)
 		keepalive[#keepalive + 1] = cache
@@ -1160,7 +1175,7 @@ function server_stcp:try_accept()
 	if not ctcp then return nil, err, retry end
 
 	local sc, eng, keepalive = make_server_ctx(
-		self._chain, self._chain_n, self._sk, self._kt, self._issuer_kt)
+		self._chain, self._chain_n, self._sk, self._kt, self._issuer_kt, self._cache)
 
 	if C.br_ssl_server_reset(sc) == 0 then
 		ctcp:try_close()
