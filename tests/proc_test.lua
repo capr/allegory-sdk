@@ -175,12 +175,14 @@ function test.autokill()
 	print'done'
 end
 
-function test_all()
+function test_all(test_name)
 	for i,k in ipairs(tests) do
-		print'+--------------------------------------------------------------+'
-		print(string.format('| %-60s |', k))
-		print'+--------------------------------------------------------------+'
-		test[k]()
+		if not test_name or k == test_name then
+			print'+--------------------------------------------------------------+'
+			print(string.format('| %-60s |', k))
+			print'+--------------------------------------------------------------+'
+			test[k]()
+		end
 	end
 end
 
@@ -226,4 +228,4 @@ function test.cmdline_split_args()
 	end
 end
 
-test_all()
+test_all(... ~= 'proc_test' and ... or nil)

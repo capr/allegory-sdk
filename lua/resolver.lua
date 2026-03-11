@@ -789,7 +789,7 @@ if not ... then
 
 		n = n - 1
 		if n == 0 then
-			pr'DONE'
+			print'DONE'
 		end
 	end
 

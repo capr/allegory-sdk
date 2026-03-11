@@ -2,11 +2,10 @@
 --schema standard library.
 --Written by Cosmin Apreutesei. Public Domain.
 
-if not ... then require'schema_test'; return end
+--if not ... then require'schema_test'; return end
 
 require'glue'
 require'schema'
-require'mysql'
 
 --NOTE: locals clash with words in the schema definition below so we name
 --them so they can't be field types or flags!

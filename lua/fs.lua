@@ -471,6 +471,8 @@ int fcntl(int fd, int cmd, ...); // fallocate, set_inheritable
 long syscall(int number, ...); // stat, fstat, lstat
 ]]
 
+local EINVAL = 22
+
 local cbuf = new'char[4096]'
 
 local default_file_perms = tonumber('644', 8)
@@ -551,7 +553,7 @@ function file_wrap_fd(fd, opt)
 		s = fd, --for async use with sock
 		seek = repl(opt.type == 'file' and not opt.async, true, nil),
 		debug_prefix = opt.debug_prefix
-			or opt.type == 'file' and 'F'
+			or opt.type == 'file' and 'f'
 			or opt.type == 'pipe' and 'P'
 			or opt.type == 'efd' and 'E'
 			or opt.type == 'pidfile' and 'D',
@@ -788,7 +790,9 @@ file.read = unprotect_io(file.try_read)
 
 function file.try_sync(f)
 	if f.fd == -1 then return nil, 'closed' end
-	return check_errno(C.fsync(f.fd) == 0)
+	local ok = C.fsync(f.fd) == 0
+	if not ok and errno() == EINVAL then return true end --vboxfs
+	return check_errno(ok)
 end
 file.sync = unprotect_io(file.try_sync)
 
@@ -1165,8 +1169,6 @@ function hardlink(link_path, target_path)
 	local ok, err = try_hardlink(link_path, target_path)
 	check('fs', 'mkhlink', ok, '%s -> %s: %s', link_path, target_path, err)
 end
-
-local EINVAL = 22
 
 function try_readlink(link, maxdepth)
 	maxdepth = maxdepth or 32
