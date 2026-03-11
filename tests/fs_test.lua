@@ -767,6 +767,18 @@ function test.readall()
 	rmfile(testfile)
 end
 
+function test.readall_empty()
+	local testfile = 'fs_test_readall_empty'
+	local f = open(testfile, 'w')
+	f:close()
+	local f = open(testfile)
+	local buf, len = f:readall()
+	assert(len == 0)
+	assert(str(buf, len) == '')
+	f:close()
+	rmfile(testfile)
+end
+
 function test.readn()
 	local testfile = 'fs_test_readn'
 	local f = open(testfile, 'w')

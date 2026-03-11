@@ -871,7 +871,8 @@ function file.try_readall(f, ignore_file_size)
 		filesize = size - offset
 	end
 	local readahead_size = 16 * 1024
-	local buf, sz = b:reserve(filesize or readahead_size)
+	--we reserve 1 byte for 0 because at 0 b:ref() returns nil,0 which looks like an error.
+	local buf, sz = b:reserve(max(1, filesize or readahead_size))
 	local left = filesize or 1/0
 	while true do
 		local len, err = f:try_read(buf, sz)
