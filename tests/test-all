@@ -6,5 +6,11 @@ file="$1"; shift
 for f in $(cd ../lua; ls -1 *.lua); do
 	[[ $file && $f != $file ]] && continue
 	echo "$f"
-	AUTO=1 ../bin/luajit -e"package.path=package.path..';$PWD/?.lua'" "../lua/$f" >/dev/null || break
+	AUTO=1 ../bin/luajit -e"package.path=package.path..';$PWD/?.lua'" "../lua/$f" >test-stdout || break
+	grep -q ok test-stdout || echo "NO-OK $f"
 done
+
+cleanup() {
+	rm test-stdout
+}
+trap cleanup EXIT INT TERM
