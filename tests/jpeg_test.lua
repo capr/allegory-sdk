@@ -1,12 +1,13 @@
 require'glue'
 require'jpeg'
 require'fs'
+require'pbuffer'
 
 local function test_load_save()
 	local infile = exedir()..'/../tests/jpeg_test/progressive.jpg'
 	local outfile = exedir()..'/../tests/jpeg_test/test.jpg'
 	local f = open(infile)
-	local img = jpeg_open(f:unbuffered_reader())
+	local img = jpeg_open(pbuffer{f = f}:reader())
 	local bmp = img:load()
 	f:close()
 
@@ -20,7 +21,7 @@ local function test_load_save()
 
 	local f = open(outfile)
 	local img = jpeg_open{
-		read = f:unbuffered_reader(),
+		read = pbuffer{f = f}:reader(),
 		partial_loading = false, --break on errors
 	}
 	local bmp2 = img:load()
@@ -29,7 +30,7 @@ local function test_load_save()
 	rmfile(outfile)
 	assert(bmp.w == bmp2.w)
 	assert(bmp.h == bmp2.h)
-	print'ok'
+	print'jpeg ok'
 end
 
 test_load_save()

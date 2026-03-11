@@ -1,5 +1,7 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
+* fs: atomic save()/saver() rethinking
+
 * check() from errors.lua is ungreppable because of all local check() flavors.
 
 * make test-all report modules that don't output anything which means they have no tests.
