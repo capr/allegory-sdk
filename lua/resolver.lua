@@ -577,7 +577,7 @@ function resolver(opt)
 		local ns = {addr = addr, udp = udp, tcp_only = tcp_only, queue = {}}
 		ns.scheduler = thread(function()
 			schedule(rs, ns)
-		end, 'N'..i)
+		end, _('resolver scheduler %d: %s', i, addr))
 		rs.nst[i] = ns
 		ns.i = i
 		rs:dbg(ns, nil, 'NS', rs.debug and ai:tostring())
@@ -636,7 +636,7 @@ function rs.try_query(rs, qname, qtype, timeout)
 				rs:dbgr(ns, q, lt, '{...}')
 				resume(lt, res)
 			end
-		end, 'N'..i))
+		end, _('resolver query %d: %s', i, ns.addr)))
 	end
 	rs:dbgs()
 	return suspend() -- the first thread to finish will resume us.

@@ -1,5 +1,10 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
+* log restructuring:
+	live() must take module and action
+	show +N -N on separate column
+	add object type in front of debug prefix
+
 * fs: atomic save()/saver() rethinking
 
 * check() from errors.lua is ungreppable because of all local check() flavors.

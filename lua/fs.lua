@@ -549,14 +549,10 @@ local fcntl_set_fd_flags = fcntl_set_flags_func(F_GETFD, F_SETFD)
 function file_wrap_fd(fd, opt)
 
 	local f = object(file, {
-		fd = fd,
+		fd = assert(fd),
 		s = fd, --for async use with sock
 		seek = repl(opt.type == 'file' and not opt.async, true, nil),
-		debug_prefix = opt.debug_prefix
-			or opt.type == 'file' and 'f'
-			or opt.type == 'pipe' and 'P'
-			or opt.type == 'efd' and 'E'
-			or opt.type == 'pidfile' and 'D',
+		debug_prefix = opt.debug_prefix,
 		w = 0, r = 0,
 	}, opt)
 
@@ -570,7 +566,7 @@ function file_wrap_fd(fd, opt)
 		end
 	end
 
-	live(f, f.path or '')
+	live(f, f.path or f.name or f.type or '')
 
 	return f
 end
@@ -598,8 +594,9 @@ function file.try_close(f)
 		_sock_cancel_wait_io(f)
 	end
 	if not ok then return ok, err end
-	log(f.quiet and '' or 'note', 'fs', 'closed', '%-4s r:%d w:%d', f, f.r, f.w)
-	live(f, nil)
+	--liveadd(f, 'r:%d w:%d', f.r, f.w)
+	--f.quiet and '' or 'note', 'fs', 'closed', '%-4s r:%d w:%d', f, f.r, f.w)
+	live(f, nil, 'r:%d w:%d', f.r, f.w)
 	return true
 end
 file.close = unprotect_io(file.try_close)
@@ -615,13 +612,14 @@ end
 
 function try_open(path, mode)
 	local opt = istab(path) and update({}, path) or {path = path, mode = mode}
+	opt.type = opt.type or 'file'
+	opt.debug_prefix = 'f'
 	assert(isstr(opt.path), 'path required')
 	if opt.mode then
 		local mode_opt = assertf(open_mode_opt[opt.mode],
 			'invalid open mode: %s', opt.mode)
 		merge(opt, mode_opt)
 	end
-	opt.type = opt.type or 'file'
 	assert(not (opt.async and opt.type == 'file'),
 		'open(): files cannot be opened async')
 	local flags = bitflags(opt.flags or 'rdonly', o_bits)
@@ -633,10 +631,7 @@ function try_open(path, mode)
 	local rw = getbit(flags, o_bits.rdwr)
 	assert(not (wo and rw),
 		'open(): conflicting flags: wronly + rdwr')
-	opt.quiet = repl(opt.quiet, nil,
-		opt.type == 'pipe' or
-		opt.type == 'efd' or
-		not (wo or rw))
+	if opt.quiet == nil then opt.quiet = not (wo or rw) end
 	local perms = parse_perms(opt.perms) or default_file_perms
 	local c_open = opt.open or C.open
 	local fd = c_open(opt.path, flags, perms)
@@ -736,7 +731,7 @@ local function try_eventfd(initval, flags)
 	local fd = C.eventfd(initval or 0, bor(O_CLOEXEC, flags or 0))
 	if fd == -1 then return check_errno() end
 	local f, err = file_wrap_fd(fd, {
-		type = 'efd', async = true, debug_prefix = 'E', quiet = true,
+		type = 'eventfd', async = true, debug_prefix = 'E', quiet = true,
 	})
 	if not f then
 		C.close(fd)
@@ -2124,9 +2119,7 @@ end
 local PIDFD_NONBLOCK = 0x000800
 
 function pidfd_open(pid, opt)
-	opt = update({}, opt)
-	opt.type = 'pidfile'
-	opt.async = repl(opt.async, nil, true)
+	opt = update({type = 'pidfd', async = true, debug_prefix = 'p'}, opt)
 	local flags = opt.async and PIDFD_NONBLOCK or 0
 	local fd = C.syscall(434, pid, flags)
 	if fd == -1 then

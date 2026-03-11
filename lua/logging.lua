@@ -6,7 +6,8 @@
 LOGGING
 	logging.log(severity, module, event, fmt, ...)
 	logging.logvar(k, v)
-	logging.live(e, [fmt, ...] | nil)
+	logging.live(e, fmt, ...)
+	logging.live(e, nil, [fmt, ...])
 UTILS
 	logging.arg(v) -> s
 	logging.printlive() -> s
@@ -487,18 +488,20 @@ end
 local function live(self, o, fmt, ...)
 	local id, ids = debug_id(o)
 	local s = fmt and fmtargs(self, fmt, ...)
-	local was_live = ids.live[o] ~= nil
+	local live_s = ids.live[o]
+	local was_live = live_s ~= nil
 	local event = '~'
 	if fmt ~= nil then
 		if not was_live then
 			ids.live_count = ids.live_count + 1
-			event = '+'
+			event = '+ ' .. ids.live_count
 		end
 	elseif was_live then
 		ids.live_count = ids.live_count - 1
-		event = '-'
+		event = '- ' .. ids.live_count
+		if ... then s = live_s .. ' ' .. fmtargs(self, ...) end
 	end
-	self.log('', 'log', event, '%-4s %s live=%d', o, s or ids.live[o], ids.live_count)
+	self.log('', 'log', event, '%-4s %s', o, s or ids.live[o])
 	ids.live[o] = s
 end
 

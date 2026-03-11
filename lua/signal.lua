@@ -4,7 +4,7 @@
 
 	SIG* ...  signal numbers
 
-	signal_file(signals, async, bor(SFD_*, ...), [debug_name]) -> sf
+	signal_file(signals, bor(SFD_*, ...), [debug_name]) -> sf
 	sf:try_read_signal() -> signal | nil,err
 	sf:read_signal() -> signalfd_siginfo
 
@@ -107,12 +107,12 @@ local function sigset(signals)
 	return ss
 end
 
-function signal_file(signals, async, flags, name)
+function signal_file(signals, flags, name)
 	local ss = sigset(signals)
-	local fd = C.signalfd(-1, ss, bor(async and SFD_NONBLOCK or 0, flags or 0))
+	local fd = C.signalfd(-1, ss, bor(SFD_NONBLOCK, flags or 0))
 	assert(check_errno(fd ~= -1))
 	local f = file_wrap_fd(fd, {
-		async = async, type = 'pipe',
+		async = true, type = 'signalfd',
 		name = name or _("signalfd('%s')", signals),
 		debug_prefix = 's',
 	})
@@ -155,7 +155,7 @@ function on_signal(sigs, fn)
 	local f
 	resume(thread(function()
 		signal_block(sigs)
-		f = signal_file(sigs, true)
+		f = signal_file(sigs)
 		f:onclose(function()
 			signal_unblock(sigs)
 		end)
@@ -177,7 +177,7 @@ if not ... then --self-test
 
 	local signals = 'SIGINT SIGTERM SIGUSR1'
 	signal_block(signals)
-	local f = signal_file(signals, true)
+	local f = signal_file(signals)
 
 	resume(thread(function()
 		kill(getpid(), SIGINT)
