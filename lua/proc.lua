@@ -755,9 +755,8 @@ end
 --script|{script,arg1,...}, env, ...
 --{script=, env=, ...}
 function try_exec_lua_file(arg, ...)
-	local exepath = exepath()
 	local script = isstr(arg) and arg or arg.script
-	local cmd = isstr(script) and {exepath, script} or extend({exepath}, script)
+	local cmd = isstr(script) and {exefile(), script} or extend({exefile()}, script)
 	if isstr(arg) then
 		return _exec(cmd, ...)
 	else
@@ -772,9 +771,8 @@ function try_exec_lua_file(arg, ...)
 end
 
 function try_exec_lua(arg, ...)
-	local exepath = exepath()
 	local script = isstr(arg) and arg or arg.script
-	local t = {cmd = {exepath, '-'}, stdin = true}
+	local t = {cmd = {exefile(), '-'}, stdin = true}
 	if isstr(arg) then
 		t.env, t.dir, t.stdout, t.stderr, t.autokill, t.inherit_handles = ...
 	else

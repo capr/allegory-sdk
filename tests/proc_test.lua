@@ -41,7 +41,7 @@ function test.exec_lua()
 end
 
 function test.kill()
-	local luajit = exepath()
+	local luajit = exefile()
 
 	local p, err, errno = exec(
 		{luajit, '-e', 'local n=.12; for i=1,1000000000 do n=n*0.5321 end; print(n); os.exit(123)'},
@@ -67,7 +67,7 @@ end
 
 function test.pipe()
 
-	save('proc_test_pipe.lua', [[
+	save(exedir()..'/../tests/proc_test_pipe.lua', [[
 io.stdin:setvbuf'no'
 io.stdout:setvbuf'no'
 io.stderr:setvbuf'no'

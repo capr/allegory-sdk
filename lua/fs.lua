@@ -91,7 +91,7 @@ SYMLINKS & HARDLINKS
 COMMON PATHS
 	homedir() -> path                             get current user's home directory
 	tmpdir() -> path                              get the temporary directory
-	exepath() -> path                             get the full path of the running executable
+	exefile() -> path                             get the full path of the running executable
 	exedir() -> path                              get the directory of the running executable
 	appdir([appname]) -> path                     get the current user's app data dir
 	scriptdir() -> path                           get the directory of the main script
@@ -103,9 +103,9 @@ FILESYSTEM INFO
 	fs_info(path) -> {size=, free=}               get free/total disk space for a path
 HI-LEVEL APIs
 	[try_]load[_tobuffer](path, [default], [ignore_fsize]) -> buf,len  read file to string or buffer
-	[try_]save(path, v | buf,len | read, [perms])          atomic save value/buffer/array/read-results
-	file_saver(path) -> write(v | buf,len | read, [eof])   atomic save writer function
-	[try_]touch(file, [mtime])
+	[try_]save(path, v | buf,len | read, [file_perms], [dir_perms])    atomic save value/buffer/reader
+	file_saver(path, [file_perms], [dir_perms]) -> try_write(v | buf,len, [eof]) -> ok, err
+	[try_]touch(file, [mtime])                    create file or update mtime
 	gen_id(name, [start=1]) -> id                 persistent atomic, concurrent autoincrement
 
 The deref arg is true by default, meaning that by default, symlinks are
@@ -185,7 +185,7 @@ mode:
  ------------+--------------------------------------+----------
  async       | async mode                           | false
  flags       | bitflags(flags)                      | 'rdonly'
- perms       | unix_perm_parse(perms)               | '0666' / 'rwx'
+ perms       | unixperms_parse(perms)               | '0666' / 'rwx'
  inheritable | sub-processes inherit the fd         | false
  quiet       | quiet logging                        | false
 
@@ -1228,10 +1228,10 @@ function appdir(appname)
 	return dir and format('%s/.%s', dir, appname)
 end
 
-function exepath()
+function exefile()
 	return readlink'/proc/self/exe'
 end
-exepath = memoize(exepath)
+exefile = memoize(exefile)
 
 function abspath(path, pwd)
 	if path:starts'/' then
@@ -1241,7 +1241,7 @@ function abspath(path, pwd)
 end
 
 exedir = memoize(function()
-	return assert(dirname(exepath()))
+	return assert(dirname(exefile()))
 end)
 
 scriptdir = memoize(function()
@@ -1957,16 +1957,16 @@ function load(file, default, ignore_file_size) --load a file into a string.
 	return str(buf, len)
 end
 
---return a try_write(v | buf,len | read, [eof]) -> true | false,err function
+--return a try_write(v | buf,len, [eof]) -> true | false,err function
 --that doesn't yield, so you can use it in ffi write callbacks.
-function file_saver(file, perms)
+function file_saver(file, file_perms, dir_perms)
 	require'proc'
 	local tmpfile = file..'~'..getpid()
 	local f, n
 	local function _write(buf, sz, eof)
 		if not f then
-			mkdirs(tmpfile, perms)
-			f = open{path = tmpfile, mode = 'w', perms = perms, quiet = true}
+			mkdirs(tmpfile, dir_perms)
+			f = open{path = tmpfile, mode = 'w', perms = file_perms, quiet = true}
 			n = 0
 		end
 		if buf ~= nil and not iscdata(buf) then
@@ -2013,11 +2013,11 @@ function file_saver(file, perms)
 	return write
 end
 
---write a Lua value, array of values or read()->buf,sz to a file
+--write a Lua value or read()->buf,sz to a file
 --atomically and durably (on drives with PLP).
-function try_save(file, arg, sz, perms)
-	local write = file_saver(file, perms)
-	if isfunc(arg) then --reader of buffers or stringables
+function try_save(file, arg, sz, file_perms, dir_perms)
+	local write = file_saver(file, file_perms, dir_perms)
+	if isfunc(arg) then --reader
 		local read = arg
 		while true do
 			local ok, buf, sz = pcall(read)
@@ -2036,8 +2036,8 @@ function try_save(file, arg, sz, perms)
 		return true
 	end
 end
-function save(file, arg, sz, perms)
-	local ok, err = try_save(file, arg, sz, perms)
+function save(file, arg, sz, file_perms, dir_perms)
+	local ok, err = try_save(file, arg, sz, file_perms, dir_perms)
 	check('fs', 'save', ok, '%s: %s', file, err)
 end
 

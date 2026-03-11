@@ -864,8 +864,8 @@ local function make_client_ctx(opt)
 	end
 
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
-	eng.version_min = BR_TLS12
-	eng.version_max = BR_TLS12
+	eng.version_min = C.BR_TLS12
+	eng.version_max = C.BR_TLS12
 	local suites = {
 		BR_TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
 		BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
@@ -914,8 +914,8 @@ local function make_server_ctx(chain, chain_n, sk, kt, issuer_kt, cache)
 		C.br_ssl_server_init_full_ec(sc, chain, chain_n, issuer_kt, sk)
 	end
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
-	eng.version_min = BR_TLS12
-	eng.version_max = BR_TLS12
+	eng.version_min = C.BR_TLS12
+	eng.version_max = C.BR_TLS12
 	if cache then
 		C.br_ssl_server_set_cache(sc, cache)
 	end
