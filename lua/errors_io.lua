@@ -90,18 +90,6 @@ function checknp(self, v, ...)
 	}, ...))
 end
 
-function check(errorclass, event, v, ...)
-	if v then return v end
-	assert(type(errorclass) == 'string' or iserror(errorclass))
-	assert(type(event) == 'string')
-	local e = newerror(errorclass, ...)
-	if not e.logged then
-		log('ERROR', e.errortype, event, '%s', e.message)
-		e.logged = true
-	end
-	raise(e)
-end
-
 function protect_io(f, oncaught)
 	return protect('io protocol content', f, oncaught)
 end

@@ -19,7 +19,8 @@
 
 	png:free()                     free the image
 
-	[try_]png_save(opt)            encode a bitmap into a PNG image
+	[try_]png_load(file) -> png, bmp    load a png from a file
+	[try_]png_save(opt)                 encode a bitmap into a PNG image
 
 [try_]png_open(opt) -> png
 
@@ -194,10 +195,7 @@ local premultiply_funcs = {
 }
 
 function try_png_open(opt)
-
-	if isfunc(opt) then
-		opt = {read = opt}
-	end
+	opt = isfunc(opt) and {read = opt} or opt or empty
 	local read = assert(opt.read, 'read expected')
 
 	local ctx = C.spng_ctx_new(0)
@@ -264,10 +262,8 @@ function try_png_open(opt)
 	ihdr = nil
 
 	function img:try_load(opt)
-
-		local gamma = opt and opt.gamma
-		local accept = opt and opt.accept
-		local bmp_fmt, spng_fmt = best_fmt(img.format, accept, gamma)
+		opt = opt or empty
+		local bmp_fmt, spng_fmt = best_fmt(img.format, opt.accept, opt.gamma)
 
 		local nb = new'size_t[1]'
 		local ok, err = check(C.spng_decoded_image_size(ctx, spng_fmt, nb))
@@ -279,7 +275,7 @@ function try_png_open(opt)
 		local bmp = {w = img.w, h = img.h, format = bmp_fmt}
 
 		bmp.stride = row_size
-		if opt and opt.accept and opt.accept.stride_aligned then
+		if opt.accept and opt.accept.stride_aligned then
 			bmp.stride = pad_stride(bmp.stride)
 		end
 		bmp.size = bmp.stride * bmp.h
@@ -287,13 +283,13 @@ function try_png_open(opt)
 
 		local flags = bor(
 			C.SPNG_DECODE_TRNS,
-			gamma and C.SPNG_DECODE_GAMMA or 0,
+			opt.gamma and C.SPNG_DECODE_GAMMA or 0,
 			C.SPNG_DECODE_PROGRESSIVE
 		)
 		C.spng_decode_image(ctx, nil, 0, spng_fmt, flags)
 
 		local row_info = new'struct spng_row_info'
-		local bottom_up = opt and opt.accept and opt.accept.bottom_up
+		local bottom_up = opt.accept and opt.accept.bottom_up
 		bmp.bottom_up = bottom_up
 		local row_sz = bmp.size / bmp.h
 
@@ -328,7 +324,7 @@ function try_png_open(opt)
 		return bmp
 	end
 	function img:load(...)
-		return self:try_load(...)
+		return assert(self:try_load(...))
 	end
 	jit.off(img.load) --calls back into Lua through a ffi call.
 
@@ -402,9 +398,9 @@ local color_types = {
 }
 
 function try_png_save(opt)
-
-	local bmp = assert(opt and opt.bitmap, 'bitmap expected')
-	local write = assert(opt and opt.write, 'write expected')
+	opt = opt or empty
+	local bmp = assert(opt.bitmap, 'bitmap expected')
+	local write = assert(opt.write, 'write expected')
 	if bmp.bottom_up then
 		return nil, 'bottom-up bitmap NYI'
 	end
@@ -482,3 +478,47 @@ jit.off(try_png_save) --calls back into Lua through a ffi call.
 function png_save(...)
 	return assert(try_png_save(...))
 end
+
+function try_png_load(file)
+	require'pbuffer'
+	local f, err = try_open(file)
+	if not f then return nil, err end
+	local img, err = try_png_open{read = pbuffer{f = f}:reader()}
+	if not img then return nil, err end
+	local bmp, err = img:try_load{accept = {bgra8 = true}}
+	f:try_close()
+	if not bmp then return nil, err end
+	return img, bmp
+end
+function png_load(file)
+	local img, bmp = try_png_load(file)
+	--TODO: distinguish between I/O errors (retriable) and content errors.
+	check('png', 'load', img, '%s: %s', file, bmp)
+	return img, bmp
+end
+
+--[[
+	TODO: finish this but: do we sync() ?
+
+	[try_]png_save(bmp, file)           encode a bitmap into a PNG image
+
+function try_png_save(bmp, file)
+	local f, err = try_open(file, 'w')
+	if not f then return nil, err end
+	local ok, err = try_png_save{
+		bitmap = bmp,
+		write = function(buf, sz)
+			return f:try_write(buf, sz)
+		end,
+	}
+	if not ok then f:try_close(); return nil, err end
+	local ok, err = f:try_sync(); if not ok then f:try_close(); return nil, err end
+	local ok, err = f:try_close(); if not ok then return nil, err end
+	return true
+end
+function png_save(bmp, file)
+	local ok, err = try_png_save(file)
+	--TODO: distinguish between I/O errors (retriable) and content errors.
+	check('png', 'save', ok, '%s: %s', file, err)
+end
+]]

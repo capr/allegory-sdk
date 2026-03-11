@@ -1,5 +1,7 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
+* check() from errors.lua is ungreppable because of all local check() flavors.
+
 * make test-all report modules that don't output anything which means they have no tests.
 
 * http server is over-engineered, simplify radically.
@@ -17,11 +19,7 @@ SIMPLIFY / REVIEW
 * mdbx_schema test
 * schema test?
 
-* fix tests that used to work
-	smtp
-
 * inline tests
-
 
 LEVERAGE AI
 ------------------------------------------------------------------------------

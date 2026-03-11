@@ -124,6 +124,18 @@ local function raise(level, ...)
 	end
 end
 
+local function check(errorclass, event, v, ...)
+	if v then return v end
+	assert(type(errorclass) == 'string' or iserror(errorclass))
+	assert(type(event) == 'string')
+	local e = newerror(errorclass, ...)
+	if not e.logged then
+		log('ERROR', e.errortype, event, '%s', e.message)
+		e.logged = true
+	end
+	raise(e)
+end
+
 local function fix_traceback(s)
 	return s:gsub('(.-:%d+: )([^\n])', '%1\n%2')
 end
@@ -221,6 +233,7 @@ _G.errortype = errortype
 _G.newerror = newerror
 _G.iserror = iserror
 _G.raise = raise
+_G.check = check
 _G.catch = catch
 _G.pcall = pcall
 _G.lua_pcall = lua_pcall
