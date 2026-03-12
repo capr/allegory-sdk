@@ -512,7 +512,7 @@ local userinfo = memoize(function(usr)
 end)
 
 function clear_userinfo_cache(usr)
-	userinfo(poison, usr)
+	userinfo(POISON, usr)
 end
 
 --session-cookie authentication ----------------------------------------------
