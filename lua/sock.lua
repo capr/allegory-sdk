@@ -6,9 +6,9 @@
 
 ADDRESSES
 	[try_]sockaddr('unix:PATH') -> sa      make a sockaddr for a unix socket
-	[try_]sockaddr('ip:port') -> sa        make a sockaddr for a inet/inet6 socket
-	sa:family() -> 'inet|inet6|unix'       socket family
-	sa:port() -> port|nil                  port (for inet/inet6 family)
+	[try_]sockaddr('ip:port') -> sa        make a sockaddr for a ip/ip6 socket
+	sa:family() -> 'ip|ip6|unix'           socket family
+	sa:port() -> port|nil                  port (for ip/ip6 family)
 	sa:tostring() -> ip|ip6|path           string representation
 SOCKETS
 	issocket(s) -> t|f                     check if s is a socket
@@ -20,7 +20,7 @@ SOCKETS
 	s:[try_]getopt(opt) -> val             get socket option
 	s:debug([protocol])                    enable debugging
 TCP
-	tcp([family='inet'], [opt]) -> tcp              make a SOCK_STREAM socket
+	tcp([family='ip'], [opt]) -> tcp                     make a SOCK_STREAM socket
 	[try_]connect([tcp, ], addr, [timeout]) -> tcp       (create tcp socket and) connect
 	listen([tcp, ], addr, [backlog], [onaccept]) -> tcp  (create tcp socket and) listen
 	tcp:[try_]connect(addr)                         connect to an address
@@ -31,7 +31,7 @@ TCP
 	tcp:[try_]recvn(buf, n)                         receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
 UDP
-	udp([family='inet'], [opt]) -> udp              make a SOCK_DGRAM socket
+	udp([family='ip'], [opt]) -> udp                make a SOCK_DGRAM socket
 	udp:[try_]connect(addr)                         connect to an address
 	udp:[try_]send(s|buf, [len], [flags]) -> len    send bytes to connected address
 	udp:[try_]recv(buf, maxlen) -> len              receive bytes
@@ -410,9 +410,9 @@ end
 local sa = {}
 function sa:family()
 	return (
-		self.family_num == AF_INET and 'inet' or
-		self.family_num == AF_INET6 and 'inet6' or
-		self.family_num == AF_UNIX and 'unix'
+		self.family_num == AF_INET  and 'ip' or
+		self.family_num == AF_INET6 and 'ip6' or
+		self.family_num == AF_UNIX  and 'unix'
 		or nil
 	)
 end
@@ -423,9 +423,9 @@ function sa:port()
 end
 function sa:size()
 	return (
-		self.family_num == AF_INET and sizeof'struct sockaddr_in' or
+		self.family_num == AF_INET  and sizeof'struct sockaddr_in' or
 		self.family_num == AF_INET6 and sizeof'struct sockaddr_in6' or
-		self.family_num == AF_UNIX and offsetof('struct sockaddr_un', 'path')
+		self.family_num == AF_UNIX  and offsetof('struct sockaddr_un', 'path')
 			+ strlen(self.addr_un.path, sizeof(self.addr_un.path)) + 1
 		or nil
 	)
@@ -480,9 +480,9 @@ local function wrap_socket(opt, class, fd, family)
 end
 local function create_socket(st, family, class, opt)
 	local af =
-		family == 'inet' and AF_INET or
-		family == 'inet6' and AF_INET6 or
-		family == 'unix' and AF_UNIX or
+		family == 'ip'   and AF_INET  or
+		family == 'ip6'  and AF_INET6 or
+		family == 'unix' and AF_UNIX  or
 		assert(false)
 	local fd = C.socket(af, bor(st, SOCK_NONBLOCK, SOCK_CLOEXEC), 0)
 	assert(check_errno(fd ~= -1))
@@ -491,10 +491,10 @@ local function create_socket(st, family, class, opt)
 	return s
 end
 local function create_tcp(family, opt)
-	return create_socket(SOCK_STREAM, family or 'inet', tcp, opt)
+	return create_socket(SOCK_STREAM, family or 'ip', tcp, opt)
 end
 local function create_udp(family, opt)
-	return create_socket(SOCK_DGRAM, family or 'inet', udp, opt)
+	return create_socket(SOCK_DGRAM, family or 'ip', udp, opt)
 end
 
 --NOTE: close() returns false on error but it should be ignored.
@@ -519,9 +519,7 @@ function socket:try_close()
 	if self._after_close then
 		self:_after_close()
 	end
-	log('', 'sock', 'close', '%-4s r:%d w:%d%s', self, self.r, self.w,
-		self.n and ' live:'..self.n or '')
-	live(self, nil)
+	live(self, nil, 'r:%d w:%d%s', self.r, self.w, self.n and ' clients:'..self.n or '')
 	if not ok then return false, err end
 	return true
 end
@@ -702,7 +700,7 @@ do
 		self.sockets[s] = true
 		self.next_i = (self.next_i or 0) + 1
 		s.i = self.next_i
-		log('', 'sock', 'accepted', '%-4s %s.%d %s <- %s live:%d',
+		log('', 'sock', 'accepted', '%-4s %s.%d %s <- %s clients:%d',
 			s, self, s.i, la, ra, self.n)
 		live(s, 'accepted %s.%d %s <- %s fd=%d', self, s.i, la, ra, s.fd)
 		s.remote_addr = ra
@@ -975,8 +973,8 @@ int bind(SOCKET s, const sockaddr*, int namelen);
 function socket:try_bind(addr)
 	assert(not self.bound_addr)
 	addr = addr or
-		self.family == 'inet'  and '0.0.0.0:0' or
-		self.family == 'inet6' and ':::0'
+		self.family == 'ip'  and '0.0.0.0:0' or
+		self.family == 'ip6' and ':::0'
 		or nil
 	local sa = sockaddr(addr)
 	local ok, err = check_errno(C.bind(self.fd, sa, sa:size()) == 0)
