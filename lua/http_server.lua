@@ -8,18 +8,15 @@
 
 http_server(opt1,...) -> server   Create a server object
 	opt.listen                     {lopt1, lopt2, ..}
-		lopt.host                     Host header match
-		lopt.addr                     IP address to listen to
-		lopt.port                     TCP port to listen to
-		lopt.tls                      use TLS over this port
-		lopt.tls_options            {opt->v}
-			see sock_bearssl.lua
-		lopt.unix_socket              unix socket file to listen to
-		lopt.unix_socket_perms        set perms on socket file after bind()
-		lopt.unix_socket_user         set user  on socket file after bind()
-		lopt.unix_socket_group        set group on socket file after bind()
-	opt.tls_options                tls_config(opt.tls_options)
-		see sock_bearssl.lua
+		.host                       Host header match
+		.addr                       IP address to listen to
+		.port                       TCP port to listen to
+		.tls                        use TLS over this port
+		.tls_options                {opt->v} see sock_bearssl.lua
+		.unix_socket                unix socket file to listen to
+		.unix_socket_perms          set perms on socket file after bind()
+		.unix_socket_user           set user  on socket file after bind()
+		.unix_socket_group          set group on socket file after bind()
 	opt.max_line_size           -> http.max_line_size
 	opt.recv_buffer_size        -> http.recv_buffer_size
 	opt.debug                   -> http.debug
@@ -46,12 +43,8 @@ CONFIG
 	http_unix_socket_group
 	https_addr                     '0.0.0.0' (set to false to disable)
 	https_port                     443
-	https_unix_socket
-	https_unix_socket_perms
-	https_unix_socket_user
-	https_unix_socket_group
-	https_crt_file                 ../tests/localhost.crt
-	https_key_file                 ../tests.localhost.key
+	https_crt_file                 var/HOST.crt or ../tests/localhost.crt
+	https_key_file                 var/HOST.key or ../tests/localhost.key
 	http_compress                  nil, means enabled (set to false to disable)
 	http_debug                     nil (set to true to enable)
 
@@ -122,9 +115,6 @@ function http_server(...)
 			addr = https_addr,
 			port = config'https_port',
 			unix_socket = config'https_unix_socket',
-			unix_socket_perms = config'https_unix_socket_perms',
-			unix_socket_user  = config'https_unix_socket_user',
-			unix_socket_group = config'https_unix_socket_group',
 			tls = true,
 			tls_options = {
 				cert_file = crt_file,
@@ -274,17 +264,19 @@ function http_server(...)
 		push(self.sockets, tcp)
 
 		local function accept_connection()
-			local ctcp, err = tcp:try_accept()
+			local ctcp, err, retry = tcp:try_accept()
 			if not ctcp then
-				if tcp:closed() then --stop() called.
-					return
-				else
+				if not tcp:closed() then --not because stop() called
 					self:check(tcp, false, 'accept', '%s', err)
-					--temporary network error. let it retry but pause a little
-					--to avoid killing the CPU while the error persists.
-					wait(.2)
-					return
+					if retry then
+						--temporary network error. let it retry but pause a little
+						--to avoid killing the CPU while the error persists.
+						wait(.2)
+					else
+						stop()
+					end
 				end
+				return
 			end
 			resume(thread(function()
 				local http = http({
