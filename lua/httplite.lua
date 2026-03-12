@@ -82,6 +82,30 @@ function server_req:onfinish(f)
 	after(self, 'finish', f)
 end
 
+function server_req:read_body(headers, write, from_server, close, state)
+	if write == 'string' or write == 'buffer' then
+		local to_string = write == 'string'
+		local write, collect = dynarray_pump()
+		self:read_body_to_writer(headers, write, from_server, close, state)
+		local buf, sz = collect()
+		if to_string then
+			return ffi.string(buf, sz)
+		else
+			return buf, sz
+		end
+	elseif write == 'reader' then
+		--don't read the body, but return a reader function for it instead.
+		return (cowrap(function(yield)
+			self:read_body_to_writer(headers, yield, from_server, close, state)
+			--not returning anything here signals eof.
+		end, 'http-read-body %s', self.f))
+	else --function or nil
+		self:read_body_to_writer(headers, write, from_server, close, state)
+		if write then write() end --signal eof to writer.
+		return true --signal that content was read.
+	end
+end
+
 function http_server(...)
 
 	local self = object(server, {}, ...)
@@ -133,21 +157,61 @@ function http_server(...)
 
 	local next_request_id = 1
 
-	local function handle_request(req)
+	local function handle_request(ctcp)
+		local req = object(server_req, {
+			tcp = ctcp,
+			server = self,
+			headers = {},
+			start_time = clock(),
+			thread = currentthread(),
+		})
 
+		--read request line
+		local line = ctcp.b:needline()
+		local method, uri, http_version = line:match'^([%u]+)%s+([^%s]+)%s+HTTP/(%d+%.%d+)'
+		self:dp('<=', '%s %s HTTP/%s', method, uri, http_version)
+		ctcp:checkp(method and http_version == '1.1', 'invalid request line')
+		req.method = method
+		req.uri = uri
+
+		--read request headers
+		for i = 1, 100 do
+			local line = ctcp.b:needline()
+			if line == '' then break end --headers end with a blank line
+			local name, value = line:match'^([^:]+):%s*(.*)'
+			ctcp:checkp(name, 'invalid header')
+			name = name:lower() --header names are case-insensitive
+			value = value:trim()
+			self:dp('<-', '%-17s %s', name, value)
+			local prev_value = req.headers[name]
+			if prev_value then --duplicate header: fold.
+				req.headers[name] = prev_value .. ',' .. value
+			else
+				req.headers[name] = value
+			end
+		end
+
+		--parse request headers
+		for k,v in pairs(req.headers) do
+			local parse = header_parse[k]
+			if parse then
+				req.headers[k] = parse(v)
+			end
+		end
+
+		--read request body and send a response back.
 		ownthreadenv().http_request = req
-		req.thread = currentthread()
 		req.request_id = next_request_id
 		next_request_id = next_request_id + 1
 
-		local out, out_thread, send_started, send_finished
+		local close, out, out_thread, send_started, send_finished
 
 		local function send_response(opt)
 			send_started = true
 
 			local headers = {}
 
-			local close = opt.close
+			close = opt.close
 				or (req.headers['connection'] and req.headers['connection']:has'close')
 			if close then
 				headers['connection'] = 'close'
@@ -204,8 +268,7 @@ function http_server(...)
 			--
 
 			send_finished = true
-			return close
-		end
+		end --send_response()
 
 		--NOTE: both req:respond() and out() raise on I/O errors breaking
 		--user's code, so use req:onfinish() to free resources.
@@ -259,79 +322,24 @@ function http_server(...)
 		if req.body_was_read == nil then
 			req:read_body()
 		end
-		assertf(req.body_was_read,
-			'request body was not read for: %s', req.uri)
 
-	end
+		--close connection if asked for.
+		if close then
+			--this is the "http graceful close" you hear about: we send a FIN to
+			--the client then we wait for it to close the connection in response
+			--to our FIN, and only after that we can close our end.
+			--if we'd just call close() that would send a RST to the client which
+			--would cut short the client's pending input stream (it's how TCP works).
+			--TODO: limit how much traffic we absorb for this.
+			ctcp:shutdown'w'
+			ctcp.b:readall_to(noop)
+			ctcp:close()
+		end
+	end --handle_request()
 
 	local function handle_connection(ctcp)
-
-		local recv_buffer_size = ctcp:getopt'so_rcvbuf' --usually 128k
-	 	ctcp.b = pbuffer{
-			f = ctcp,
-			readahead = recv_buffer_size,
-			lineterm = '\r\n',
-			linesize = 8192,
-		} --for reading only
-
 		while not ctcp:closed() do
-
-			local req = object(server_req, {
-				tcp = ctcp,
-				server = self,
-				headers = {},
-				start_time = clock(),
-			})
-
-			--read request line
-			local line = ctcp.b:needline()
-			local method, uri, http_version =
-				line:match'^([%u]+)%s+([^%s]+)%s+HTTP/(%d+%.%d+)'
-			self:dp('<=', '%s %s HTTP/%s', method, uri, http_version)
-			ctcp:checkp(method and http_version == '1.1', 'invalid request line')
-			req.method = method
-			req.uri = uri
-
-			--read request headers
-			for i = 1, 100 do
-				local line = ctcp.b:needline()
-				if line == '' then break end --headers end up with a blank line
-				local name, value = line:match'^([^:]+):%s*(.*)'
-				ctcp:checkp(name, 'invalid header')
-				name = name:lower() --header names are case-insensitive
-				value = value:trim()
-				self:dp('<-', '%-17s %s', name, value)
-				local prev_value = req.headers[name]
-				if prev_value then --duplicate header: fold.
-					req.headers[name] = prev_value .. ',' .. value
-				else
-					req.headers[name] = value
-				end
-			end
-
-			--parse request headers
-			for k,v in pairs(req.headers) do
-				local parse = header_parse[k]
-				if parse then
-					req.headers[k] = parse(v)
-				end
-			end
-
-			--read request body and send a response back.
-			local close = handle_request(req)
-
-			--close connection if asked for.
-			if close then
-				--this is the "http graceful close" you hear about: we send a FIN to
-				--the client then we wait for it to close the connection in response
-				--to our FIN, and only after that we can close our end.
-				--if we'd just call close() that would send a RST to the client which
-				--would cut short the client's pending input stream (it's how TCP works).
-				--TODO: limit how much traffic we absorb for this.
-				ctcp:shutdown'w'
-				ctcp.b:readall_to(noop)
-				ctcp:close()
-			end
+			handle_request(ctcp)
 		end
 	end
 
@@ -379,17 +387,16 @@ function http_server(...)
 		local function accept_connection()
 			local ctcp, err, retry = tcp:try_accept()
 			if not ctcp then
-				if not tcp:closed() then --not because stop() called
-					self:check(tcp, false, 'accept', '%s', err)
-					if retry then
-						--temporary network error. let it retry but pause a little
-						--to avoid killing the CPU while the error persists.
-						wait(.2)
-					else
-						self:stop()
-					end
-					return retry
+				if err == 'closed' then return end --stop() called
+				self:check(tcp, false, 'accept', '%s', err)
+				if retry then
+					--temporary network error. let it retry but pause a little
+					--to avoid killing the CPU while the error persists.
+					wait(.2)
+				else
+					self:stop()
 				end
+				return
 			end
 			if self.debug.tracebacks then
 				ctcp.tracebacks = true --for check_io()
@@ -397,7 +404,14 @@ function http_server(...)
 			if self.debug.stream then
 				ctcp:debug'http'
 			end
+			local recv_buffer_size = ctcp:getopt'so_rcvbuf' --usually 128k
 			resume(thread(function()
+				ctcp.b = pbuffer{
+					f = ctcp,
+					readahead = recv_buffer_size,
+					lineterm = '\r\n',
+					linesize = 8192,
+				} --for reading only
 				local ok, err = pcall(handle_connection, ctcp)
 				ctcp.b:free()
 				ctcp.b = nil
@@ -406,7 +420,9 @@ function http_server(...)
 		end
 
 		resume(thread(function()
-			repeat until not accept_connection() end
+			while not tcp:closed() do
+				accept_connection()
+			end
 		end, 'http-listen %s', tcp))
 
 	end --for in listen
