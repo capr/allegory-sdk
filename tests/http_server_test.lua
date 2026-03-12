@@ -49,3 +49,5 @@ local server = http_server{
 }
 
 start()
+server:stop()
+
