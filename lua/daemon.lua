@@ -12,11 +12,11 @@ CMDLINE
 
 CONFIG
 
-	deploy         app deployment name.
-	machine        app machine name.
-	env            app environment ('dev').
-	log_host       log server host.
-	log_port       log server port.
+	deploy         app deployment name
+	machine        app machine name
+	env            app environment ('dev')
+	log_host       log server host
+	log_port       log server port
 
 ]==]
 

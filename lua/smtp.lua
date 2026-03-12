@@ -7,7 +7,16 @@
 	c:[try_]sendmail{from=, to=, headers=, message=} -> c
 	c:close() -> c
 
-	[try_]sendmail(multipart|multipart_opt)
+	[try_]sendmail(multipart|multipart_opt)   connect, send an mail, disconnect
+
+CONFIG
+
+		smtp_debug          ('traceback stream errors')
+		smtp_host           127.0.0.1
+		smtp_port           465 or 587
+		smtp_tls            true
+		smtp_user
+		smtp_pass
 
 ]=]
 
@@ -19,6 +28,7 @@ require'base64'
 require'sock'
 require'sock_bearssl'
 require'multipart'
+require'resolver'
 
 local client = {
 	type = 'smtp_client', debug_prefix = 'm',

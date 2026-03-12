@@ -9,40 +9,40 @@
 	times and impact-free (for the client) failovers at the expense of a little
 	more network traffic which DNS servers are already made to handle.
 
-	IMPORTANT: call `randomseed` prior to using this module to decrease
+	IMPORTANT: call randomseed() prior to using this module to decrease
 	the chance of cache poisoning attacks.
 
 API
-	resolver(t) -> r`                                 create a resolver
-	r:query(name,[type],[timeout] | t) -> answers`    query
-	r:lookup(name,[type],[timeout]) -> addresses`     name lookup
-	r:reverse_lookup(address,[timeout]) -> hosts`     reverse lookup
+	resolver(t) -> r                                 create a resolver
+	r:query(name,[type],[timeout] | t) -> answers    query
+	r:lookup(name,[type],[timeout]) -> addresses     name lookup
+	r:reverse_lookup(address,[timeout]) -> hosts     reverse lookup
 
 resolver(t) -> r
 
 	Create a resolver object. Options:
 
 	* servers: a list (space-separated string or array) of DNS server IP addresses.
-	  Each entry can be either an 'ip:port' or a table of form `{addr=, [tcp_only=true]}`.
+	  Each entry can be either an 'ip:port' or a table of form {addr=, [tcp_only=true]}.
 	* max_cache_entries: max. number of response cache entries (defaults to 10K).
 
 r:[try_]query(name,[type],[timeout] | t) -> answers
 
-	Perform a DNS query and return a list of parsed DNS records, or `nil, err`
-	for input, network or server errors (where `err` is an error object).
+	Perform a DNS query and return a list of parsed DNS records, or nil,err
+	for input, network or server errors (where err is an error object).
 
 	Options:
 
 	* name: name to look up DNS records for.
-	* type: record type (string or numeric). NOTE: `CNAME` records are always
+	* type: record type (string or numeric). NOTE: CNAME records are always
 	  returned for all query types.
 	* timeout: lookup timeout in seconds (defaults to 5).
-	* recurse: if `false`, disables the "recursion desired" (RD) flag (defaults to `true`).
+	* recurse: if false, disables the "recursion desired" (RD) flag (defaults to true).
 
 	Supported record types: A, NS, CNAME, SOA, PTR, MX, TXT, AAAA, SRV, SPF.
 
 	Unsupported types must be given by number and they will be received unparsed
-	in the `rdata` field of the answer.
+	in the rdata field of the answer.
 
 r:[try_]lookup(name,[type],[timeout]) -> addresses
 
@@ -50,12 +50,17 @@ r:[try_]lookup(name,[type],[timeout]) -> addresses
 
 r:[try_]reverse_lookup(address,[timeout]) -> hostnames
 
-	Make a `PTR` lookup for both IPv4 and IPv6 addresses.
+	Make a PTR lookup for both IPv4 and IPv6 addresses.
 
 GLOBAL RESOLVER
-	resolve_hosts[host] <-> ip       get/set static address
-	resolve_servers <- {ns_ip1,...}  set up name servers: do it before calling resolve().
-	resolve(host) -> ip              resolve a hostname
+
+	resolve(host) -> ip              (create resolver and) resolve a hostname
+
+CONFIG
+
+	hosts                 {NAME = IP}   - static lookup table
+	ns                    {IP1, ...}    - name servers to use
+	resolver_debug        false
 
 ]=]
 

@@ -22,7 +22,7 @@
 	pb:reset()                           empty the buffer (memory is kept)
 	pb:encode(o)                         push serialized Lua object
 	pb:tostring() -> s                   convert buffer to string
-	pb:free()                            free buffer memory
+	pb:free()                            free buffer memory immediately
 	#pb                                  buffer size
 	pb:ref() -> p, size                  get allocated buffer and size
 	pb:reserve(size)                     allocate memory for writing
