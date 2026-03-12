@@ -471,13 +471,12 @@ local wait_io, cancel_wait_io, waiting
 local SOCK_NONBLOCK  = 0x000800 --async I/O
 local SOCK_CLOEXEC   = 0x080000 --close-on-exec (non-inheritable on exec())
 
-local function wrap_socket(opt, class, s, family)
-	local s = object(class, {
-		s = s, family = family, issocket = true,
+local function wrap_socket(opt, class, fd, family)
+	return object(class, {
+		fd = assert(fd), family = family, issocket = true,
 		check_io = check_io, checkp = checkp, protect = protect,
 		r = 0, w = 0,
 	}, opt)
-	return s
 end
 local function create_socket(st, family, class, opt)
 	local af =
@@ -485,10 +484,10 @@ local function create_socket(st, family, class, opt)
 		family == 'inet6' and AF_INET6 or
 		family == 'unix' and AF_UNIX or
 		assert(false)
-	local s = C.socket(af, bor(st, SOCK_NONBLOCK, SOCK_CLOEXEC), 0)
-	assert(check_errno(s ~= -1))
-	local s = wrap_socket(opt, class, s, family)
-	live(s, '%s/%s fd=%d', s.socktype, family, s.s)
+	local fd = C.socket(af, bor(st, SOCK_NONBLOCK, SOCK_CLOEXEC), 0)
+	assert(check_errno(fd ~= -1))
+	local s = wrap_socket(opt, class, fd, family)
+	live(s, '%s/%s fd=%d', s.socktype, family, fd)
 	return s
 end
 local function create_tcp(family, opt)
@@ -500,11 +499,11 @@ end
 
 --NOTE: close() returns false on error but it should be ignored.
 function socket:try_close()
-	if not self.s then return true end
+	if not self.fd then return true end
 	_sock_unregister(self)
-	local s = self.s; self.s = nil --make closed() true.
+	local fd = self.fd; self.fd = nil --make closed() true.
 	--NOTE: it is unsafe to close a socket twice no matter the error.
-	local ok, err = check_errno(C.close(s) == 0)
+	local ok, err = check_errno(C.close(fd) == 0)
 	cancel_wait_io(self)
 	local ps = self.listen_socket
 	if ps then
@@ -528,7 +527,7 @@ function socket:try_close()
 end
 
 function socket:closed()
-	return not self.s
+	return not self.fd
 end
 
 function socket:onclose(fn)
@@ -626,11 +625,11 @@ local function make_async(for_writing, returns_n, func, wait_errno)
 end
 
 local socket_connect = make_async(true, false, function(self, sa)
-	return C.connect(self.s, sa, sa:size())
+	return C.connect(self.fd, sa, sa:size())
 end, EINPROGRESS)
 
 function tcp:try_connect(addr)
-	if not self.s then return nil, 'closed' end
+	if not self.fd then return nil, 'closed' end
 	local sa = sockaddr(addr)
 	local addr_s = sa:tostring()
 	log('', 'sock', 'connect?', '%-4s %s', self, addr_s)
@@ -665,12 +664,12 @@ do
 
 	local socket_accept = make_async(false, false, function(self)
 		nbuf[0] = accept_sa_size
-		local r = C.accept4(self.s, accept_sa, nbuf, bor(SOCK_NONBLOCK, SOCK_CLOEXEC))
+		local r = C.accept4(self.fd, accept_sa, nbuf, bor(SOCK_NONBLOCK, SOCK_CLOEXEC))
 		return r
 	end, EWOULDBLOCK)
 
 	function tcp:try_accept(opt)
-		if not self.s then return nil, 'closed' end
+		if not self.fd then return nil, 'closed' end
 		local s, err, errno = socket_accept(self)
 		local retry =
 			   errno == ENETDOWN
@@ -693,7 +692,7 @@ do
 		local ra = accept_sa:tostring()
 		--get local addr
 		nbuf[0] = accept_sa_size
-		local ok, err = check_errno(C.getsockname(s.s, accept_sa, nbuf) == 0)
+		local ok, err = check_errno(C.getsockname(s.fd, accept_sa, nbuf) == 0)
 		if not ok then
 			s:try_close()
 			return nil, err
@@ -705,7 +704,7 @@ do
 		s.i = self.next_i
 		log('', 'sock', 'accepted', '%-4s %s.%d %s <- %s live:%d',
 			s, self, s.i, la, ra, self.n)
-		live(s, 'accepted %s.%d %s <- %s fd=%d', self, s.i, la, ra, s.s)
+		live(s, 'accepted %s.%d %s <- %s fd=%d', self, s.i, la, ra, s.fd)
 		s.remote_addr = ra
 		s.local_addr  = la
 		s.listen_socket = self
@@ -722,30 +721,30 @@ end
 local MSG_NOSIGNAL = 0x4000
 
 local socket_send = make_async(true, true, function(self, buf, len, flags)
-	return C.send(self.s, buf, len, flags or MSG_NOSIGNAL)
+	return C.send(self.fd, buf, len, flags or MSG_NOSIGNAL)
 end, EWOULDBLOCK)
 
 function udp:try_send(buf, len, flags)
-	if not self.s then return nil, 'closed' end
+	if not self.fd then return nil, 'closed' end
 	return socket_send(self, buf, len or #buf, flags)
 end
 
 local socket_recv = make_async(false, true, function(self, buf, len, flags)
-	return C.recv(self.s, buf, len, flags or 0)
+	return C.recv(self.fd, buf, len, flags or 0)
 end, EWOULDBLOCK)
 
 function socket:try_recv(buf, len, flags)
-	if not self.s then return nil, 'closed' end
+	if not self.fd then return nil, 'closed' end
 	assert(len > 0)
 	return socket_recv(self, buf, len, flags)
 end
 
 local udp_sendto = make_async(true, true, function(self, sa, buf, len, flags)
-	return C.sendto(self.s, buf, len, flags or 0, sa, sa:size())
+	return C.sendto(self.fd, buf, len, flags or 0, sa, sa:size())
 end, EWOULDBLOCK)
 
 function udp:try_sendto(addr, buf, len, flags)
-	if not self.s then return nil, 'closed' end
+	if not self.fd then return nil, 'closed' end
 	len = len or #buf
 	local sa = sockaddr(addr)
 	local len, err = udp_sendto(self, sa, buf, len, flags)
@@ -760,11 +759,11 @@ do
 
 	local udp_recvnext = make_async(false, true, function(self, buf, len, flags)
 		src_len_buf[0] = src_buf_len
-		return C.recvfrom(self.s, buf, len, flags or 0, src_buf, src_len_buf)
+		return C.recvfrom(self.fd, buf, len, flags or 0, src_buf, src_len_buf)
 	end, EWOULDBLOCK)
 
 	function udp:try_recvnext(buf, len, flags)
-		if not self.s then return nil, 'closed' end
+		if not self.fd then return nil, 'closed' end
 		assert(len > 0)
 		local len, err = udp_recvnext(self, buf, len, flags)
 		if not len then return nil, err end
@@ -841,7 +840,7 @@ do
 		local i = pop(free_indices) or #sockets + 1
 		e.data.u32 = i
 		e.events = EPOLLIN + EPOLLOUT + EPOLLET
-		local ok, err = check_errno(C.epoll_ctl(epoll_fd(), EPOLL_CTL_ADD, sf.s, e) == 0)
+		local ok, err = check_errno(C.epoll_ctl(epoll_fd(), EPOLL_CTL_ADD, sf.fd, e) == 0)
 		if not ok then
 			push(free_indices, i)
 			return nil, err
@@ -858,7 +857,7 @@ do
 		if not i then return end --closing before _sock_register() was called.
 		e.data.u32 = i
 		e.events = EPOLLIN + EPOLLOUT + EPOLLET
-		assert(check_errno(C.epoll_ctl(epoll_fd(), EPOLL_CTL_DEL, s.s, e) == 0))
+		assert(check_errno(C.epoll_ctl(epoll_fd(), EPOLL_CTL_DEL, s.fd, e) == 0))
 		sockets[i] = false
 		push(free_indices, i)
 	end
@@ -960,8 +959,8 @@ int shutdown(SOCKET s, int how);
 ]]
 
 function tcp:try_shutdown(which)
-	if not self.s then return nil, 'closed' end
-	return check_errno(C.shutdown(self.s,
+	if not self.fd then return nil, 'closed' end
+	return check_errno(C.shutdown(self.fd,
 		   which == 'r' and 0
 		or which == 'w' and 1
 		or (not which or which == 'rw') and 2) == 0)
@@ -980,7 +979,7 @@ function socket:try_bind(addr)
 		self.family == 'inet6' and ':::0'
 		or nil
 	local sa = sockaddr(addr)
-	local ok, err = check_errno(C.bind(self.s, sa, sa:size()) == 0)
+	local ok, err = check_errno(C.bind(self.fd, sa, sa:size()) == 0)
 	if not ok then return false, err end
 	self.bound_addr = sa:tostring()
 	--epoll_ctl() must be called after bind() for some reason.
@@ -1001,10 +1000,9 @@ function tcp:try_listen(addr, backlog, onaccept)
 		if not ok then return nil, err end
 	end
 	backlog = clamp(backlog or 1/0, 0, 0x7fffffff)
-	local ok = C.listen(self.s, backlog) == 0
+	local ok = C.listen(self.fd, backlog) == 0
 	if not ok then return check_errno() end
-	log('note', 'sock', 'listen', '%-4s %s', self, self.bound_addr)
-	live(self, 'listen %s', self.bound_addr)
+	liveadd(self, 'listen=%s', self.bound_addr)
 	self.n = 0  --live client connection count
 	self.sockets = {} --live client connections: {socket->true}
 
@@ -1222,7 +1220,7 @@ local szbuf = i32a(1, 4)
 function socket:try_getopt(k)
 	local opt, level = parse_opt(k)
 	local get = assertf(get_opt[k], 'write-only socket option: %s', k)
-	local ok, err = check_errno(C.getsockopt(self.s, level, opt, buf.c, szbuf) == 0)
+	local ok, err = check_errno(C.getsockopt(self.fd, level, opt, buf.c, szbuf) == 0)
 	if not ok then return nil, err end
 	return get(buf, szbuf[0])
 end
@@ -1236,7 +1234,7 @@ function socket:try_setopt(k, v)
 	local opt, level = parse_opt(k)
 	local set = assertf(set_opt[k], 'read-only socket option: %s', k)
 	local buf, sz = set(v)
-	return check_errno(C.setsockopt(self.s, level, opt, buf, sz) == 0)
+	return check_errno(C.setsockopt(self.fd, level, opt, buf, sz) == 0)
 end
 socket.setopt = unprotect_io(socket.try_setopt)
 
@@ -1245,7 +1243,7 @@ end --do
 --tcp repeat I/O -------------------------------------------------------------
 
 function tcp:try_send(buf, sz, flags)
-	if not self.s then return nil, 'closed' end
+	if not self.fd then return nil, 'closed' end
 	sz = sz or #buf
 	if sz == 0 then return true end --mask-out null-writes
 	local sz0 = sz

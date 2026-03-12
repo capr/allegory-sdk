@@ -13,15 +13,19 @@ API
 	sstcp:[try_]accept() -> cstcp                accept a TLS client connection
 	cstcp:[try_]shutdown('r'|'w'|'rw')           shutdown underlying TCP
 
-Config options (opt table)
+opt table:
 
-	ca[_file]              CA certificate PEM data or file for server verification
+	ca[_file]              CA certificate PEM data or file. client only.
 	cert[_file]            certificate PEM data or file (for server or mutual TLS)
 	key[_file]             private key PEM data or file (for server or mutual TLS)
 	cert_issuer_rsa        hint: server EC cert was issued by RSA CA (default: EC)
 	min_rsa_size           minimum RSA key size for server cert chains (default: 2048)
 	session_cache_entries  number of TLS session cache entries (default: 1024)
-	insecure_noverifycert  skip server certificate verification (client only)
+	insecure_noverifycert  skip server certificate verification. client only.
+
+CONFIG
+
+	ca_file                path to CA file. autodetected. client only.
 
 ]=]
 
@@ -1095,9 +1099,9 @@ end
 
 local function wrap_conn_stcp(tcp, eng, keepalive)
 	local s = object(client_stcp, {
+		fd         = tcp.fd,
 		tcp        = tcp,
 		eng        = eng,
-		s          = tcp.s,
 		_keepalive = keepalive,
 		check_io   = check_io,
 		checkp     = checkp,
@@ -1157,7 +1161,8 @@ function _G.server_stcp(tcp, opt)
 	end
 	local issuer_kt = opt.cert_issuer_rsa and BR_KEYTYPE_RSA or BR_KEYTYPE_EC
 	local s = object(server_stcp, {
-		tcp = tcp, s = tcp.s,
+		fd = tcp.fd,
+		tcp = tcp,
 		_chain = chain, _chain_n = chain_n,
 		_sk = sk, _kt = kt, _issuer_kt = issuer_kt,
 		_cache = cache,

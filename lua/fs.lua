@@ -111,6 +111,10 @@ HI-LEVEL APIs
 The deref arg is true by default, meaning that by default, symlinks are
 followed recursively and transparently where this option is available.
 
+CONFIG
+
+	vardir        default: scriptdir()..'/var'
+
 FILE ATTRIBUTES
 
  attr     | R/W | Description
@@ -550,7 +554,6 @@ function file_wrap_fd(fd, opt)
 
 	local f = object(file, {
 		fd = assert(fd),
-		s = fd, --for async use with sock
 		seek = repl(opt.type == 'file' and not opt.async, true, nil),
 		debug_prefix = opt.debug_prefix,
 		w = 0, r = 0,
