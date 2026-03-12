@@ -38,7 +38,7 @@ You can call both.
 LOGGING API
 
 	log(severity, module, event, fmt, ...)
-	live(e, [fmt, ...] | nil)    track/untrack an object for loging purposes
+	live(e[, nil][, fmt, ...])   track/untrack an object for loging purposes
 	liveadd(e, fmt, ...)         update the tracking label on a live object
 
 	logarg(v) -> s               format a value for logging
@@ -487,11 +487,12 @@ end
 
 local function live(self, o, fmt, ...)
 	local id, ids = debug_id(o)
-	local s = fmt and fmtargs(self, fmt, ...)
 	local live_s = ids.live[o]
 	local was_live = live_s ~= nil
 	local event = '~'
+	local s
 	if fmt ~= nil then
+		s = fmtargs(self, fmt, ...)
 		if not was_live then
 			ids.live_count = ids.live_count + 1
 			event = '+ ' .. ids.live_count
@@ -499,9 +500,9 @@ local function live(self, o, fmt, ...)
 	elseif was_live then
 		ids.live_count = ids.live_count - 1
 		event = '- ' .. ids.live_count
-		if ... then s = live_s .. ' ' .. fmtargs(self, ...) end
+		if ... then live_s = live_s .. ' ' .. fmtargs(self, ...) end
 	end
-	self.log('', 'log', event, '%-4s %s', o, s or ids.live[o])
+	self.log('', 'log', event, '%-4s %s', o, s or live_s)
 	ids.live[o] = s
 end
 
