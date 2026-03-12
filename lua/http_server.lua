@@ -215,11 +215,6 @@ function http_server(...)
 		end
 	end
 
-	local stop
-	function self:stop()
-		stop = true
-	end
-
 	self.sockets = {}
 
 	assert(self.listen and #self.listen > 0, 'listen option is missing or empty')
@@ -264,20 +259,22 @@ function http_server(...)
 		push(self.sockets, tcp)
 
 		local function accept_connection()
+
 			local ctcp, err, retry = tcp:try_accept()
+
 			if not ctcp then
-				if not tcp:closed() then --not because stop() called
-					self:check(tcp, false, 'accept', '%s', err)
-					if retry then
-						--temporary network error. let it retry but pause a little
-						--to avoid killing the CPU while the error persists.
-						wait(.2)
-					else
-						stop()
-					end
+				if tcp:closed() then return end --stop() called
+				self:check(tcp, false, 'accept', '%s', err)
+				if retry then
+					--temporary network error. let it retry but pause a little
+					--to avoid killing the CPU while the error persists.
+					wait(.2)
+				else
+					self:stop()
 				end
-				return
+				return retry
 			end
+
 			resume(thread(function()
 				local http = http({
 					debug = self.debug,
@@ -291,26 +288,26 @@ function http_server(...)
 				self:check(ctcp, ok or iserror(err, 'io'), 'handler', '%s', err)
 				ctcp:close()
 			end, 'http-server-client %s', ctcp))
-		end
 
-		function self:close_all_sockets()
-			self:log(tcp, 'note', 'htsrv', 'kill-all', '%s',
-				cat(sort(imap(keys(tcp.sockets), logarg)), ' '))
-			for s in pairs(tcp.sockets) do
-				s:close()
-			end
+			return true
 		end
 
 		resume(thread(function()
-			while not stop do
-				accept_connection()
-			end
+			repeat until not accept_connection()
 		end, 'http-listen %s', tcp))
 
 		::continue::
 	end
 
 	return self
+end
+
+function server:stop()
+	self:log(tcp, 'note', 'htsrv', 'kill-all', '%s',
+		cat(sort(imap(keys(self.sockets), logarg)), ' '))
+	for _,s in ipairs(self.sockets) do
+		s:close()
+	end
 end
 
 --responding by raising an error.
