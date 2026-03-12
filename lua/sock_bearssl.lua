@@ -594,6 +594,116 @@ local BR_SSL_BUFSIZE_BIDI = (16384 + 325) + (16384 + 85)
 
 local min = math.min
 
+--SSL error mapping ----------------------------------------------------------
+
+local BR_ERR_RECV_FATAL_ALERT = 256
+local BR_ERR_SEND_FATAL_ALERT = 512
+
+local br_alert_name = {
+	-- from c/bearssl/src/inc/bearssl_ssl.h BR_ALERT_* defs
+	[0]   = 'close_notify',
+	[10]  = 'unexpected_message',
+	[20]  = 'bad_record_mac',
+	[22]  = 'record_overflow',
+	[30]  = 'decompression_failure',
+	[40]  = 'handshake_failure',
+	[42]  = 'bad_certificate',
+	[43]  = 'unsupported_certificate',
+	[44]  = 'certificate_revoked',
+	[45]  = 'certificate_expired',
+	[46]  = 'certificate_unknown',
+	[47]  = 'illegal_parameter',
+	[48]  = 'unknown_ca',
+	[49]  = 'access_denied',
+	[50]  = 'decode_error',
+	[51]  = 'decrypt_error',
+	[70]  = 'protocol_version',
+	[71]  = 'insufficient_security',
+	[80]  = 'internal_error',
+	[90]  = 'user_canceled',
+	[100] = 'no_renegotiation',
+	[110] = 'unsupported_extension',
+	[120] = 'no_application_protocol',
+}
+
+local function ssl_alert_error(e)
+	if e >= BR_ERR_SEND_FATAL_ALERT then
+		e = e - BR_ERR_SEND_FATAL_ALERT
+		return 'ssl_send_error_'..(br_alert_name[e] or e)
+	elseif e >= BR_ERR_RECV_FATAL_ALERT then
+		e = e - BR_ERR_RECV_FATAL_ALERT
+		return 'ssl_recv_error_'..(br_alert_name[e] or e)
+	end
+end
+
+local br_err_name = {
+	-- from c/bearssl/src/inc/bearssl_ssl.h BR_ERR_* defs
+	[1]  = 'bad_param',
+	[2]  = 'bad_state',
+	[3]  = 'unsupported_version',
+	[4]  = 'bad_version',
+	[5]  = 'bad_length',
+	[6]  = 'too_large',
+	[7]  = 'bad_mac',
+	[8]  = 'no_random',
+	[9]  = 'unknown_type',
+	[10] = 'unexpected',
+	[12] = 'bad_ccs',
+	[13] = 'bad_alert',
+	[14] = 'bad_handshake',
+	[15] = 'oversized_id',
+	[16] = 'bad_cipher_suite',
+	[17] = 'bad_compression',
+	[18] = 'bad_fraglen',
+	[19] = 'bad_secreneg',
+	[20] = 'extra_extension',
+	[21] = 'bad_sni',
+	[22] = 'bad_hello_done',
+	[23] = 'limit_exceeded',
+	[24] = 'bad_finished',
+	[25] = 'resume_mismatch',
+	[26] = 'invalid_algorithm',
+	[27] = 'bad_signature',
+	[28] = 'wrong_key_usage',
+	[29] = 'no_client_auth',
+	[31] = 'io',
+	-- from c/bearssl/src/inc/bearssl_x509.h BR_ERR_X509_* defs
+	[32] = 'x509_ok',
+	[33] = 'x509_invalid_value',
+	[34] = 'x509_truncated',
+	[35] = 'x509_empty_chain',
+	[36] = 'x509_inner_trunc',
+	[37] = 'x509_bad_tag_class',
+	[38] = 'x509_bad_tag_value',
+	[39] = 'x509_indefinite_length',
+	[40] = 'x509_extra_element',
+	[41] = 'x509_unexpected',
+	[42] = 'x509_not_constructed',
+	[43] = 'x509_not_primitive',
+	[44] = 'x509_partial_byte',
+	[45] = 'x509_bad_boolean',
+	[46] = 'x509_overflow',
+	[47] = 'x509_bad_dn',
+	[48] = 'x509_bad_time',
+	[49] = 'x509_unsupported',
+	[50] = 'x509_limit_exceeded',
+	[51] = 'x509_wrong_key_type',
+	[52] = 'x509_bad_signature',
+	[53] = 'x509_time_unknown',
+	[54] = 'x509_expired',
+	[55] = 'x509_dn_mismatch',
+	[56] = 'x509_bad_server_name',
+	[57] = 'x509_critical_extension',
+	[58] = 'x509_not_ca',
+	[59] = 'x509_forbidden_key_usage',
+	[60] = 'x509_weak_public_key',
+	[62] = 'x509_not_trusted',
+}
+
+local function ssl_br_error(err)
+	return 'ssl_error_'..(br_err_name[err] or err)
+end
+
 --PEM parsing ----------------------------------------------------------------
 
 local _pem_acc     -- uint8_t* write head
@@ -707,8 +817,9 @@ local function load_trust_anchors(ca_pem)
 		C.br_x509_decoder_init(dc, _dn_cb, nil)
 		C.br_x509_decoder_push(dc, cert.data, cert.len)
 
-		if tonumber(dc.err) ~= 0 or tonumber(dc.decoded) == 0 then
-			return nil, 'cert_decode_error_'..tonumber(dc.err)
+		local e = tonumber(dc.err)
+		if e ~= 0 or tonumber(dc.decoded) == 0 then
+			return nil, 'cert_decode_error_'..(br_err_name[e] or e)
 		end
 
 		local ta   = ta_array[i - 1]
@@ -944,9 +1055,6 @@ end
 
 local _szp = new'size_t[1]' -- shared; safe because reads are captured before yields
 
-local BR_ERR_RECV_FATAL_ALERT = 256
-local BR_ERR_SEND_FATAL_ALERT = 512
-
 -- Drive the engine until `target` state bits are set.
 -- Returns true, or nil+err on error/closed.
 local function engine_run(self, target)
@@ -959,17 +1067,7 @@ local function engine_run(self, target)
 		end
 		if band(state, BR_SSL_CLOSED) ~= 0 then
 			local e = tonumber(eng.err)
-			local s
-			if e == 0 then
-				s = 'eof'
-			elseif e >= BR_ERR_SEND_FATAL_ALERT then
-				s = 'ssl_send_error_'..(e - BR_ERR_SEND_FATAL_ALERT)
-			elseif e >= BR_ERR_RECV_FATAL_ALERT then
-				s = 'ssl_recv_error_'..(e - BR_ERR_RECV_FATAL_ALERT)
-			else
-				s = 'ssl_error'..e
-			end
-			return nil, s
+			return nil, e == 0 and 'eof' or ssl_alert_error(e) or ssl_br_error(e)
 		end
 		if band(state, BR_SSL_SENDREC) ~= 0 then
 			local buf = C.br_ssl_engine_sendrec_buf(eng, _szp)
