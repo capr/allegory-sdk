@@ -35,6 +35,10 @@ require'fs'
 
 local C = ffi.load'bearssl'
 
+local
+	min, band, bor, cast, copy, tonumber =
+	min, band, bor, cast, copy, tonumber
+
 cdef[[
 
 /* pem */
@@ -592,8 +596,6 @@ local BR_X509_TA_CA   = 0x0001
 
 local BR_SSL_BUFSIZE_BIDI = (16384 + 325) + (16384 + 85)
 
-local min = math.min
-
 --SSL error mapping ----------------------------------------------------------
 
 local BR_ERR_RECV_FATAL_ALERT = 256
@@ -781,7 +783,7 @@ local function copy_rsa_sk(src, keepalive)
 	sk[0].dp = src.dp; sk[0].dplen = src.dplen
 	sk[0].dq = src.dq; sk[0].dqlen = src.dqlen
 	sk[0].iq = src.iq; sk[0].iqlen = src.iqlen
-	keepalive[#keepalive + 1] = sk
+	add(keepalive, sk)
 	return sk
 end
 
@@ -789,7 +791,7 @@ local function copy_ec_sk(src, keepalive)
 	local sk = new('br_ec_private_key[1]')
 	sk[0].curve = src.curve
 	sk[0].x     = src.x; sk[0].xlen = src.xlen
-	keepalive[#keepalive + 1] = sk
+	add(keepalive, sk)
 	return sk
 end
 
@@ -830,7 +832,7 @@ local function load_trust_anchors(ca_pem)
 		local dn_len  = _dn_pos
 		local dn_copy = new('uint8_t[?]', dn_len)
 		copy(dn_copy, _dn_acc, dn_len)
-		keepalive[#keepalive + 1] = dn_copy
+		add(keepalive, dn_copy)
 		ta.dn.data = dn_copy
 		ta.dn.len  = dn_len
 		ta.flags   = BR_X509_TA_CA
@@ -843,8 +845,8 @@ local function load_trust_anchors(ca_pem)
 			local ec_e = new('uint8_t[?]', elen)
 			copy(nc, rsa.n, nlen)
 			copy(ec_e, rsa.e, elen)
-			keepalive[#keepalive + 1] = nc
-			keepalive[#keepalive + 1] = ec_e
+			add(keepalive, nc)
+			add(keepalive, ec_e)
 			ta.pkey.key_type      = BR_KEYTYPE_RSA
 			ta.pkey.key.rsa.n     = nc;   ta.pkey.key.rsa.nlen = nlen
 			ta.pkey.key.rsa.e     = ec_e; ta.pkey.key.rsa.elen = elen
@@ -853,7 +855,7 @@ local function load_trust_anchors(ca_pem)
 			local qlen = tonumber(ec.qlen)
 			local qc   = new('uint8_t[?]', qlen)
 			copy(qc, ec.q, qlen)
-			keepalive[#keepalive + 1] = qc
+			add(keepalive, qc)
 			ta.pkey.key_type     = BR_KEYTYPE_EC
 			ta.pkey.key.ec.curve = tonumber(ec.curve)
 			ta.pkey.key.ec.q     = qc; ta.pkey.key.ec.qlen = qlen
@@ -881,7 +883,7 @@ local function load_cert_chain(cert_pem)
 	for i, cert in ipairs(certs) do
 		chain[i - 1].data     = cert.data
 		chain[i - 1].data_len = cert.len
-		keepalive[#keepalive + 1] = cert.data
+		add(keepalive, cert.data)
 	end
 	return chain, n, keepalive
 end
@@ -962,9 +964,9 @@ local function make_client_ctx(opt)
 	local xc  = new('br_x509_minimal_context')
 	local buf = new('uint8_t[?]', BR_SSL_BUFSIZE_BIDI)
 	local eng = cast('br_ssl_engine_context*', sc) -- eng is first field
-	keepalive[#keepalive + 1] = sc
-	keepalive[#keepalive + 1] = xc
-	keepalive[#keepalive + 1] = buf
+	add(keepalive, sc)
+	add(keepalive, xc)
+	add(keepalive, buf)
 
 	-- enforce RSA key size floor for server cert chains (default 2048).
 	xc.min_rsa_size = opt.min_rsa_size or 2048
@@ -973,7 +975,7 @@ local function make_client_ctx(opt)
 		local ca = opt.ca or load_ca(opt.ca_file)
 		local ta, ta_n, ta_kp = load_trust_anchors(ca)
 		if not ta then return nil, ta_n end
-		for _, v in ipairs(ta_kp) do keepalive[#keepalive + 1] = v end
+		append(keepalive, ta_kp)
 		C.br_ssl_client_init_full(sc, xc, ta, ta_n)
 	else
 		C.br_ssl_client_init_full(sc, xc, nil, 0)
@@ -999,11 +1001,11 @@ local function make_client_ctx(opt)
 	if cert then
 		local chain, chain_n, chain_kp = load_cert_chain(cert)
 		if not chain then return nil, chain_n end
-		for _, v in ipairs(chain_kp) do keepalive[#keepalive + 1] = v end
+		append(keepalive, chain_kp)
 
 		local skdc, kt, key_kp = load_private_key(key)
 		if not skdc then return nil, kt end
-		for _, v in ipairs(key_kp) do keepalive[#keepalive + 1] = v end
+		append(keepalive, key_kp)
 
 		if kt == BR_KEYTYPE_RSA then
 			local sk = copy_rsa_sk(skdc.key.rsa, keepalive)
@@ -1119,7 +1121,7 @@ end
 function client_stcp:try_send(buf, sz)
 	if not self.tcp then return nil, 'closed' end
 	sz = sz or #buf
-	local bp   = cast('const uint8_t*', buf)
+	local bp   = cast(u8p, buf)
 	local sent = 0
 	while sent < sz do
 		local ok, err = engine_run(self, BR_SSL_SENDAPP)
@@ -1238,10 +1240,10 @@ function _G.server_stcp(tcp, opt)
 	local keepalive = {}
 	local chain, chain_n, chain_kp = load_cert_chain(cert)
 	assert(chain, chain_n)
-	for _, v in ipairs(chain_kp) do keepalive[#keepalive + 1] = v end
+	append(keepalive, chain_kp)
 	local skdc, kt, key_kp = load_private_key(key)
 	assert(skdc, kt)
-	for _, v in ipairs(key_kp) do keepalive[#keepalive + 1] = v end
+	append(keepalive, key_kp)
 	local sk
 	if kt == BR_KEYTYPE_RSA then
 		sk = copy_rsa_sk(skdc.key.rsa, keepalive)
@@ -1257,8 +1259,8 @@ function _G.server_stcp(tcp, opt)
 		cache = new'br_ssl_session_cache_lru[1]'
 		cache_buf = u8a(bufsize)
 		C.br_ssl_session_cache_lru_init(cache, cache_buf, bufsize)
-		keepalive[#keepalive + 1] = cache
-		keepalive[#keepalive + 1] = cache_buf
+		add(keepalive, cache)
+		add(keepalive, cache_buf)
 	end
 	local issuer_kt = opt.cert_issuer_rsa and BR_KEYTYPE_RSA or BR_KEYTYPE_EC
 	local s = object(server_stcp, {
