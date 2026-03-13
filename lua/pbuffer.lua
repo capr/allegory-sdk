@@ -60,6 +60,8 @@ Use the try_*() variants if recovery/retry is required.
 
 ]]
 
+if not ... then require'pbuffer_test'; return end
+
 require'glue'
 
 local
@@ -92,13 +94,7 @@ function pb:commit   (n)   self.b:commit   (n)  ; return self end
 function pb:tostring ()    return self.b:tostring () end
 function pb:__len    ()    return #self.b end
 function pb:reserve  (n)   return self.b:reserve(n) end
-
-local non_nil_ptr = cast(u8p, 1) --1 because 0 makes p == nil, a ffi mis-design.
-function pb:ref()
-	local p, len = self.b:ref()
-	if not p then p = non_nil_ptr end --nil,0 looks like an error.
-	return p, len
-end
+function pb:ref      ()    return self.b:ref() end
 
 pb.check_io = check_io
 pb.checkp   = checkp
@@ -218,7 +214,7 @@ end
 
 pb.readahead = 64 * 1024
 function pb:try_have(ask)
-	local have = #self
+	local have = #self.b
 	ask = ask - have
 	if ask <= 0 then return true end
 	local space = max(ask, self.readahead - have)
@@ -267,7 +263,7 @@ function pb:flush()
 end
 
 function pb:skip(n, past_buffer)
-	local buf_n = min(n, #self)
+	local buf_n = min(n, #self.b)
 	self.b:skip(buf_n)
 	n = n - buf_n
 	if n <= 0 then return end
@@ -280,7 +276,7 @@ function pb:skip(n, past_buffer)
 	else
 		while n > 0 do
 			self:need(1)
-			local k = min(n, #self)
+			local k = min(n, #self.b)
 			self.b:skip(k)
 			n = n - k
 		end
@@ -295,7 +291,7 @@ function pb:haveline() --for line-based protocols like http.
 	while true do
 		local s = self:getto(lineterm, i, self.linesize)
 		if s then return s end
-		i = #self
+		i = #self.b
 		self:checkp(i < self.linesize, 'line too long')
 		if i > 0 then --line already started, need to end it
 			self:need(i + 1)
