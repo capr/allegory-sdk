@@ -1963,7 +1963,7 @@ function file_saver(file, file_perms, dir_perms)
 	require'proc'
 	local tmpfile = file..'~'..getpid()
 	local f, n
-	local function _write(buf, sz, eof)
+	local function _write(buf, sz)
 		if not f then
 			mkdirs(tmpfile, dir_perms)
 			f = open{path = tmpfile, mode = 'w', perms = file_perms, quiet = true}
@@ -1973,11 +1973,10 @@ function file_saver(file, file_perms, dir_perms)
 			buf = tostring(buf)
 		end
 		sz = sz or #buf
-		if sz == 0 then eof = true end --diff. way to signal eof
-		if not eof then
+		if sz > 0 then
 			f:write(buf, sz)
 			n = n + sz
-		else
+		else --eof
 			f:sync()
 			f:close()
 			rename(tmpfile, file)
@@ -1994,7 +1993,7 @@ function file_saver(file, file_perms, dir_perms)
 	local function write(buf, sz)
 		assert(not (f and f:closed()))
 		local ok, err
-		if buf == nil and not isnum(sz) then --caller wants to abort with error
+		if buf == nil and sz ~= 0 then --caller wants to abort with error
 			ok, err = buf, sz
 		else
 			ok, err = catch('io', _write, buf, sz)

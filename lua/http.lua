@@ -40,7 +40,7 @@ http:read_request() -> sreq                  | Receive a client's request.
 	sreq:read_body(write) -> true             | Read request body push-style.
 
 	NOTE: read()->buf,sz returns nil on eof.
-	NOTE: write() is called one last time without args on eof.
+	NOTE: write(nil, 0) is called one last time on eof.
 
 http:build_response(sreq, opt) -> sres       | Make a HTTP response object.
 
@@ -419,7 +419,7 @@ function http:read_body(headers, write, from_server, close, state)
 		end, 'http-read-body %s', self.f))
 	else --function or nil
 		self:read_body_to_writer(headers, write, from_server, close, state)
-		if write then write() end --signal eof to writer.
+		if write then write(nil, 0) end --signal eof to writer.
 		return true --signal that content was read.
 	end
 end
