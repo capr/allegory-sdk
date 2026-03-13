@@ -1,24 +1,28 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
-* log restructuring:
-	live() must take module and action
-	show +N -N on separate column
-	add object type in front of debug prefix
+* httplite
+	- ?
 
-* fs: atomic save()/saver() rethinking
+* log is incomplete and hard to read:
+	- live() must take module and action
+	- show +N -N on separate column
+	- add object type in front of debug prefix
+
+* pbuffer review:
+	- try vs raising and usage
+	- read/readn (unbuffered) vs readn_to (buffered)
+
+* error reporting lacking context:
+	- unprotect_io() lacks the context that functions with check() have.
+	- sometimes even check() lacks context because it's inside try_() code.
 
 * check() from errors.lua is ungreppable because of all local check() flavors.
 
-* http server is over-engineered, simplify radically.
-	* simplify header parsing and formatting
-	* simplify content-encoding chains: leave gzip & chunked.
-	*
+* fs: atomic save()/saver() rethinking?
 
 * http server + client hitting different parts
 
 * http server smoke test to look for memory leaks
-
-* pbuffer try vs raising and usage
 
 * mdbx test
 * mdbx_schema test

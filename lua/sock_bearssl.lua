@@ -1105,7 +1105,10 @@ local server_stcp = merge({type = 'server_tls_socket'}, tcp_class)
 function client_stcp:try_recv(buf, sz)
 	if not self.tcp then return nil, 'closed' end
 	local ok, err = engine_run(self, BR_SSL_RECVAPP)
-	if not ok then return nil, err end
+	if not ok then
+		if err == 'eof' then return 0 end
+		return nil, err
+	end
 	local app_buf = C.br_ssl_engine_recvapp_buf(self.eng, _szp)
 	local n = min(sz, tonumber(_szp[0]))
 	copy(buf, app_buf, n)

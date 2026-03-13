@@ -263,7 +263,7 @@ function http_server(...)
 			local ctcp, err, retry = tcp:try_accept()
 
 			if not ctcp then
-				if tcp:closed() then return end --stop() called
+				if err == 'closed' then return end --stop() called
 				self:check(tcp, false, 'accept', '%s', err)
 				if retry then
 					--temporary network error. let it retry but pause a little
