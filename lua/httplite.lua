@@ -48,6 +48,7 @@ require'glue'
 require'pbuffer'
 require'gzip'
 require'sock'
+require'sock_bearssl'
 require'http_date'
 
 --http server ----------------------------------------------------------------
@@ -76,34 +77,6 @@ local header_format = {}
 
 local function format_date(t)
 	return http_date_format(t, 'rfc1123')
-end
-
-function server_req:onfinish(f)
-	after(self, 'finish', f)
-end
-
-function server_req:read_body(headers, write, from_server, close, state)
-	if write == 'string' or write == 'buffer' then
-		local to_string = write == 'string'
-		local write, collect = dynarray_pump()
-		self:read_body_to_writer(headers, write, from_server, close, state)
-		local buf, sz = collect()
-		if to_string then
-			return ffi.string(buf, sz)
-		else
-			return buf, sz
-		end
-	elseif write == 'reader' then
-		--don't read the body, but return a reader function for it instead.
-		return (cowrap(function(yield)
-			self:read_body_to_writer(headers, yield, from_server, close, state)
-			--not returning anything here signals eof.
-		end, 'http-read-body %s', self.f))
-	else --function or nil
-		self:read_body_to_writer(headers, write, from_server, close, state)
-		if write then write() end --signal eof to writer.
-		return true --signal that content was read.
-	end
 end
 
 function http_server(...)
@@ -198,6 +171,7 @@ function http_server(...)
 				req.headers[k] = parse(v)
 			end
 		end
+		req.body_len = tonumber(req.headers['content-length']) or 0
 
 		--read request body and send a response back.
 		ownthreadenv().http_request = req
@@ -205,6 +179,33 @@ function http_server(...)
 		next_request_id = next_request_id + 1
 
 		local close, out, out_thread, send_started, send_finished
+		local body_was_read
+
+		function req:onfinish(f)
+			after(self, 'finish', f)
+		end
+
+		local b_needs_reset = false
+		local body_unread_len = req.body_len
+		function req.read_body_chunk(req)
+			if body_unread_len > 0 then
+				if b_needs_reset then
+					self.b:reset()
+					b_needs_reset = false
+				end
+				self.b:need(1)
+			end
+			local buf, len = ctcp.b:ref()
+			body_unread_len = body_unread_len - len
+			b_needs_reset = true
+			return buf, len
+		end
+
+		function req.read_body(req)
+			self.b:need(body_unread_len)
+			body_unread_len = 0
+			return self.b:ref()
+		end
 
 		local function send_response(opt)
 			send_started = true
@@ -238,6 +239,8 @@ function http_server(...)
 			end
 			update(headers, opt.headers)
 
+			--
+
 			--send status line
 			local status = opt.status or 200
 			assert(status >= 100 and status <= 999, 'invalid status code')
@@ -270,19 +273,19 @@ function http_server(...)
 			send_finished = true
 		end --send_response()
 
+		function req.respond(req, opt)
+			send_response(opt)
+		end
+
 		--NOTE: both req:respond() and out() raise on I/O errors breaking
 		--user's code, so use req:onfinish() to free resources.
-		function req.respond(req, opt)
-			if opt.want_out_function then
-				out, out_thread = cowrap(function(yield)
-					opt.content = yield
-					send_response(opt)
-				end, 'http-server-out %s %s', ctcp, req.uri)
-				out()
-				return out
-			else
+		function req.out_function()
+			out, out_thread = cowrap(function(yield)
+				opt.content = yield
 				send_response(opt)
-			end
+			end, 'http-server-out %s %s', ctcp, req.uri)
+			out()
+			return out
 		end
 
 		--self.respond(req) needs to call req:respond(opt) or it's a 404.
@@ -319,9 +322,9 @@ function http_server(...)
 		end
 
 		--the request must be entirely read before we can read the next request.
-		if req.body_was_read == nil then
-			req:read_body()
-		end
+		repeat
+			local buf, len = req:read_body_chunk()
+		until len == 0
 
 		--close connection if asked for.
 		if close then
@@ -332,7 +335,7 @@ function http_server(...)
 			--would cut short the client's pending input stream (it's how TCP works).
 			--TODO: limit how much traffic we absorb for this.
 			ctcp:shutdown'w'
-			ctcp.b:readall_to(noop)
+			while ctcp.b:have(1) do ctcp.b:reset() end
 			ctcp:close()
 		end
 	end --handle_request()
@@ -411,6 +414,7 @@ function http_server(...)
 					readahead = recv_buffer_size,
 					lineterm = '\r\n',
 					linesize = 8192,
+					tracebacks = self.debug.tracebacks,
 				} --for reading only
 				local ok, err = pcall(handle_connection, ctcp)
 				ctcp.b:free()
