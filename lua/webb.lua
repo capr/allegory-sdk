@@ -575,16 +575,18 @@ function outfile_function(path, offset, len)
 		local filebuf_size = min(len, 64 * 1024)
 		local filebuf = u8a(filebuf_size)
 		while true do
-			local len = f:read(filebuf, filebuf_size)
-			if len == 0 then
+			local len, err = f:try_read(filebuf, filebuf_size)
+			if not len then
+				f:close()
+				error(err)
+			elseif err == 'eof' then
 				f:close()
 				break
-			else
-				local ok, err = pcall(out, filebuf, len)
-				if not ok then
-					f:close()
-					error(err)
-				end
+			end
+			local ok, err = pcall(out, filebuf, len)
+			if not ok then
+				f:close()
+				error(err)
 			end
 		end
 		assert(f:closed())

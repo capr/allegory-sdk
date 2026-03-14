@@ -104,7 +104,8 @@ FILESYSTEM INFO
 HI-LEVEL APIs
 	[try_]load[_tobuffer](path, [default], [ignore_fsize]) -> buf,len  read file to string or buffer
 	[try_]save(path, v | buf,len | read, [file_perms], [dir_perms])    atomic save value/buffer/reader
-	file_saver(path, [file_perms], [dir_perms]) -> try_write(v | buf,len, [eof]) -> ok, err
+	file_saver(path, [file_perms], [dir_perms])
+		-> try_write(v | buf,len | nil,0) -> ok, err
 	[try_]touch(file, [mtime])                    create file or update mtime
 	gen_id(name, [start=1]) -> id                 persistent atomic, concurrent autoincrement
 
@@ -210,9 +211,10 @@ Pipes ------------------------------------------------------------------------
 
 File I/O ---------------------------------------------------------------------
 
-f:[try_]read(buf, len) -> readlen
+f:[try_]read(buf, len) -> readlen | 0,'eof'
 
-	Read data from file. Returns (and keeps returning) 0 on EOF or broken pipe.
+	Read data from file. Returns (and keeps returning) 0,'eof' on EOF
+	or broken pipe.
 
 f:[try_]readn(buf, len) -> true
 
@@ -773,11 +775,15 @@ int64_t lseek(int fd, int64_t offset, int whence) asm("lseek64");
 --NOTE: always ask for more than 0 bytes from a pipe or you'll not see EOF.
 function file.try_read(f, buf, sz)
 	if f.fd == -1 then return nil, 'closed' end
-	if sz == 0 then return 0 end --masked for compat.
+	if sz == 0 then return 0 end --mask out null reads
 	if f.async then
-		return _file_async_read(f, buf, sz)
+		local n, err = _file_async_read(f, buf, sz)
+		if not n then return nil, err end
+		if n == 0 then return 0, 'eof' end
+		return n
 	else
 		local n = C.read(f.fd, buf, sz)
+		if n == 0 then return 0, 'eof' end
 		if n == -1 then return check_errno() end
 		n = tonumber(n)
 		f.r = f.r + n
@@ -852,10 +858,8 @@ function file.try_readn(f, buf, sz)
 	local buf = cast(u8p, buf)
 	while sz > 0 do
 		local len, err = f:try_read(buf, sz)
-		if not len then --short read
+		if not len or err == 'eof' then --short read
 			return nil, err, sz0 - sz
-		elseif len == 0 then --eof
-			return nil, 'eof', sz0 - sz
 		end
 		buf = buf + len
 		sz  = sz  - len
@@ -864,27 +868,27 @@ function file.try_readn(f, buf, sz)
 end
 file.readn = unprotect_io(file.try_readn)
 
+local non_nil_ptr = cast(voidp, 1) --1 because voidp(0) == nil in LuaJIT!
 function file.try_readall(f, ignore_file_size)
-	local b = string_buffer()
-	local filesize
+	local left = 1/0 --unknown
 	if f.seek and not ignore_file_size then --find filesize to allocate once
 		local size, err = f:try_attr'size'; if not size then return nil, err end
 		local offset, err = f:try_seek(); if not offset then return nil, err end
-		filesize = size - offset
+		left = size - offset
+		if left == 0 then return non_nil_ptr, 0 end --avoid returning nil-y,0
 	end
+	local b = string_buffer()
 	local readahead_size = 16 * 1024
-	--we reserve 1 byte for 0 because at 0 b:ref() returns nil,0 which looks like an error.
-	local buf, sz = b:reserve(max(1, filesize or readahead_size))
-	local left = filesize or 1/0
-	while true do
+	while left > 0 do
+		--NOTE: reserve(>0) is enough to ensure b:ref() doesn't return nil,0!
+		local buf, sz = b:reserve(min(left, readahead_size))
 		local len, err = f:try_read(buf, sz)
-		if not len then return nil, err, b:ref() end --partial read
-		if len == 0 then return b:ref() end --eof
+		if not len then return nil, err, b:ref() end
+		if err == 'eof' then return b:ref() end
 		b:commit(len)
 		left = left - len
-		if left <= 0 then return b:ref() end --stop to avoid a realloc just to read 0
-		buf, sz = b:reserve(readahead_size)
 	end
+	return b:ref()
 end
 file.readall = unprotect_io(file.try_readall)
 
@@ -1947,7 +1951,7 @@ end
 
 function load_tobuffer(file, default_buf, default_len, ignore_file_size)
 	local buf, len = try_load_tobuffer(file, default_buf, default_len, ignore_file_size)
-	check('fs', 'load', buf ~= nil, '%s: %s', file, len)
+	check('fs', 'load', buf, '%s: %s', file, len)
 	return buf, len
 end
 
@@ -1957,7 +1961,7 @@ function load(file, default, ignore_file_size) --load a file into a string.
 	return str(buf, len)
 end
 
---return a try_write(v | buf,len, [eof]) -> true | false,err function
+--return a try_write(v | buf,len) -> true | false,err function
 --that doesn't yield, so you can use it in ffi write callbacks.
 function file_saver(file, file_perms, dir_perms)
 	require'proc'

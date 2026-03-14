@@ -221,8 +221,7 @@ function pb:try_have(ask)
 	local p, space = self:reserve(space) --could reserve even more space
 	while ask > 0 do
 		local read, err = self.f:try_read(p, space)
-		if not read then return false, err end
-		if read == 0 then return false, 'eof' end
+		if not read or err == 'eof' then return false, err end
 		self:commit(read)
 		space = space - read
 		ask = ask - read
@@ -232,16 +231,19 @@ function pb:try_have(ask)
 end
 function pb:have(ask)
 	local have, err = self:try_have(ask)
-	if not have and err == 'eof' then return false end
+	if not have and err == 'eof' then return false end --eof is not an error
 	return self:check_io(have, err)
 end
 
 function pb:need(n)
 	local have, err = self:try_have(n)
-	if not have and err == 'eof' then
-		self:checkp(false, err) --eof is a protocol error, not an i/o error
+	if not have then
+		if err == 'eof' then
+			self:checkp(false, err) --eof is a protocol error, not an i/o error
+		else
+			self:check_io(false, err)
+		end
 	end
-	self:check_io(have, err)
 	return self
 end
 
@@ -329,9 +331,7 @@ end
 function pb:reader()
 	return function(dst, dsz)
 		local have, err = self:try_have(1)
-		if not have and err ~= 'eof' then
-			return nil, err
-		end
+		if not have then return err == 'eof' and 0 or nil, err end
 		local src, ssz = self:ref()
 		local sz = min(dsz, ssz)
 		copy(dst, src, sz)

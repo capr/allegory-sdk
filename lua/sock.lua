@@ -130,11 +130,10 @@ udp:[try_]send(s|buf, [len], [flags]) -> len
 	Send bytes to the connected address.
 	Empty packets (zero bytes) are allowed.
 
-tcp|udp:[try_]recv(buf, maxlen, [flags]) -> len
+tcp|udp:[try_]recv(buf, maxlen, [flags]) -> len | 0,'eof'
 
 	Receive bytes from the connected address.
-	With TCP, returning 0 means that the socket was closed on the other side.
-	With UDP it just means that an empty packet was received.
+	Returns (and keeps returning) 0,'eof' if the socket was closed on the other side.
 
 tcp:[try_]listen(addr, [backlog], [onaccept])
 
@@ -157,8 +156,7 @@ tcp:[try_]recvn(buf, len) -> true
 
 tcp:[try_]recvall() -> buf,len | nil,err,buf,len
 
-	Receive until closed into an accumulating buffer. If an error occurs
-	before the socket is closed, the partial buffer and length is returned after it.
+	Receive until closed into an accumulating buffer.
 
 udp:[try_]sendto(addr, s|buf, [maxlen], [flags]) -> len
 
@@ -284,7 +282,12 @@ local coro_finish   = coro.finish
 
 local C = C
 
-local socket = {debug_prefix = 'S'} --common socket methods
+local socket = {
+	debug_prefix = 'S',
+	check_io = check_io,
+	checkp = checkp,
+	protect = protect,
+} --common socket methods
 local tcp = {type = 'tcp_socket', socktype = 'tcp'}
 local udp = {type = 'udp_socket', socktype = 'udp'}
 local wait_job_class = {type = 'wait_job', debug_prefix = 'W'}
@@ -474,7 +477,6 @@ local SOCK_CLOEXEC   = 0x080000 --close-on-exec (non-inheritable on exec())
 local function wrap_socket(opt, class, fd, family)
 	return object(class, {
 		fd = assert(fd), family = family, issocket = true,
-		check_io = check_io, checkp = checkp, protect = protect,
 		r = 0, w = 0,
 	}, opt)
 end
@@ -523,6 +525,7 @@ function socket:try_close()
 	if not ok then return false, err end
 	return true
 end
+socket.close = unprotect_io(socket.try_close)
 
 function socket:closed()
 	return not self.fd
@@ -530,6 +533,16 @@ end
 
 function socket:onclose(fn)
 	after(self, '_after_close', fn)
+end
+
+function socket:setexpires(expires, rw)
+	local r = rw == 'r' or not rw
+	local w = rw == 'w' or not rw
+	if r then self.recv_expires = expires end
+	if w then self.send_expires = expires end
+end
+function socket:settimeout(s, rw)
+	self:setexpires(s and clock() + s, rw)
 end
 
 local EAGAIN      = 11
@@ -581,6 +594,36 @@ function wait_job()
 	--log('', 'sock', 'wait-job', '%s', self)
 	return self
 end
+end
+
+local function check_errno_wait_write(wait_errno)
+	local errno = errno()
+	if errno == wait_errno then
+		if self.send_expires then
+			send_expires_heap:push(self)
+		end
+		self.send_thread = currentthread()
+		local ok, err = wait_io()
+		if not ok then return nil, err end
+	else
+		local ok, err = check_errno(nil, errno)
+		return ok, err, errno
+	end
+end
+
+local function check_errno_wait_read(wait_errno)
+	local errno = errno()
+	if errno == wait_errno then
+		if self.recv_expires then
+			recv_expires_heap:push(self)
+		end
+		self.recv_thread = currentthread()
+		local ok, err = wait_io()
+		if not ok then return nil, err end
+	else
+		local ok, err = check_errno(nil, errno)
+		return ok, err, errno
+	end
 end
 
 local function make_async(for_writing, returns_n, func, wait_errno)
@@ -643,7 +686,9 @@ function tcp:try_connect(addr)
 	live(self, 'connected %s', self.remote_addr)
 	return true
 end
+tcp.connect = unprotect_io(tcp.try_connect)
 udp.try_connect = tcp.try_connect
+udp.connect = unprotect_io(udp.try_connect)
 
 do
 	--see man accept(2); get error codes with `sh c/precompile errno.h`.
@@ -726,6 +771,7 @@ function udp:try_send(buf, len, flags)
 	if not self.fd then return nil, 'closed' end
 	return socket_send(self, buf, len or #buf, flags)
 end
+udp.send = unprotect_io(udp.try_send)
 
 local socket_recv = make_async(false, true, function(self, buf, len, flags)
 	return C.recv(self.fd, buf, len, flags or 0)
@@ -733,9 +779,15 @@ end, EWOULDBLOCK)
 
 function socket:try_recv(buf, len, flags)
 	if not self.fd then return nil, 'closed' end
-	assert(len > 0)
-	return socket_recv(self, buf, len, flags)
+	if len == 0 then return 0 end --mask out null reads
+	local n, err = socket_recv(self, buf, len, flags)
+	if not n then return nil, err end
+	if n == 0 then return 0, 'eof' end
+	return n
 end
+socket.recv = unprotect_io(socket.try_recv)
+socket.try_read = socket.try_recv
+socket.read = socket.recv
 
 local udp_sendto = make_async(true, true, function(self, sa, buf, len, flags)
 	return C.sendto(self.fd, buf, len, flags or 0, sa, sa:size())
@@ -749,6 +801,7 @@ function udp:try_sendto(addr, buf, len, flags)
 	if not len then return nil, err end
 	return len
 end
+udp.sendto = unprotect_io(udp.try_sendto)
 
 do
 	local src_buf = sockaddr_ct()
@@ -769,6 +822,7 @@ do
 		return len, src_buf
 	end
 end
+udp.recvnext = unprotect_io(udp.try_recvnext)
 
 --making pipes async.
 
@@ -963,6 +1017,7 @@ function tcp:try_shutdown(which)
 		or which == 'w' and 1
 		or (not which or which == 'rw') and 2) == 0)
 end
+tcp.shutdown = unprotect_io(tcp.try_shutdown)
 
 --bind() ---------------------------------------------------------------------
 
@@ -983,6 +1038,7 @@ function socket:try_bind(addr)
 	--epoll_ctl() must be called after bind() for some reason.
 	return _sock_register(self)
 end
+socket.bind = unprotect_io(socket.try_bind)
 
 --listen() -------------------------------------------------------------------
 
@@ -1025,6 +1081,7 @@ function tcp:try_listen(addr, backlog, onaccept)
 
 	return self
 end
+tcp.listen = unprotect_io(tcp.try_listen)
 
 do --getopt() & setopt() -----------------------------------------------------
 
@@ -1224,7 +1281,7 @@ function socket:try_getopt(k)
 end
 function socket:getopt(k) --can't wrap with unprotect_io because it returns false
 	local v, err = self:try_getopt(k)
-	check_io(self, not (v == nil and err), err)
+	self:check_io(not (v == nil and err), err)
 	return v
 end
 
@@ -1261,34 +1318,39 @@ function tcp:try_send(buf, sz, flags)
 	end
 	return true
 end
+tcp.send = unprotect_io(tcp.try_send)
+tcp.try_write = tcp.try_send
+tcp.write = tcp.send
 
 function tcp:try_recvn(buf, sz)
 	local sz0 = sz
 	local buf = cast(u8p, buf)
 	while sz > 0 do
 		local len, err = self:try_recv(buf, sz)
-		if not len then --short read
+		if not len or err == 'eof' then --short read
 			return nil, err, sz0 - sz
-		elseif len == 0 then --closed
-			return nil, 'eof', sz0 - sz
 		end
 		buf = buf + len
 		sz  = sz  - len
 	end
 	return true
 end
+tcp.recvn = unprotect_io(tcp.try_recvn)
+tcp.try_readn = tcp.try_recvn
+tcp.readn = tcp.recvn
 
 function tcp:try_recvall()
-	local b = string_buffer()
 	local readahead_size = 16 * 1024
+	local b = string_buffer(readahead_size)
 	while true do
 		local buf, sz = b:reserve(readahead_size)
 		local len, err = self:try_recv(buf, sz)
-		if not len then return nil, err, b:ref() end --partial read
-		if len == 0 then return b:ref() end --eof
+		if not len then return nil, err, b:ref() end
+		if err == 'eof' then return b:ref() end
 		b:commit(len)
 	end
 end
+tcp.recvall = unprotect_io(tcp.try_recvall)
 
 --sleeping & timers ----------------------------------------------------------
 
@@ -1392,38 +1454,6 @@ function socket:debug(protocol)
 end
 
 --hi-level APIs --------------------------------------------------------------
-
-function socket:setexpires(expires, rw)
-	local r = rw == 'r' or not rw
-	local w = rw == 'w' or not rw
-	if r then self.recv_expires = expires end
-	if w then self.send_expires = expires end
-end
-function socket:settimeout(s, rw)
-	self:setexpires(s and clock() + s, rw)
-end
-
-socket.close   = unprotect_io(socket.try_close)
-socket.bind    = unprotect_io(socket.try_bind)
-socket.recv    = unprotect_io(socket.try_recv)
-tcp.connect    = unprotect_io(tcp.try_connect)
-tcp.listen     = unprotect_io(tcp.try_listen)
-tcp.recvn      = unprotect_io(tcp.try_recvn)
-tcp.recvall    = unprotect_io(tcp.try_recvall)
-tcp.send       = unprotect_io(tcp.try_send)
-tcp.shutdown   = unprotect_io(tcp.try_shutdown)
-udp.connect    = unprotect_io(udp.try_connect)
-udp.recvnext   = unprotect_io(udp.try_recvnext)
-udp.send       = unprotect_io(udp.try_send)
-udp.sendto     = unprotect_io(udp.try_sendto)
-
---I/O API for protocol buffers.
-socket.try_read = socket.try_recv
-socket.read   = socket.recv
-tcp.try_readn = tcp.try_recvn
-tcp.try_write = tcp.try_send
-tcp.readn     = tcp.recvn
-tcp.write     = tcp.send
 
 update(tcp, socket)
 update(udp, socket)

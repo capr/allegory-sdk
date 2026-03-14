@@ -1081,8 +1081,7 @@ local function engine_run(self, target)
 			local buf = C.br_ssl_engine_recvrec_buf(eng, _szp)
 			local n = tonumber(_szp[0])
 			local len, err = tcp:try_recv(buf, n)
-			if len == 0 then return nil, 'eof' end
-			if not len then return nil, err end
+			if not len or err == 'eof' then return nil, err end
 			C.br_ssl_engine_recvrec_ack(eng, len)
 		else
 			return nil, 'ssl_stall'
@@ -1198,9 +1197,8 @@ function client_stcp:try_close()
 		elseif band(state, BR_SSL_RECVREC) ~= 0 then
 			local buf = C.br_ssl_engine_recvrec_buf(self.eng, _szp)
 			local n = tonumber(_szp[0])
-			local len = self.tcp:try_recv(buf, n)
-			if not len then break end
-			if len == 0 then break end
+			local len, err = self.tcp:try_recv(buf, n)
+			if not len or err == 'eof' then break end
 			C.br_ssl_engine_recvrec_ack(self.eng, len)
 		else
 			break
@@ -1216,10 +1214,7 @@ end
 function client_stcp:try_recv(buf, sz)
 	if not self.tcp.fd then return nil, 'closed' end
 	local ok, err = engine_run(self, BR_SSL_RECVAPP)
-	if not ok then
-		if err == 'eof' then return 0 end
-		return nil, err
-	end
+	if not ok then return err == 'eof' and 0 or nil, err end
 	local app_buf = C.br_ssl_engine_recvapp_buf(self.eng, _szp)
 	local n = min(sz, tonumber(_szp[0]))
 	copy(buf, app_buf, n)
@@ -1245,7 +1240,7 @@ function client_stcp:try_send(buf, sz)
 	end
 	-- drain encrypted output to TCP; ignore EOF (data already accepted)
 	local ok, err = engine_run(self, bor(BR_SSL_SENDAPP, BR_SSL_RECVAPP))
-	if not ok and err ~= 'eof' then return nil, err end
+	if not ok then return nil, err end
 	return true
 end
 

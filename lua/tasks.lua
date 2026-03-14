@@ -523,7 +523,7 @@ exec_task:override('init', function(inherited, self, cmd, opt)
 
 		if p.stdin then
 			resume(thread(function()
-				local ok, err = p.stdin:write(self.stdin)
+				local ok, err = p.stdin:try_write(self.stdin)
 				if not ok then
 					notify_error('stdin:write(): %s', err)
 				end
@@ -535,13 +535,9 @@ exec_task:override('init', function(inherited, self, cmd, opt)
 			resume(thread(function()
 				local buf, sz = u8a(4096), 4096
 				while true do
-					local len, err = p.stdout:read(buf, sz)
-					if not len then
-						notify_error('stdout:read(): %s', err)
-						break
-					elseif len == 0 then
-						break
-					end
+					local len, err = p.stdout:try_read(buf, sz)
+					if not len then notify_error('stdout:read(): %s', err); break end
+					if err == 'eof' then break end
 					local s = str(buf, len)
 					out_stdout(s)
 				end
@@ -553,13 +549,9 @@ exec_task:override('init', function(inherited, self, cmd, opt)
 			resume(thread(function()
 				local buf, sz = u8a(4096), 4096
 				while true do
-					local len, err = p.stderr:read(buf, sz)
-					if not len then
-						notify_error('stderr:read(): %s', err)
-						break
-					elseif len == 0 then
-						break
-					end
+					local len, err = p.stderr:try_read(buf, sz)
+					if not len then notify_error('stderr:read(): %s', err); break end
+					if err == 'eof' then break end
 					local s = str(buf, len)
 					out_stderr(s)
 				end
@@ -685,6 +677,9 @@ end
 --self-test ------------------------------------------------------------------
 
 if not ... then
+
+	if os.getenv'AUTO' then return end
+
 	logging.verbose = true
 	logging.debug = true
 	run(function()
