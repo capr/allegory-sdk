@@ -605,7 +605,7 @@ end
 function test.paths()
 	print('homedir', homedir())
 	print('tmpdir ', tmpdir())
-	print('exepath', exepath())
+	print('exefile', exefile())
 	print('exedir' , exedir())
 	print('scriptdir', scriptdir())
 end
