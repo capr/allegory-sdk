@@ -31,17 +31,18 @@ local server = http_server{
 	},
 	respond = function(req, thread)
 		while true do
-			local buf, sz = req:read_body_chunk()
-			pr(buf, sz)
-			if buf == nil and sz == 0 then break end --eof
+			local buf, sz, left = req:read_body_chunk()
+			if left == 0 then break end
 			local s = str(buf, sz)
 			print(s)
 		end
 		if req.uri == '/favicon.ico' then
 			raise('http_response', {status = 404})
 		end
+		pr'1'
 		local out = req:out_function()
-		--out(('hello '):rep(1000))
+		pr'2'
+		out(('hello '):rep(1000))
 		--raise{status = 404, content = 'Dude, no page here'}
 	end,
 	--respond = webb_respond,
