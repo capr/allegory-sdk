@@ -1,5 +1,8 @@
 
 --floating point RGBA bitmap types for HDR storage and internal processing.
+
+if not ... then require'bitmap_test'; return end
+
 require'bitmap'
 require'glue'
 local conv = bitmap_converters

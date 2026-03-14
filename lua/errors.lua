@@ -47,6 +47,8 @@ traceback by default unless they ask for it.
 
 ]=]
 
+if not ... then require'errors_test'; return end
+
 require'glue'
 
 local

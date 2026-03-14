@@ -603,11 +603,11 @@ end
 --common paths ---------------------------------------------------------------
 
 function test.paths()
-	print('homedir', homedir())
-	print('tmpdir ', tmpdir())
-	print('exefile', exefile())
-	print('exedir' , exedir())
-	print('scriptdir', scriptdir())
+	assert(homedir() == '/root' or homedir():starts'/home')
+	assert(tmpdir() == '/tmp')
+	assert(exefile():ends'luajit')
+	assert(exedir():ends'bin')
+	--TODO: scriptdir()
 end
 
 --file attributes ------------------------------------------------------------
@@ -699,16 +699,17 @@ function test.ls()
 end
 
 function test.scandir()
-	local n = 0
-	for sc in scandir('/proc/self') do
-		local path = sc:path()
-		local typ, err = sc:try_attr'type'
-		print(string.format('%-8s %-60s %s', typ, path, err or ''))
-		n = n + 1
-		if n >= 20 then
-			break
-		end
+	cdef'int getpid(void);'
+	local pid = C.getpid()
+	local t = {}
+	for sc in scandir('/proc/self/task/'..pid) do
+		local path = sc:relpath()
+		local typ = sc:attr'type'
+		t[path] = typ
 	end
+	assert(t['fd/0'] == 'chardev')
+	assert(t['environ'] == 'file')
+	assert(t['cmdline'] == 'file')
 end
 
 function test.ls_not_found()

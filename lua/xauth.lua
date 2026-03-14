@@ -23,6 +23,8 @@ CONFIG
 
 ]==]
 
+if os.getenv'AUTO' then return end
+
 require'webb_auth'
 require'xrowset_sql'
 

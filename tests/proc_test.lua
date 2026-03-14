@@ -2,10 +2,13 @@
 
 require'proc'
 require'sock'
+require'fs'
 
 io.stdin:setvbuf'no'
 io.stdout:setvbuf'no'
 io.stderr:setvbuf'no'
+
+chdir(exedir()..'/../tests')
 
 local tests = {}
 local test = setmetatable({}, {__newindex = function(self, k, v)
@@ -24,8 +27,8 @@ function test.env()
 	assert(not env'zZ')
 	env('Zz', '321')
 	local t = env()
-	pr(t)
 	assert(t.Zz == '321')
+	assert(basename(t.PWD) == basename(startcwd()))
 end
 
 function test.exec_lua()
@@ -67,7 +70,7 @@ end
 
 function test.pipe()
 
-	save(exedir()..'/../tests/proc_test_pipe.lua', [[
+	save('proc_test_pipe.lua', [[
 io.stdin:setvbuf'no'
 io.stdout:setvbuf'no'
 io.stderr:setvbuf'no'
@@ -175,17 +178,6 @@ function test.autokill()
 	print'done'
 end
 
-function test_all(test_name)
-	for i,k in ipairs(tests) do
-		if not test_name or k == test_name then
-			print'+--------------------------------------------------------------+'
-			print(string.format('| %-60s |', k))
-			print'+--------------------------------------------------------------+'
-			test[k]()
-		end
-	end
-end
-
 function test.cmdline_split_args()
 	local function check(s, ecmd, ...)
 		local eargs = select('#', ...) > 0 and {...} or nil
@@ -228,4 +220,13 @@ function test.cmdline_split_args()
 	end
 end
 
+function test_all(test_name)
+	for i,k in ipairs(tests) do
+		if not test_name or k == test_name then
+			test[k]()
+			print('test.'..k..' ok')
+		end
+	end
+	print'proc ok'
+end
 test_all(... ~= 'proc_test' and ... or nil)

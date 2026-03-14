@@ -19,3 +19,14 @@ local assert = assert
 function cpu_supports(what)
 	return band(C.cpu_supports(), assert(flags[what])) ~= 0
 end
+
+if not ... then
+	assert(cpu_supports'sse')
+	assert(cpu_supports'sse2')
+	assert(cpu_supports'sse3')
+	assert(cpu_supports'sse41')
+	assert(cpu_supports'sse42')
+	assert(cpu_supports'avx')
+	assert(cpu_supports'avx2')
+	print'cpu_supports ok'
+end

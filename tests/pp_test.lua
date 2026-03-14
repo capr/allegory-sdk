@@ -134,4 +134,4 @@ assert(s == [==[
  }]='b'
 }]==])
 
-print'pp tests passed'
+print'pp ok'

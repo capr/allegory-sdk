@@ -63,3 +63,4 @@ for _,size in ipairs{0, 1, 13, 2049, 100000} do
 	test('zlib', size)
 	test('deflate', size)
 end
+print'gzip ok'

@@ -14,6 +14,8 @@ config('smtp_user' , 'admin@bpnpart.com')
 config('smtp_pass' , 'Bpnpart@0@0')
 config('smtp_debug', 'protocol stream')
 
+if os.getenv'AUTO' then return end
+
 run(function()
 
 	if false then

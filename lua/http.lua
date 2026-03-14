@@ -478,7 +478,7 @@ end
 function http:send_request(req)
 	local dt = req.request_timeout
 	self.start_time = clock()
-	self.f:setexpires('w', dt and self.start_time + dt or nil)
+	self.f:setexpires(dt and self.start_time + dt or nil, 'w')
 	self:send_request_line(req.method, req.uri, req.http_version)
 	self:send_headers(req.headers)
 	self:send_body(req.content, req.content_size, req.headers['transfer-encoding'])
@@ -548,7 +548,7 @@ function http:read_response(req)
 	res.rawheaders = {}
 
 	local dt = req.reply_timeout
-	self.f:setexpires('r', dt and clock() + dt or nil)
+	self.f:setexpires(dt and clock() + dt or nil, 'r')
 
 	res.http_version, res.status, res.status_message = self:read_status_line()
 

@@ -8,10 +8,6 @@ SIMPLIFY / REVIEW
 	- show +N -N on separate column
 	- add object type in front of debug prefix
 
-* pbuffer review:
-	- try vs raising and usage
-	- read/readn (unbuffered) vs readn_to (buffered)
-
 * error reporting lacking context:
 	- unprotect_io() lacks the context that functions with check() have.
 	- sometimes even check() lacks context because it's inside try_() code.
@@ -28,7 +24,9 @@ SIMPLIFY / REVIEW
 * mdbx_schema test
 * schema test?
 
-* inline tests
+* csv.lua uses io.open
+* xml.lua uses io.open
+
 
 LEVERAGE AI
 ------------------------------------------------------------------------------

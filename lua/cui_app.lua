@@ -35,10 +35,7 @@ cmd('run', 'Run server', function()
 end)
 
 --configure webb_action static file loading.
-local sdkdir = dirname(exedir())
 wwwdir'www'
-wwwdir(indir(sdkdir, 'www'))
-wwwdir(indir(sdkdir, 'canvas-ui/www'))
 
 --glue webb to webb_action.
 config('main_module', function()

@@ -13,7 +13,7 @@ sha = {
 }
 
 for file in io.popen('ls sha2_test/*.dat'):lines() do
-	pr(file)
+	print(file)
 	local s = load(file)
 	local hashes = {}
 	do
@@ -43,3 +43,5 @@ for file in io.popen('ls sha2_test/*.dat'):lines() do
 		assert(h == v)
 	end
 end
+print'sha2 ok'
+

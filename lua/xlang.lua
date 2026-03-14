@@ -17,6 +17,8 @@ ROWSETS
 
 ]==]
 
+if os.getenv'AUTO' then return end
+
 require'lang'
 require'xrowset_sql'
 

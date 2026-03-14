@@ -619,7 +619,7 @@ do --poison: clear memoize cache
 	local n = 0
 	local f = memoize(function(x) n = n + 1; return x * 10 end)
 	test(f(3), 30); test(n, 1)
-	f(poison, 3) --clear cache for arg 3
+	f(POISON, 3) --clear cache for arg 3
 	test(f(3), 30); test(n, 2) --recomputed
 end
 do --istuple

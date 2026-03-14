@@ -1,4 +1,4 @@
---go@ ssh root@10.0.0.8 -ic:\users\cosmin\.ssh\id_rsa tail -f imtui.log
+--go@ plink m1 -t tail -f imtui.log
 --[[
 
 	Immediate Mode Text User Interface library for Linux terminals.
@@ -35,7 +35,6 @@
 ]]
 
 require'glue'
-assert(Linux, 'not on Linux')
 require'fs'
 require'sock'
 require'signal'
@@ -115,7 +114,7 @@ if term_is_256_color then
 		term_bg = color
 	end
 else
-	error'NYI'
+	--error'NYI'
 	--'\27[%d%dm', bright and '10' or '4', color
 end
 
@@ -129,7 +128,7 @@ if term_is_256_color then
 		term_fg = color
 	end
 else
-	error'NYI'
+	--error'NYI'
 	--'\27[%d%dm', bright and '9' or '3', color
 end
 

@@ -1,4 +1,4 @@
-
+--TODO: this is a benchmark not a test!
 require'bitmap'
 require'glue'
 require'unit'
@@ -33,3 +33,4 @@ for src_format in sortedpairs(bitmap_formats) do
 	n = n + 1
 end
 print('bitmap conversions:', n)
+print('bitmap ok')

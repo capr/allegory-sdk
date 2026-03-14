@@ -3,6 +3,8 @@ require'glue'
 require'http_server'
 logging.debug = true
 
+if os.getenv'AUTO' then return end
+
 local server = http_server{
 	listen = {
 		{

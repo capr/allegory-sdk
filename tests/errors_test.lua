@@ -70,4 +70,4 @@ do --errortype: inheritance
 	local e = newerror('_test_child', 'msg')
 	assert(iserror(e, '_test_child'))
 end
-print'errors tests passed'
+print'errors ok'

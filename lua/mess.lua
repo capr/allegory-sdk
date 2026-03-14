@@ -195,6 +195,8 @@ end
 
 if not ... then
 
+	if os.getenv'AUTO' then return end
+
 	logging.verbose = true
 	logging.debug = true
 

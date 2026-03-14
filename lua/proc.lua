@@ -523,33 +523,7 @@ end
 
 --process state --------------------------------------------------------------
 
-local loader = memoize(function(path)
-	local f
-	return function()
-		local err
-		if not f then
-			f, err = try_open(path)
-			if not f then return nil, err end
-		else
-			local off, err = f:seek('set', 0)
-			if not off or off ~= 0 then
-				f:close()
-				f = nil
-				return nil, err
-			end
-		end
-		local buf, len = f:readall(true)
-		if not buf then
-			f:close()
-			f = nil
-			return nil, len
-		end
-		return str(buf, len)
-	end
-end)
-local function load_proc(path)
-	return loader(path)()
-end
+local load_proc = try_load
 
 local USER_HZ do
 	cdef'long int sysconf(int name);'

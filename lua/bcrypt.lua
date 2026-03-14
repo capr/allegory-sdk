@@ -36,4 +36,5 @@ if not ... then
 	local hash = bcrypt_hash('dude')
 	print(#hash, hash) --60 bytes
 	assert(bcrypt_verify('dude', hash))
+	print'bcrypt ok'
 end

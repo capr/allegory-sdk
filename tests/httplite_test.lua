@@ -3,6 +3,8 @@ require'glue'
 require'httplite'
 logging.debug = true
 
+if os.getenv'AUTO' then return end
+
 local server = http_server{
 	listen = {
 		{
@@ -24,13 +26,14 @@ local server = http_server{
 	debug = {
 		protocol = true,
 		--stream = true,
-		--tracebacks = true,
+		tracebacks = true,
 		errors = true,
 	},
 	respond = function(req, thread)
 		while true do
 			local buf, sz = req:read_body_chunk()
-			if buf == nil then break end --eof
+			pr(buf, sz)
+			if buf == nil and sz == 0 then break end --eof
 			local s = str(buf, sz)
 			print(s)
 		end
@@ -38,7 +41,7 @@ local server = http_server{
 			raise('http_response', {status = 404})
 		end
 		local out = req:out_function()
-		out(('hello '):rep(1000))
+		--out(('hello '):rep(1000))
 		--raise{status = 404, content = 'Dude, no page here'}
 	end,
 	--respond = webb_respond,

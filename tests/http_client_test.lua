@@ -1,7 +1,7 @@
 require'glue'
 require'http_client'
-logging.verbose = true
-logging.debug = true
+--logging.verbose = true
+--logging.debug = true
 --config('getpage_debug', 'protocol')
 --config('getpage_debug', 'protocol stream')
 --logging.filter.tls = true
@@ -24,3 +24,4 @@ function test_getpage(url, n)
 end
 
 test_getpage('https://echo.websocket.org/', 1)
+print'http_client ok'

@@ -202,8 +202,8 @@ function test.file_reader()
 	local buf = new'char[64]'
 	local parts = {}
 	while true do
-		local n = read(buf, 64)
-		if n == 0 then break end
+		local n, err = read(buf, 64)
+		if not n or n == 0 then break end
 		parts[#parts+1] = str(buf, n)
 	end
 	assert(table.concat(parts) == 'hello world 12345')
@@ -525,8 +525,8 @@ function test.sock_reader()
 		local buf = new'char[64]'
 		local parts = {}
 		while true do
-			local n = read(buf, 64)
-			if n == 0 then break end
+			local n, err = read(buf, 64)
+			if not n or n == 0 then break end
 			parts[#parts+1] = str(buf, n)
 		end
 		assert(table.concat(parts) == content)

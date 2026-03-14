@@ -51,14 +51,14 @@ end
 function test.addr_ipv4()
 	local sa = sockaddr('1.2.3.4:1234')
 	assert(issockaddr(sa))
-	assert(sa:family() == 'inet')
+	assert(sa:family() == 'ip')
 	assert(sa:port() == 1234)
 	assert(sa:tostring() == '1.2.3.4:1234')
 end
 
 function test.addr_ipv6()
 	local sa = sockaddr('::1:80')
-	assert(sa:family() == 'inet6')
+	assert(sa:family() == 'ip6')
 	assert(sa:port() == 80)
 end
 
@@ -414,7 +414,7 @@ function test.udp_recvnext_source_addr()
 		local n, sa = server:recvnext(buf, 256)
 		assert(str(buf, n) == 'probe')
 		assert(issockaddr(sa))
-		assert(sa:family() == 'inet')
+		assert(sa:family() == 'ip')
 		assert(sa:port() == client_port)
 		server:close()
 	end)

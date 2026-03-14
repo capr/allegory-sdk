@@ -187,13 +187,13 @@ if not ... then --self-test
 		while 1 do
 			local s = f:read_signal()
 			if s.signo == SIGINT then
-				pr'\rGot SIGINT. Breaking loop.'
+				print'\rGot SIGINT. Breaking loop.'
 				break
 			elseif s.signo == SIGTERM then
-				pr'\rGot SIGTERM. Breaking loop.'
+				print'\rGot SIGTERM. Breaking loop.'
 				break
 			elseif s.signo == SIGUSR1 then
-				pr'Got SIGUSR1'
+				print'Got SIGUSR1'
 			end
 		end
 	end))

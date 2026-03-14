@@ -54,7 +54,6 @@ end
 
 local function run(name, fn)
 	fn()
-	print('ok', name)
 end
 
 run('parse_headers', test_parse_headers)
@@ -62,3 +61,4 @@ run('parsed_headers_lazy', test_parsed_headers_lazy)
 run('format_header', test_format_header)
 run('set_cookie_parse', test_set_cookie_parse)
 run('unknown_header_passthrough', test_unknown_header_passthrough)
+print'http_headers ok'

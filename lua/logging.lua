@@ -693,6 +693,8 @@ _G.logargs      = logging.args
 
 if not ... then
 
+	if os.getenv'AUTO' then return end
+
 	require'sock'
 
 	local log = _G.log

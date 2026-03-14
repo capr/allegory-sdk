@@ -51,6 +51,8 @@ come up as potentially retriable which is not correct. This must be fixed
 case-by-case in fs and sock. See try_accept() for how to fix it.
 ]=]
 
+if not ... then require'errors_test'; return end
+
 require'glue'
 
 local function io_error_init(self)

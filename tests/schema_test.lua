@@ -1,4 +1,6 @@
 
+if os.getenv'AUTO' then return end
+
 local function sc1()
 
 	import'schema_std'
