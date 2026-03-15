@@ -18,7 +18,7 @@
 	q:peek() -> v|nil              get the first value without popping
 	q:exists(v) -> true|false      check if value exists
 	q:first() -> v|nil             get the first value without popping
-	q:last() -> v|nil              get the last value wihtout popping
+	q:last() -> v|nil              get the last value without popping
 	q:items() -> iter() -> v       iterate values
 	q:item_at(i) -> v|nil          get item at index i in 1..q:count()
 	q:remove(v) -> t|f             remove value (return `true` if found)

@@ -3,7 +3,7 @@
 	HTTP 1.1 coroutine-based async server (based on sock.lua, sock_bearssl.lua).
 	Written by Cosmin Apreutesei. Public Domain.
 
-	Features, https, gzip compression, persistent connections, pipelining,
+	Features: https, gzip compression, persistent connections, pipelining,
 	resource limits, multi-level debugging, cdata-buffer-based I/O.
 
 http_server(opt1,...) -> server   Create a server object

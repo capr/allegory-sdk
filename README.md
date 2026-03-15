@@ -1,9 +1,8 @@
 
 # :candy: The Allegory SDK
 
-The **Allegory SDK** is a self-contained programming environment for
-developing web-based **database-driven business apps** in
-**LuaJIT** and **JavaScript**.
+A self-contained programming environment for developing web-based 
+**database-driven business apps** in **LuaJIT** and **JavaScript**.
 
 The **server-side** is written in Lua and contains:
 
@@ -30,33 +29,31 @@ start. This is not a black box, and treating it as one will only bring sadness.
 This code is supposed to be read, understood, owned and tailored to fit, not
 abstracted away and extended.
 
-If you're of the mind that procedural > functional > OOP, library > framework, JavaScript > TypeScript, relational > nosql, less LOC > more LOC, and you get
+If you're of the mind that procedural > functional > OOP, library > framework, JavaScript > TypeScript, relational > NoSQL, less LOC > more LOC, and you get
 a rash whenever you hear the words "build system", "package manager",
 "folder structure", "microservice", "container" or "dependency injection",
 then this is for you.
 
 # Status
 
-Follow the [releases](https://github.com/allegory-software/allegory-sdk/tags)
-to see what's new and the [master branch](https://github.com/allegory-software/allegory-sdk/commits/master)
-to keep up to date with the latest features.
+The [master branch](https://github.com/allegory-software/allegory-sdk/commits/master)
+is stable, the [dev branch](https://github.com/allegory-software/allegory-sdk/commits/dev)
+is the kitchen.
 
 Look at the [issues](https://github.com/allegory-software/allegory-sdk/issues)
 to see what's missing, broken or wanted.
 
 # Compatibility
 
- * Operating Systems: **Linux**.
- * Browsers: Desktop **Chrome**, **Firefox**, **Edge**, **Safari 16.3+**.
- * CPUs: x86-64 with SSE 4.2 (AVX2 used if found).
+  * Linux/x64, all major browsers.
 
 # Binaries & Building
 
-Binaries are included for Debian 12. To rebuild for your distro, clone all
-the git submodules of this repo and run `c/build-all`. It should be very fast
-and there are no external dependencies.
+Binaries for Debian 12 are in the repo. To rebuild for your distro, clone all
+git submodules and run `c/build-all`. It won't take long and you won't chase
+dependencies.
 
-For more info, see the [Building Guide](c/README.md), which also teaches how
+For more info see the [Building Guide](c/README.md) which also teaches how
 to create build scripts for new libraries without using a build system.
 
 # Server Runtime
@@ -141,7 +138,7 @@ to create build scripts for new libraries without using a build system.
   * [ldecnumber](c/ldecNumber/ldecnumber.txt) - Fixed-precision decimal numbers math
   * [rect](lua/rect.lua)               - 2D rectangle math
 * __Support Libs__
-  * [cpu_supports](lua/cpu_supports.lua) - check CPU SIMD sets at runtime
+  * [cpu_supports](lua/cpu_supports.lua) - Check CPU SIMD sets at runtime
 * __Dev Tools__
   * [debugger](lua/debugger.lua)       - Lua command-line debugger
 
@@ -181,23 +178,19 @@ The Allegory SDK is MIT Licensed.
 
 # Questions you might have
 
-### Why Lua (for web apps)?
+### Why LuaJIT (for web apps)?
 
-Because Lua is like modern JavaScript, except
-[it got there 10 years earlier](https://stackoverflow.com/questions/1022560#1022683)
-and it didn't keep the baggage while doing so. That, and LuaJIT ffi.
+Any language with closures, lexical scoping, coroutines and a good FFI
+would do. Even today, only LuaJIT fits this bill.
 
-Plus Lua has an overall non-opinionated design that doesn't pretend to know
-better than its user, which is something rare these days.
+Plus Lua has non-opinionated semantics (they call that "mechanism, not policy"),
+which is something very rare these days.
 
 ### Why not OpenResty?
 
-Nothing wrong with it. It's probably even faster. It definitely has more
-features. Nginx however wants to control the main loop and manage threads
-all by itself and its configuration directives are inescapably byzantine and undebuggable by trying to do declaratively what is sometimes better done
-procedurally in a web server.
+Inversion of control, Byzantine declarative config. Use nginx as a load balancer.
 
 ### Why not Golang or Node?
 
-It's the same answer: hackability. Golang and Node have their networking guts
-written in C while this is Lua all the way down to OS APIs with a few exceptions.
+Hackability. Golang and Node have their networking guts written in C, while this
+is Lua all the way down to OS APIs with a few exceptions.

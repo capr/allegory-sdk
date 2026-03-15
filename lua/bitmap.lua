@@ -26,7 +26,7 @@ A bitmap is a table with the following fields:
   w, h      : bitmap dimensions, in pixels.
   stride    : row stride in bytes. must be at least w * bpp / 8.
               can be fractional for < 8bpp formats.
-  bottom_up : if true, the rows are are arranged bottom-up instead of top-down.
+  bottom_up : if true, the rows are arranged bottom-up instead of top-down.
   data      : the pixel buffer (string or a buffer). the pixels must be
               packed in stride-long rows, top-down or bottom-up.
   size      : size of the pixel buffer, in bytes.

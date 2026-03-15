@@ -38,7 +38,7 @@ You can call both.
 LOGGING API
 
 	log(severity, module, event, fmt, ...)
-	live(e[, nil][, fmt, ...])   track/untrack an object for loging purposes
+	live(e[, nil][, fmt, ...])   track/untrack an object for logging purposes
 	liveadd(e, fmt, ...)         update the tracking label on a live object
 
 	logarg(v) -> s               format a value for logging

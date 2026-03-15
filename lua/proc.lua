@@ -92,7 +92,7 @@ Always call forget() when you're done with the process, even after you
 killed it, but not before you're done with all its redirected pipes if any
 (because forget() also closes them).
 
-#### Autkill caveats
+#### Autokill caveats
 
 If you start your autokilled process from a thread other than the main thread,
 the process is killed when that thread ends, not when the process ends.

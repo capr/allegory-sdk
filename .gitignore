@@ -3,3 +3,6 @@
 test.*
 /www/test.*
 .DS_Store
+.claude
+.vscode
+

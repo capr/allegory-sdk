@@ -6,7 +6,7 @@
 This module implements a Lua-based Data Definition Language (DDL) for RDBMS
 schemas. Lua-based means that instead of a textual format like SQL DDL,
 we use Lua syntax to write table definitions in, and generate an Abstract
-Syntax Three (AST) from that. Using setfenv and metamethod magic we create
+Syntax Tree (AST) from that. Using setfenv and metamethod magic we create
 a language that is very readable and at the same time more expressive than
 any textual format could be, giving us full programming power in an otherwise
 declarative language. Basically a metaprogrammed DDL.

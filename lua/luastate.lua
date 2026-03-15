@@ -40,11 +40,11 @@ STACK READ
 	state:isfunction(i) -> true | false        check if function
 	state:istable(i) -> true | false           check if table
 	state:islightuserdata(i) -> true|false     check if lightuserdata
-	state:isnil(i) -> true | false             check if boolean
-	state:isboolean(i) -> true | false         check if thread
-	state:isthread(i) -> true | false          check if index invalid
-	state:isnone(i) -> true | false            check if index invalid or nil
-	state:isnoneornil(i) -> true | false       check if boolean
+	state:isnil(i) -> true | false             check if nil
+	state:isboolean(i) -> true | false         check if boolean
+	state:isthread(i) -> true | false          check if thread
+	state:isnone(i) -> true | false            check if index invalid
+	state:isnoneornil(i) -> true | false       check if index invalid or nil
 	state:toboolean(i) -> true | false         get as boolean
 	state:tonumber(i) -> n                     get as number
 	state:tointeger(i) -> n                    get as integer

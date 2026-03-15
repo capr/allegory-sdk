@@ -3,7 +3,7 @@
 	HMAC authentication (RFC 2104)
 	Written by Cosmin Apreutesei. Public Domain.
 
-	hmac_sha1   (message, key) -> HMAC-SHA256
+	hmac_sha1   (message, key) -> HMAC-SHA1
 	hmac_sha256 (message, key) -> HMAC-SHA256
 	hmac_sha384 (message, key) -> HMAC-SHA384
 	hmac_sha512 (message, key) -> HMAC-SHA512

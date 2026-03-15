@@ -1,7 +1,7 @@
 --[=[
 
 	BLAKE3 fast cryptographic hash.
-	Writen by Cosmin Apreutesei. Public Domain.
+	Written by Cosmin Apreutesei. Public Domain.
 
 	blake3_state([key[, sz]]) -> b3               get a hash state
 	blake3_derive_key(context[, sz]) -> b3        get a hash state in key derivation mode

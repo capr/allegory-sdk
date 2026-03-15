@@ -45,7 +45,7 @@ API DOC
 
 [real]usr(field) -> v
 
-	Get the value of a a specific field from the user info.
+	Get the value of a specific field from the user info.
 
 [real]usr'*' -> t
 

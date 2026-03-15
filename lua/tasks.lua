@@ -36,7 +36,7 @@ TERMINALS
 		st:send_on(channel_code, s)
 		st.send(s)
 	tasks.streaming_terminal_reader(term) -> read(buf, sz)
-		term:receive_on(channe_code, s)     receive message on custom channel
+		term:receive_on(channel_code, s)     receive message on custom channel
 
 CURRENT TERMINAL
 	tasks.set_current_terminal(te) -> prev_te      set/replace current terminal

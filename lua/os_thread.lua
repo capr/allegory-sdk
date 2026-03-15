@@ -47,7 +47,7 @@ os_thread(func, args...) -> th
 
 	Create a new thread and Lua state, push `func` and `args` to the Lua state
 	and execute `func(args...)` in the context of the thread. The return values
-	of func can be retreived by calling `th:join()` (see below).
+	of func can be retrieved by calling `th:join()` (see below).
 
 	* the function's upvalues are not copied to the Lua state along with it.
 	* args can be of two kinds: copiable types and shareable types.
@@ -87,7 +87,7 @@ synchronized_queue([maxlength]) -> q
 	starting at index 1), and `q.cond_not_empty`, `q.cond_not_full` to
 	wait/broadcast on the not-empty and not-full events.
 
-	Vales are transferred between states according to the rules of [luastate](luastate.md).
+	Values are transferred between states according to the rules of [luastate](luastate.md).
 
 EVENTS -----------------------------------------------------------------------
 
