@@ -1,4 +1,6 @@
 #!/bin/bash
+PWD0=$PWD
+cd "${0%syms}" || exit 1
 # dump symbols from dynamic libraries
 
 LANG=C # for sort
@@ -64,9 +66,19 @@ syms_l_linux() {
 }
 syms_one() {
 	local fn="$1"
-	local f="$fn"
-	[ -f "$f" ] || f="bin/lib${fn}.so"
-	[ -f "$f" ] || f="bin/clib/${fn}.so"
+	local f
+	if [[ "${fn#/}" != "$fn" ]]; then
+		f="$fn"
+	elif [[ -f "$PWD0/$fn" ]]; then
+		f="$PWD0/$fn"
+	elif [[ -f "../bin/lib${fn}.so" ]]; then
+		f="../bin/lib${fn}.so"
+	elif [[ -f "../bin/clib/${fn}.so" ]]; then
+		f="../bin/clib/${fn}.so"
+	else
+		echo "Not found: $fn"
+		exit 1
+	fi
 	syms_${DEF}_linux "$f"
 }
 

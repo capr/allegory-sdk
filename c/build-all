@@ -5,6 +5,9 @@ for t in gcc cmake nasm; do
 	command -v "$t" >/dev/null || { echo "$t missing"; exit 1; }
 done
 
+# minizip2 needs libcrypto for AES.
+[[ -f /usr/include/openssl/ssl.h ]] || { echo "libssl-dev missing"; exit 1; }
+
 # deps
 xxhash/build
 zlib-ng/build
