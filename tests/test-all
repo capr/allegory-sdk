@@ -20,7 +20,8 @@ else
 		grep -q ok test-stdout && echo "OK $file" || echo "   $file"
 	done
 fi
-[[ $fail ]] && {
+if [[ $fail ]]; then
 	echo "FAILED: $fail"
 	exit 1
-}
+fi
+exit 0
