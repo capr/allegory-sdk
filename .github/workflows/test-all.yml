@@ -9,5 +9,6 @@ jobs:
       image: debian:12
     steps:
       - uses: actions/checkout@v4
+      - run: git submodule update --init canvas-ui
       - run: apt-get update && apt-get install -y ca-certificates libssl3
       - run: tests/test-all
