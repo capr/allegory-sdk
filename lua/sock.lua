@@ -773,14 +773,14 @@ function udp:try_send(buf, len, flags)
 end
 udp.send = unprotect_io(udp.try_send)
 
-local socket_recv = make_async(false, true, function(self, buf, len, flags)
-	return C.recv(self.fd, buf, len, flags or 0)
+local socket_recv = make_async(false, true, function(self, buf, sz, flags)
+	return C.recv(self.fd, buf, sz, flags or 0)
 end, EWOULDBLOCK)
 
-function socket:try_recv(buf, len, flags)
+function socket:try_recv(buf, sz, flags)
 	if not self.fd then return nil, 'closed' end
-	if len == 0 then return 0 end --mask out null reads
-	local n, err = socket_recv(self, buf, len, flags)
+	if sz == 0 then return 0 end --mask out null reads
+	local n, err = socket_recv(self, buf, sz, flags)
 	if not n then return nil, err end
 	if n == 0 then return 0, 'eof' end
 	return n
