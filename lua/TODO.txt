@@ -1,7 +1,7 @@
 SIMPLIFY / REVIEW
 ------------------------------------------------------------------------------
 * httplite
-	- ?
+	- gzip encoder
 
 * log is incomplete and hard to read:
 	- live() must take module and action

@@ -3,9 +3,8 @@
 	HTTP 1.1 light client & server protocol
 	Written by Cosmin Apreutesei. Public Domain.
 
-	TODO: bearssl SNI
-
-http_server(opt1,...) -> server   Create a http server merging multiple options tables
+	http_server(opt1,...) -> server   Create a http server merging multiple options tables
+CONFIG
 	opt.listen                     {{addr=,...}, {addr=,...}}
 		host                        Host header match
 		addr                        IP address to listen to
@@ -16,16 +15,24 @@ http_server(opt1,...) -> server   Create a http server merging multiple options 
 		unix_socket_perms           set perms on socket file after bind()
 		unix_socket_user            set user  on socket file after bind()
 		unix_socket_group           set group on socket file after bind()
-	opt.respond(req)               respond callack
-		req:respond(opt) -> out
-			opt.headers <- {k=v}     override response headers
-			opt.want_out_function    have respond() return an out() function
-		req:onfinish(f)             add code to run when request finishes
-		req.thread                  the thread that handled the request
-	opt.debug                      nil ('protocol tracebacks stream')
-
+	opt.respond <- fn(req)         request handler
+	opt.debug <- flags             debug flags: 'protocol tracebacks stream'
+REQUEST
+	req.headers -> {k=v}	          request headers (in lowercase)
+	req.body_size -> n             request upload size in bytes
+	req:read_body() -> buf,size    read whole body in a buffer
+	req:read_body_chunk() -> buf,size,size_left  read body in chunks
+	req:onfinish(fn)               run fn when request finishes, even if it raises
+	req.thread                     the thread that handled the request
+RESPONSE
+	req.status <- n                set response status (default: 200)
+	req.response_headers <- {k=v}  set response headers (in lowercase!)	
+	req.response_size <- n         set response size (otherwise it's chunked TE)
+	req.compress <- true           enable gzip compresion
+	req:send_headers() -> req      send status line and headers
+	req:send_chunk(s | buf,len) -> req    send body chunk
+	req:end()                      end of response
 CONFIG
-
 	host                           'localhost'
 	http_addr                      '0.0.0.0'
 	http_port                      80
@@ -72,11 +79,9 @@ server.compressed_mime_types = index{
 	'text/event-stream',
 }
 
-local header_parse = {}
-local header_format = {}
-
-local function format_date(t)
-	return http_date_format(t, 'rfc1123')
+local function logerror(tcp, action, ...)
+	if logging.filter.ERROR then return end
+	log('ERROR', 'htsrv', action, '%-4s %s', tcp, _(...))
 end
 
 function http_server(...)
@@ -137,10 +142,15 @@ function http_server(...)
 			headers = {},
 			start_time = clock(),
 			thread = currentthread(),
+			request_id = next_request_id,
+			response_status = 200,
+			response_headers = {}, --put them in lowercase!
 		})
+		ownthreadenv().http_request = req
+		next_request_id = next_request_id + 1
 
 		--read request line
-		local line = ctcp.b:needline()
+		local line = ctcp.rb:needline()
 		local method, uri, http_version = line:match'^([%u]+)%s+([^%s]+)%s+HTTP/(%d+%.%d+)'
 		self:dp('<=', '%s %s HTTP/%s', method, uri, http_version)
 		ctcp:checkp(method and http_version == '1.1', 'invalid request line')
@@ -149,7 +159,7 @@ function http_server(...)
 
 		--read request headers
 		for i = 1, 100 do
-			local line = ctcp.b:needline()
+			local line = ctcp.rb:needline()
 			if line == '' then break end --headers end with a blank line
 			local name, value = line:match'^([^:]+):%s*(.*)'
 			ctcp:checkp(name, 'invalid header')
@@ -164,142 +174,152 @@ function http_server(...)
 			end
 		end
 
-		--parse request headers
-		for k,v in pairs(req.headers) do
-			local parse = header_parse[k]
-			if parse then
-				req.headers[k] = parse(v)
-			end
-		end
-		req.body_len = tonumber(req.headers['content-length']) or 0
+		--parse relevant request headers into req fields.
+		req.body_size = tonumber(req.headers['content-length']) or 0
+		local cc = req.headers['connection']
+		req.close = cc and cc:has'close'
 
-		--read request body and send a response back.
-		ownthreadenv().http_request = req
-		req.request_id = next_request_id
-		next_request_id = next_request_id + 1
+		--make req methods for reading the request body and for responding.
 
-		local close, out, out_thread, send_started, send_finished
-		local body_was_read
-
-		function req:onfinish(f)
-			after(self, 'finish', f)
+		function req.onfinish(req, fn)
+			after(req, 'finish', fn)
 		end
 
-		local b_needs_reset = false
-		local body_unread_len = req.body_len
+		local rb_needs_reset = false
+		local body_unread_len = req.body_size
 		function req.read_body_chunk(req)
-			if body_unread_len > 0 then
-				if b_needs_reset then
-					self.b:reset()
-					b_needs_reset = false
-				end
-				self.b:need(1)
+			if body_unread_len == 0 then
+				return nil, 'eof', 0
 			end
-			local buf, len = ctcp.b:ref()
+			if rb_needs_reset then
+				ctcp.rb:reset()
+				rb_needs_reset = false
+			end
+			ctcp.rb:need(1)
+			local buf, len = ctcp.rb:ref()
 			body_unread_len = body_unread_len - len
-			b_needs_reset = true
-			return buf, len
+			rb_needs_reset = true
+			return buf, len, body_unread_len
 		end
 
 		function req.read_body(req)
-			self.b:need(body_unread_len)
+			ctcp.rb:need(body_unread_len)
 			body_unread_len = 0
-			return self.b:ref()
+			return ctcp.rb:ref()
 		end
 
-		local function send_response(opt)
-			send_started = true
-
-			local headers = {}
-
-			close = opt.close
-				or (req.headers['connection'] and req.headers['connection']:has'close')
-			if close then
-				headers['connection'] = 'close'
+		local headers_sent
+		local out, out_thread
+		function req.send_headers(req)
+			headers_sent = true
+			
+			req.response_headers['date'] = http_date_format(time(), 'rfc1123')
+			if req.close then
+				req.response_headers['connection'] = 'close' 
 			end
-
-			res.headers['date'] = format_date(time())
-
-			local content, content_size =
-				self:encode_content(opt.content or '', opt.content_size, content_encoding)
-
-			if isstr(content) then
-				assert(not content_size, 'content_size would be ignored')
-				headers['content-length'] = #content
-			elseif iscdata(content) then
-				headers['content-length'] = assert(content_size, 'content_size missing')
-			elseif isfunc(content) then
-				if content_size then
-					headers['content-length'] = content_size
-				elseif not close then
-					headers['transfer-encoding'] = 'chunked'
-				end
+			if req.response_size then
+				req.response_headers['content-length'] = req.response_size
 			else
-				assertf(false, 'invalid content: %s', type(content))
+				req.response_headers['transfer-encoding'] = 'chunked'
 			end
-			update(headers, opt.headers)
-
-			--
 
 			--send status line
-			local status = opt.status or 200
-			assert(status >= 100 and status <= 999, 'invalid status code')
-			local s = _('HTTP/1.1 %d\r\n', status)
-			self:dp('=>', '%s', status)
-			req.tcp:send(s)
+			assert(req.status >= 100 and req.status <= 999, 'invalid status code')
+			self:dp('=>', '%s', req.status)
+			ctcp.wb:putf('HTTP/1.1 %d\r\n', req.status)
 
 			--send response headers.
 			--header names are case-insensitive and can't contain newlines.
 			--passing a table as value will generate duplicate headers for each value
-			--set-cookie will come like that because it's not safe to send it folded.
-			for k,v in sortedpairs(headers) do
-				local hformat = header_format[k]
-				if istab(v) then --must be sent unfolded.
-					for i,v in ipairs(v) do
-						if hformat then v = hformat(v) end
-						self:dp('->', '%-17s %s', k, v)
-						req.tcp:send(_('%s: %s\r\n', k, v))
-					end
-				else
-					if hformat then v = hformat(v) end
+			--set-cookie will be like that because it's not safe to send it folded.
+			local t = {}
+			for k,v in pairs(req.response_headers) do
+				if not istab(v) then t[1] = v; v = t end
+				for _,v in ipairs(v) do
+					assert(not v:has'\n' and not v:has'\r')
 					self:dp('->', '%-17s %s', k, v)
-					req.tcp:send(_('%s: %s\r\n', k, v))
+					ctcp.wb:putf('%s: %s\r\n', k, v)
 				end
 			end
-			req.tcp:send'\r\n'
+			ctcp.wb:putf'\r\n'
+			ctcp.wb:flush()
 
-			--
+			if req.compress then
+				--NOTE: on error, the gzip thread is left in suspended state (either
+				--not yet started or waiting on write), and we could just abandon it
+				--and it will get gc'ed along with the zlib object. The reason we go
+				--the extra mile to make sure it always finishes is so it gets removed
+				--from the logging.live list immediately.
+				local content, gzip_thread = cowrap(function(yield, s)
+					if s == false then return end --abort on entry
+					local ok, err = deflate(content, yield, 64 * 1024, 'gzip')
+					assert(ok or err == 'abort', err)
+				end, 'http-gzip-encode %s', req)
+				function req:onfinish() --called on errors too.
+					if threadstatus(gzip_thread) ~= 'dead' then
+						content(false, 'abort')
+					end
+				end
+				req.gzip_thread = gzip_thread
+			end
 
-			send_finished = true
-		end --send_response()
-
-		function req.respond(req, opt)
-			send_response(opt)
+			return req
 		end
 
-		--NOTE: both req:respond() and out() raise on I/O errors breaking
-		--user's code, so use req:onfinish() to free resources.
-		function req.out_function()
+		function req.send_chunk(req, chunk, len)
+			len = len or #chunk
+			self:dp('>>', '%7d bytes', len)
+			if req.response_size then
+				ctcp.wb:put(chunk, len)
+				ctcp.wb:flush()
+			else --chunked
+				ctcp.wb:putf('%X\r\n', len)
+				ctcp.wb:put(chunk, len)
+				ctcp.wb:put'\r\n'
+				ctcp.wb:flush()
+			end
+			return req
+		end
+
+		local body_sent
+		function req.end(req)
+			self:dp('>>', 'end')
+			if not req.response_size then
+				ctcp.wb:put'0\r\n\r\n'
+				ctcp.wb:flush()
+			end
+			body_sent = true
+			return req
+		end
+
+		function req.out_function(req)
 			out, out_thread = cowrap(function(yield)
+				error'here error'
+				pr'11'
 				opt.content = yield
-				send_response(opt)
+				pr'11'
+				req:respond(opt)
+				pr'22'
 			end, 'http-server-out %s %s', ctcp, req.uri)
+			pr'called'
+			error'just'
 			out()
 			return out
 		end
 
 		--self.respond(req) needs to call req:respond(opt) or it's a 404.
 		local ok, err = pcall(self.respond, req)
+
 		if req.finish then
 			req:finish(ok, err)
 		end
 
 		if not ok then
-			if not send_started then
+			if not headers_sent then
 				if iserror(err, 'http_response') then
 					req:respond(err)
 				else
-					self:check(ctcp, false, 'respond', '%s', err)
+					logerror(ctcp, 'respond', '%s', err)
 					req:respond{status = 500}
 				end
 			else --status line already sent, too late to send HTTP 500.
@@ -313,7 +333,7 @@ function http_server(...)
 				end
 				error(err)
 			end
-		elseif not send_finished then
+		elseif not body_sent then
 			if out then --out() thread waiting for eof
 				out() --signal eof
 			else --respond() not called
@@ -322,20 +342,17 @@ function http_server(...)
 		end
 
 		--the request must be entirely read before we can read the next request.
-		repeat
-			local buf, len = req:read_body_chunk()
-		until len == 0
+		while req:read_body_chunk() do end
 
-		--close connection if asked for.
-		if close then
+		--close connection if asked.
+		if req.close then
 			--this is the "http graceful close" you hear about: we send a FIN to
 			--the client then we wait for it to close the connection in response
 			--to our FIN, and only after that we can close our end.
 			--if we'd just call close() that would send a RST to the client which
 			--would cut short the client's pending input stream (it's how TCP works).
-			--TODO: limit how much traffic we absorb for this.
 			ctcp:shutdown'w'
-			while ctcp.b:have(1) do ctcp.b:reset() end
+			while ctcp.rb:have(1) do ctcp.rb:reset() end --read until peer closes.
 			ctcp:close()
 		end
 	end --handle_request()
@@ -391,7 +408,7 @@ function http_server(...)
 			local ctcp, err, retry = tcp:try_accept()
 			if not ctcp then
 				if err == 'closed' then return end --stop() called
-				self:check(tcp, false, 'accept', '%s', err)
+				logerror(tcp, 'accept', '%s', err)
 				if retry then
 					--temporary network error. let it retry but pause a little
 					--to avoid killing the CPU while the error persists.
@@ -409,17 +426,23 @@ function http_server(...)
 			end
 			local recv_buffer_size = ctcp:getopt'so_rcvbuf' --usually 128k
 			resume(thread(function()
-				ctcp.b = pbuffer{
+				ctcp.rb = pbuffer{
 					f = ctcp,
 					readahead = recv_buffer_size,
 					lineterm = '\r\n',
 					linesize = 8192,
 					tracebacks = self.debug.tracebacks,
-				} --for reading only
+				} --read buffer
+				ctcp.wb = pbuffer{
+					f = ctcp,
+					tracebacks = self.debug.tracebacks,
+				} --write buffer
 				local ok, err = pcall(handle_connection, ctcp)
-				ctcp.b:free()
-				ctcp.b = nil
-				self:check(ctcp, ok or iserror(err, 'io'), 'handler', '%s', err)
+				ctcp.rb:free(); ctcp.rb = nil
+				ctcp.wb:free(); ctcp.wb = nil
+				if not ok or not iserror(err, 'io') then
+					logerror(ctcp, 'handler', '%s', err)
+				end
 			end, 'http-accept %s', ctcp))
 		end
 
@@ -435,24 +458,9 @@ function http_server(...)
 end
 
 function server:stop()
-	self:log(tcp, 'note', 'htsrv', 'kill-all', '%s',
+	log('note', 'htsrv', 'kill-all', '%-4s %s', tcp,
 		cat(sort(imap(keys(self.sockets), logarg)), ' '))
 	for _,s in ipairs(self.sockets) do
 		s:close()
 	end
 end
-
-function server:log(tcp, severity, module, event, fmt, ...)
-	if logging.filter[severity] then return end
-	local s = isstr(fmt) and _(fmt, logargs(...)) or fmt or ''
-	log(severity, module, event, '%-4s %s', tcp, s)
-end
-
-function server:check(tcp, ret, ...)
-	if ret then return ret end
-	self:log(tcp, 'ERROR', 'htsrv', ...)
-end
-
---http client ----------------------------------------------------------------
-
-local client = {}
