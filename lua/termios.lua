@@ -230,7 +230,11 @@ end
 
 if not ... then --self-test
 
-	assertf(isatty(0), 'fd 0 is not a tty')
+	if not isatty(0) then 
+		print'fd 0 is not a tty. skipping tests.'
+		return
+	end
+	
 	tc_set_raw_mode()
 	assert(tc_get_raw_mode())
 	print'\27[31mHello\27[0m\r\n'
