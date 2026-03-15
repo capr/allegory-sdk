@@ -9,6 +9,8 @@
 
 ]]
 
+do return end
+
 require'glue'
 local C = ffi.load'mir'
 
