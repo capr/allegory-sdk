@@ -1,7 +1,6 @@
-#go@ plink m1 -t ~/sdk/tests/test-all
 #!/bin/bash
 cd "${0%test-all}" || exit 1
-file="$1"; shift
+file="$1"
 
 run_test() {
 	../bin/luajit -e"package.path=package.path..';$PWD/?.lua'" ../lua/$1
