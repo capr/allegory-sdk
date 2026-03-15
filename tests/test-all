@@ -12,7 +12,7 @@ if [[ $file ]]; then
 else
 	for file in $(cd ../lua; ls -1 *.lua); do
 		AUTO=1 run_test $file >test-stdout || break
-		grep -q ok test-stdout && echo "OK $file" || echo "?  $file"
+		grep -q ok test-stdout && echo "OK $file" || echo "   $file"
 	done
 fi
 
