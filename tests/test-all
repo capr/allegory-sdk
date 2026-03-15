@@ -14,9 +14,13 @@ trap cleanup EXIT INT TERM
 if [[ $file ]]; then
 	run_test $file
 else
+	fail=
 	for file in $(cd ../lua; ls -1 *.lua); do
-		AUTO=1 run_test $file >test-stdout || fail=1
+		AUTO=1 run_test $file >test-stdout || fail="$fail $file"
 		grep -q ok test-stdout && echo "OK $file" || echo "   $file"
 	done
 fi
-[[ $fail ]] && exit 1
+[[ $fail ]] && {
+	echo "FAILED: $fail"
+	exit 1
+}
