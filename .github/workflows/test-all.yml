@@ -9,4 +9,5 @@ jobs:
       image: debian:12
     steps:
       - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y libssl3
       - run: tests/test-all
