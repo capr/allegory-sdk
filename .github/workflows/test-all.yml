@@ -8,7 +8,14 @@ jobs:
     container:
       image: debian:12
     steps:
-      - uses: actions/checkout@v4
-      - run: apt-get update && apt-get install -y ca-certificates git libssl3
-      - run: git submodule update --init canvas-ui
-      - run: tests/test-all
+      - name: Install git and dependencies
+        run: apt-get update && apt-get install -y ca-certificates git libssl3
+      
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkout canvas-ui submodule
+        run: git submodule update --init canvas-ui
+
+      - name: Run tests
+        run: tests/test-all
