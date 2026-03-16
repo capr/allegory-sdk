@@ -26,9 +26,10 @@ REQUEST
 	req.thread                     the thread that handled the request
 RESPONSE
 	req.status <- n                set response status (default: 200)
-	req.response_headers <- {k=v}  set response headers (in lowercase!)	
-	req.response_size <- n         set response size (otherwise it's chunked TE)
-	req.compress <- true           enable gzip compresion
+	req.response_headers <- {k=v}  set response headers (in lowercase!)
+		content-length <- n         set body size otherwise it's chunked transfer
+		content-type <- mime        set content-type
+	req.compress <- true           enable gzip compresion (see compressed_mime_types)
 	req:send_headers() -> req      send status line and headers
 	req:send_chunk(s | buf,len) -> req    send body chunk
 	req:end()                      end of response
@@ -61,7 +62,6 @@ require'http_date'
 --http server ----------------------------------------------------------------
 
 local server = {}
-local server_req = {}
 
 server.compressed_mime_types = index{
 	'image/gif',
@@ -136,7 +136,7 @@ function http_server(...)
 	local next_request_id = 1
 
 	local function handle_request(ctcp)
-		local req = object(server_req, {
+		local req = {
 			tcp = ctcp,
 			server = self,
 			headers = {},
@@ -145,7 +145,7 @@ function http_server(...)
 			request_id = next_request_id,
 			response_status = 200,
 			response_headers = {}, --put them in lowercase!
-		})
+		}
 		ownthreadenv().http_request = req
 		next_request_id = next_request_id + 1
 
@@ -181,11 +181,12 @@ function http_server(...)
 
 		--make req methods for reading the request body and for responding.
 
+		local finish
 		function req.onfinish(req, fn)
-			after(req, 'finish', fn)
+			finish = do_after(finish, fn)
 		end
 
-		local rb_needs_reset = false
+		local rb_needs_reset
 		local body_unread_len = req.body_size
 		function req.read_body_chunk(req)
 			if body_unread_len == 0 then
@@ -208,19 +209,23 @@ function http_server(...)
 			return ctcp.rb:ref()
 		end
 
-		local headers_sent
-		local out, out_thread
+		local send_body_chunk, end_body
+
+		local headers_sent, gzip_compressed_chunk, gzip_thread
 		function req.send_headers(req)
+			assert(not headers_sent)
 			headers_sent = true
-			
+
 			req.response_headers['date'] = http_date_format(time(), 'rfc1123')
 			if req.close then
-				req.response_headers['connection'] = 'close' 
+				req.response_headers['connection'] = 'close'
 			end
-			if req.response_size then
-				req.response_headers['content-length'] = req.response_size
-			else
+			if not req.response_headers['content-length'] then
 				req.response_headers['transfer-encoding'] = 'chunked'
+			end
+			if req.compress == nil then
+				local mime_type = req.response_headers['content-type']
+				req.compress = not (mime_type and req.compressed_mime_types[mime_type])
 			end
 
 			--send status line
@@ -245,14 +250,13 @@ function http_server(...)
 			ctcp.wb:flush()
 
 			if req.compress then
-				--NOTE: on error, the gzip thread is left in suspended state (either
-				--not yet started or waiting on write), and we could just abandon it
-				--and it will get gc'ed along with the zlib object. The reason we go
-				--the extra mile to make sure it always finishes is so it gets removed
-				--from the logging.live list immediately.
-				local content, gzip_thread = cowrap(function(yield, s)
+				req.response_headers['content-encoding'] = 'gzip'
+				local function gzip_uncompressed_chunk(buf, len)
+					send_raw_chunk(buf, len)
+				end
+				gzip_compressed_chunk, gzip_thread = cowrap(function(yield, s)
 					if s == false then return end --abort on entry
-					local ok, err = deflate(content, yield, 64 * 1024, 'gzip')
+					local ok, err = deflate(gzip_uncompressed_chunk, yield, 64 * 1024, 'gzip')
 					assert(ok or err == 'abort', err)
 				end, 'http-gzip-encode %s', req)
 				function req:onfinish() --called on errors too.
@@ -260,58 +264,60 @@ function http_server(...)
 						content(false, 'abort')
 					end
 				end
-				req.gzip_thread = gzip_thread
 			end
 
+			return req
+		end --req:send_headers()
+
+		function send_body_chunk(req, chunk, len)
+			len = len or #chunk
+			self:dp('>>', '%7d bytes', len)
+			if req.response_headers['content-length'] then
+				ctcp.wb:putcdata(chunk, len)
+				ctcp.wb:flush()
+			else --chunked
+				ctcp.wb:putf('%X\r\n', len)
+				ctcp.wb:putcdata(chunk, len)
+				ctcp.wb:put'\r\n'
+				ctcp.wb:flush()
+			end
+		end
+
+		local body_sent
+		function end_body(req)
+			assert(not body_sent)
+			body_sent = true
+			self:dp('>>', 'end')
+			if not req.response_headers['content-length'] then
+				ctcp.wb:put'0\r\n\r\n'
+				ctcp.wb:flush()
+			end
 			return req
 		end
 
 		function req.send_chunk(req, chunk, len)
-			len = len or #chunk
-			self:dp('>>', '%7d bytes', len)
-			if req.response_size then
-				ctcp.wb:put(chunk, len)
-				ctcp.wb:flush()
-			else --chunked
-				ctcp.wb:putf('%X\r\n', len)
-				ctcp.wb:put(chunk, len)
-				ctcp.wb:put'\r\n'
-				ctcp.wb:flush()
+			assert(headers_sent)
+			assert(not body_sent)
+			if req.compress then
+				gzip_write_uncompressed(chunk, len)
+			else
+				send_raw_chunk(req, chunk, len)
 			end
-			return req
 		end
 
-		local body_sent
 		function req.end(req)
-			self:dp('>>', 'end')
-			if not req.response_size then
-				ctcp.wb:put'0\r\n\r\n'
-				ctcp.wb:flush()
+			if req.compress then
+				gzip_write_uncompressed(chunk, len)
+			else
+				end_body(req, chunk, len)
 			end
-			body_sent = true
-			return req
-		end
-
-		function req.out_function(req)
-			out, out_thread = cowrap(function(yield)
-				error'here error'
-				pr'11'
-				opt.content = yield
-				pr'11'
-				req:respond(opt)
-				pr'22'
-			end, 'http-server-out %s %s', ctcp, req.uri)
-			pr'called'
-			error'just'
-			out()
-			return out
 		end
 
 		--self.respond(req) needs to call req:respond(opt) or it's a 404.
 		local ok, err = pcall(self.respond, req)
 
-		if req.finish then
-			req:finish(ok, err)
+		if finish then
+			finish(req, ok, err)
 		end
 
 		if not ok then
@@ -323,22 +329,10 @@ function http_server(...)
 					req:respond{status = 500}
 				end
 			else --status line already sent, too late to send HTTP 500.
-				if out_thread and threadstatus(out_thread) ~= 'dead' then
-					--Signal eof so that the out() thread finishes. We could
-					--abandon the thread and it will be collected without leaks
-					--but we want it to be removed from logging.live immediately.
-					--NOTE: we're checking that out_thread is really suspended
-					--because we also get here on I/O errors which kill it.
-					out()
-				end
 				error(err)
 			end
-		elseif not body_sent then
-			if out then --out() thread waiting for eof
-				out() --signal eof
-			else --respond() not called
-				req:respond{status = 404}
-			end
+		elseif not headers_sent then
+			req:respond{status = 404}
 		end
 
 		--the request must be entirely read before we can read the next request.
