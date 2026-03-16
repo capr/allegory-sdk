@@ -203,10 +203,12 @@ end
 
 function pb:try_close() --for self:check*()
 	if not self.f then return end
+	self:free()
 	return self.f:try_close()
 end
 function pb:close()
 	if not self.f then return end
+	self:free()
 	self.f:close()
 end
 
