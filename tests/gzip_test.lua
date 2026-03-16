@@ -2,25 +2,6 @@ require'gzip'
 require'glue'
 require'unit'
 
-test(tohex(adler32'The game done changed.'), '587507ba')
-test(tohex(crc32'Game\'s the same, just got more fierce.'), '2c40120a')
-
-local function gztest(file, content)
-	local gz = gzip_open(file)
-	test(gz:read(#content), content)
-	test(#gz:read(1), 0)
-	test(gz:eof(), true)
-	gz:close()
-end
-
-local gz = gzip_open('gzip_test/test1.txt.gz', 'w')
-test(gz:write'The game done changed.', #'The game done changed.')
-gz:close()
-
-gztest('gzip_test/test.txt.gz', 'The game done changed.')
-gztest('gzip_test/test1.txt.gz', 'The game done changed.')
-os.remove('gzip_test/test1.txt.gz')
-
 local function gen(n)
 	local t = {}
 	for i=1,n do
@@ -46,7 +27,7 @@ local function writer()
 	end
 end
 
-local function test(format, size)
+local function test_deflate(format, size)
 	local src = gen(size)
 	local write = writer()
 	deflate(reader(src), write, nil, format)
@@ -59,8 +40,30 @@ local function test(format, size)
 		format, #src/1024, #dst / #src * 100))
 end
 for _,size in ipairs{0, 1, 13, 2049, 100000} do
-	test('gzip', size)
-	test('zlib', size)
-	test('deflate', size)
+	test_deflate('gzip', size)
+	test_deflate('zlib', size)
+	test_deflate('deflate', size)
 end
+
+--gzip_state compress + decompress roundtrip
+for _,size in ipairs{0, 1, 13, 2049, 100000} do
+	local src = gen(size)
+	local cwrite = writer()
+	local gz = gzip_state{op = 'compress', write = cwrite}
+	gz:feed(src)
+	gz:feed(nil, 'eof')
+	local compressed = cwrite()
+	local dwrite = writer()
+	local gz = gzip_state{op = 'decompress', write = dwrite}
+	gz:feed(compressed)
+	gz:feed(nil, 'eof')
+	local src2 = dwrite()
+	assert(src == src2)
+	print(string.format('gzip_state: size: %5dK ratio: %d%%',
+		#src/1024, #compressed / math.max(#src, 1) * 100))
+end
+
+test(tohex(adler32'The game done changed.'), '587507ba')
+test(tohex(crc32'Game\'s the same, just got more fierce.'), '2c40120a')
+
 print'gzip ok'
