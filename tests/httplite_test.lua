@@ -25,7 +25,7 @@ local server = http_server{
 	},
 	debug = {
 		protocol = true,
-		--stream = true,
+		stream = true,
 		tracebacks = true,
 		errors = true,
 	},
@@ -39,10 +39,8 @@ local server = http_server{
 		if req.uri == '/favicon.ico' then
 			raise('http_response', {status = 404})
 		end
-		pr'1'
-		local out = req:out_function()
-		pr'2'
-		out(('hello '):rep(1000))
+		local out = req:send_headers()
+		req:send_chunk(('hello '):rep(1000)):finish()
 		--raise{status = 404, content = 'Dude, no page here'}
 	end,
 	--respond = webb_respond,
@@ -50,4 +48,3 @@ local server = http_server{
 
 start()
 server:stop()
-

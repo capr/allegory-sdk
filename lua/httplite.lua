@@ -1,6 +1,6 @@
 --[=[
 
-	HTTP 1.1 light client & server protocol
+	HTTP 1.1 server (TLS 1.2, gzip, chunked, full-duplex, pipelined)
 	Written by Cosmin Apreutesei. Public Domain.
 
 	http_server(opt1,...) -> server   Create a http server merging multiple options tables
@@ -31,8 +31,8 @@ RESPONSE
 		content-type <- mime        set content-type
 	req.compress <- true           enable gzip compresion (see compressed_mime_types)
 	req:send_headers() -> req      send status line and headers
-	req:send_chunk(s | buf,len) -> req    send body chunk
-	req:end()                      end of response
+	req:send_chunk(s | buf,len | nil,'eof') -> req    send body chunk
+	req:end() -> req               end of response
 CONFIG
 	host                           'localhost'
 	http_addr                      '0.0.0.0'
@@ -84,6 +84,13 @@ local function logerror(tcp, action, ...)
 	log('ERROR', 'htsrv', action, '%-4s %s', tcp, _(...))
 end
 
+local function req_dp(req, event, fmt, ...)
+	if not logging.filter[severity] then return end
+	local dt = clock() - req.start_time
+	local s = fmt and _(fmt, logargs(...)) or ''
+	log('', 'htsrv', event, '%-4s %4dms %s', req.tcp, dt * 1000, s)
+end
+
 function http_server(...)
 
 	local self = object(server, {}, ...)
@@ -128,9 +135,9 @@ function http_server(...)
 	end
 	assert(self.listen and #self.listen > 0, 'listen option is missing or empty')
 
-	self.debug = index(collect(words(self.debug or config'http_debug' or '')))
-	if not self.debug.protocol then
-		self.dp = noop
+	self.debug = self.debug or config'http_debug' or ''
+	if isstr(self.debug) then
+		self.debug = index(collect(words(self.debug)))
 	end
 
 	local next_request_id = 1
@@ -143,8 +150,11 @@ function http_server(...)
 			start_time = clock(),
 			thread = currentthread(),
 			request_id = next_request_id,
-			response_status = 200,
+			status = 200,
 			response_headers = {}, --put them in lowercase!
+			compress = config('http_compress', true),
+			log = req_log,
+			dp = self.debug.protocol and req_debug or noop,
 		}
 		ownthreadenv().http_request = req
 		next_request_id = next_request_id + 1
@@ -152,7 +162,7 @@ function http_server(...)
 		--read request line
 		local line = ctcp.rb:needline()
 		local method, uri, http_version = line:match'^([%u]+)%s+([^%s]+)%s+HTTP/(%d+%.%d+)'
-		self:dp('<=', '%s %s HTTP/%s', method, uri, http_version)
+		req:dp('<=', '%s %s HTTP/%s', method, uri, http_version)
 		ctcp:checkp(method and http_version == '1.1', 'invalid request line')
 		req.method = method
 		req.uri = uri
@@ -165,7 +175,7 @@ function http_server(...)
 			ctcp:checkp(name, 'invalid header')
 			name = name:lower() --header names are case-insensitive
 			value = value:trim()
-			self:dp('<-', '%-17s %s', name, value)
+			req:dp('<-', '%-17s %s', name, value)
 			local prev_value = req.headers[name]
 			if prev_value then --duplicate header: fold.
 				req.headers[name] = prev_value .. ',' .. value
@@ -209,9 +219,9 @@ function http_server(...)
 			return ctcp.rb:ref()
 		end
 
-		local send_body_chunk, end_body
+		local send_body_chunk
+		local headers_sent, gz
 
-		local headers_sent, gzip_compressed_chunk, gzip_thread
 		function req.send_headers(req)
 			assert(not headers_sent)
 			headers_sent = true
@@ -223,14 +233,16 @@ function http_server(...)
 			if not req.response_headers['content-length'] then
 				req.response_headers['transfer-encoding'] = 'chunked'
 			end
-			if req.compress == nil then
-				local mime_type = req.response_headers['content-type']
-				req.compress = not (mime_type and req.compressed_mime_types[mime_type])
+			local mime_type = req.response_headers['content-type']
+			req.compress = req.compress
+				and not (mime_type and req.compressed_mime_types[mime_type])
+			if req.compress then
+				req.response_headers['content-encoding'] = 'gzip'
 			end
 
 			--send status line
 			assert(req.status >= 100 and req.status <= 999, 'invalid status code')
-			self:dp('=>', '%s', req.status)
+			req:dp('=>', '%s', req.status)
 			ctcp.wb:putf('HTTP/1.1 %d\r\n', req.status)
 
 			--send response headers.
@@ -242,7 +254,7 @@ function http_server(...)
 				if not istab(v) then t[1] = v; v = t end
 				for _,v in ipairs(v) do
 					assert(not v:has'\n' and not v:has'\r')
-					self:dp('->', '%-17s %s', k, v)
+					req:dp('->', '%-17s %s', k, v)
 					ctcp.wb:putf('%s: %s\r\n', k, v)
 				end
 			end
@@ -250,67 +262,52 @@ function http_server(...)
 			ctcp.wb:flush()
 
 			if req.compress then
-				req.response_headers['content-encoding'] = 'gzip'
-				local function gzip_uncompressed_chunk(buf, len)
-					send_raw_chunk(buf, len)
-				end
-				gzip_compressed_chunk, gzip_thread = cowrap(function(yield, s)
-					if s == false then return end --abort on entry
-					local ok, err = deflate(gzip_uncompressed_chunk, yield, 64 * 1024, 'gzip')
-					assert(ok or err == 'abort', err)
-				end, 'http-gzip-encode %s', req)
+				gz = gzip_state{op = 'compress', write = send_body_chunk}
 				function req:onfinish() --called on errors too.
-					if threadstatus(gzip_thread) ~= 'dead' then
-						content(false, 'abort')
-					end
+					gz:free()
 				end
 			end
 
 			return req
 		end --req:send_headers()
 
-		function send_body_chunk(req, chunk, len)
-			len = len or #chunk
-			self:dp('>>', '%7d bytes', len)
-			if req.response_headers['content-length'] then
-				ctcp.wb:putcdata(chunk, len)
-				ctcp.wb:flush()
-			else --chunked
-				ctcp.wb:putf('%X\r\n', len)
-				ctcp.wb:putcdata(chunk, len)
-				ctcp.wb:put'\r\n'
-				ctcp.wb:flush()
-			end
-		end
-
 		local body_sent
-		function end_body(req)
+		function send_body_chunk(chunk, len)
+			assert(headers_sent)
 			assert(not body_sent)
-			body_sent = true
-			self:dp('>>', 'end')
-			if not req.response_headers['content-length'] then
-				ctcp.wb:put'0\r\n\r\n'
-				ctcp.wb:flush()
+			if not (chunk == nil and len == 'eof') then
+				len = len or #chunk
+				req:dp('>>', '%7d bytes', len)
+				if req.response_headers['content-length'] then
+					ctcp.wb:putcdata(chunk, len)
+					ctcp.wb:flush()
+				else --chunked
+					ctcp.wb:putf('%X\r\n', len)
+					ctcp.wb:putcdata(chunk, len)
+					ctcp.wb:put'\r\n'
+					ctcp.wb:flush()
+				end
+			else
+				body_sent = true
+				req:dp('>>', 'end')
+				if not req.response_headers['content-length'] then
+					ctcp.wb:put'0\r\n\r\n'
+					ctcp.wb:flush()
+				end
 			end
-			return req
 		end
 
 		function req.send_chunk(req, chunk, len)
-			assert(headers_sent)
-			assert(not body_sent)
 			if req.compress then
-				gzip_write_uncompressed(chunk, len)
+				gz:push(chunk, len)
 			else
-				send_raw_chunk(req, chunk, len)
+				send_body_chunk(chunk, len)
 			end
+			return req
 		end
-
-		function req.end(req)
-			if req.compress then
-				gzip_write_uncompressed(chunk, len)
-			else
-				end_body(req, chunk, len)
-			end
+		function req.finish(req)
+			req:send_chunk(nil, 'eof')
+			return req
 		end
 
 		--self.respond(req) needs to call req:respond(opt) or it's a 404.
@@ -432,8 +429,9 @@ function http_server(...)
 					tracebacks = self.debug.tracebacks,
 				} --write buffer
 				local ok, err = pcall(handle_connection, ctcp)
-				ctcp.rb:free(); ctcp.rb = nil
-				ctcp.wb:free(); ctcp.wb = nil
+				ctcp:try_close()
+				ctcp.rb:free()
+				ctcp.wb:free()
 				if not ok or not iserror(err, 'io') then
 					logerror(ctcp, 'handler', '%s', err)
 				end
