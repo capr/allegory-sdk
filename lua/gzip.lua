@@ -143,6 +143,7 @@ function gzip_state(gz)
 				end
 			end
 			if ret == C.Z_STREAM_END then
+				gz.write(nil, 'eof')
 				free()
 				return true, 'eof'
 			end
