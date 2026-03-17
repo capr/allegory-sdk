@@ -173,6 +173,7 @@ local function gzip_unzip(op, data, size)
 	local gz = gzip_state{op = op}
 	local b = string_buffer()
 	function gz.write(data, size)
+		if size == 'eof' then return end
 		if isstr(data) then
 			b:put(data)
 		else
