@@ -917,8 +917,6 @@ end
 
 --SSL context builders -------------------------------------------------------
 
-local load_once = memoize(load)
-
 local function P(s)
 	return exists(s) and s or nil
 end
@@ -933,11 +931,11 @@ local function os_ca_file(path)
 		or P'/etc/ssl/cert.pem'                                 --Alpine Linux
 end
 local load_ca = memoize(function(ca_file)
-	ca_file = ca_file or config'ca_file' or os_ca_file()
-	if ca_file then ca = load_once(ca_file) end
-	return assert(ca, 'tls_client: ca or ca_file required')
+	ca_file = assert(ca_file or config'ca_file' or os_ca_file(), 'ca file not found')
+	return load(ca_file)
 end)
 
+local load_once = memoize(load)
 local function cert_key_opt(opt, required)
 	local cert = opt.cert or opt.cert_file and load_once(opt.cert_file)
 	local key  = opt.key  or opt.key_file  and load_once(opt.key_file)
@@ -968,9 +966,6 @@ local function make_client_ctx(opt)
 	add(keepalive, xc)
 	add(keepalive, buf)
 
-	-- enforce RSA key size floor for server cert chains (default 2048).
-	xc.min_rsa_size = opt.min_rsa_size or 2048
-
 	if not opt.insecure_noverifycert then
 		local ca = opt.ca or load_ca(opt.ca_file)
 		local ta, ta_n, ta_kp = load_trust_anchors(ca)
@@ -980,6 +975,9 @@ local function make_client_ctx(opt)
 	else
 		C.br_ssl_client_init_full(sc, xc, nil, 0)
 	end
+
+	-- enforce RSA key size floor for server cert chains (default 2048).
+	xc.min_rsa_size = (opt.min_rsa_size or 2048) / 8 - 128
 
 	C.br_ssl_engine_set_buffer(eng, buf, BR_SSL_BUFSIZE_BIDI, 1)
 	eng.version_min = C.BR_TLS12
@@ -1184,6 +1182,10 @@ end
 
 function client_stcp:try_close()
 	if not self.tcp.fd then return true end
+	local ps = self.listen_socket
+	if ps then
+		ps.sockets[self] = nil
+	end
 	C.br_ssl_engine_close(self.eng)
 	-- best-effort TLS close_notify
 	while true do
@@ -1297,6 +1299,7 @@ function _G.server_stcp(tcp, opt)
 		_sk = sk, _kt = kt, _issuer_kt = issuer_kt,
 		_cache = cache,
 		_keepalive = keepalive,
+		sockets = {},
 	})
 	live(s, server_stcp.type, 'tcp=', tcp)
 	return s
@@ -1304,6 +1307,9 @@ end
 
 function server_stcp:try_close()
 	if not self.tcp.fd then return true end
+	for s in pairs(self.sockets) do
+		s:try_close()
+	end
 	live(self, nil)
 	local ok, err = self.tcp:try_close()
 	self.eng = nil
@@ -1330,6 +1336,8 @@ function server_stcp:try_accept()
 		cs:try_close()
 		return nil, err, true --retriable
 	end
+	self.sockets[cs] = true
+	cs.listen_socket = self
 	log('', 'tls', 'accepted', '%-4s tcp=%s', cs, ctcp)
 	liveadd(cs, 'accepted', 'tcp=', ctcp)
 
