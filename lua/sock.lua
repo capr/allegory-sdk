@@ -745,9 +745,8 @@ do
 		self.sockets[s] = true
 		self.next_i = (self.next_i or 0) + 1
 		s.i = self.next_i
-		log('', 'sock', 'accepted', '%-4s %s.%d %s <- %s clients:%d',
-			s, self, s.i, la, ra, self.n)
-		live(s, 'accepted %s.%d %s <- %s fd=%d', self, s.i, la, ra, s.fd)
+		live(s, 'accepted %s.%d %s <- %s fd=%d clients:%d',
+			self, s.i, la, ra, s.fd, self.n)
 		s.remote_addr = ra
 		s.local_addr  = la
 		s.listen_socket = self
@@ -1426,9 +1425,8 @@ function socket:debug(protocol)
 
 	override(self, 'try_recv', function(inherited, self, buf, ...)
 		local sz, err = inherited(self, buf, ...)
-		if not sz then return nil, err end
-		ds('<', str(buf, sz))
-		return sz
+		if not err then ds('<', str(buf, sz)); return sz end
+		return sz, err
 	end)
 	self.recv = unprotect_io(self.try_recv)
 	self.try_read = self.try_recv

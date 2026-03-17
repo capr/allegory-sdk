@@ -1152,13 +1152,13 @@ end
 
 local client_stcp = merge({type = 'client_tls_socket'}, stcp)
 
-local function wrap_conn_stcp(tcp, eng, keepalive)
+local function wrap_client_stcp(tcp, eng, keepalive)
 	local s = object(client_stcp, {
 		tcp        = tcp,
 		eng        = eng,
 		_keepalive = keepalive,
 	})
-	live(s, client_stcp.type, 'tcp=', tcp)
+	tcp.stcp = s --cross-ref
 	return s
 end
 
@@ -1171,7 +1171,8 @@ function _G.client_stcp(tcp, host, opt)
 		return nil, 'ssl_client_reset_failed'
 	end
 
-	local s = wrap_conn_stcp(tcp, eng, keepalive)
+	local s = wrap_client_stcp(tcp, eng, keepalive)
+	live(s, 'tcp=%s', tcp)
 	local ok, err = engine_run(s, bor(BR_SSL_SENDAPP, BR_SSL_RECVAPP))
 	if not ok then
 		s:try_close()
@@ -1182,10 +1183,6 @@ end
 
 function client_stcp:try_close()
 	if not self.tcp.fd then return true end
-	local ps = self.listen_socket
-	if ps then
-		ps.sockets[self] = nil
-	end
 	C.br_ssl_engine_close(self.eng)
 	-- best-effort TLS close_notify
 	while true do
@@ -1299,16 +1296,16 @@ function _G.server_stcp(tcp, opt)
 		_sk = sk, _kt = kt, _issuer_kt = issuer_kt,
 		_cache = cache,
 		_keepalive = keepalive,
-		sockets = {},
 	})
-	live(s, server_stcp.type, 'tcp=', tcp)
+	tcp.stcp = s --cross-ref for client socket tracking
+	live(s, 'tcp=%s', tcp)
 	return s
 end
 
 function server_stcp:try_close()
 	if not self.tcp.fd then return true end
-	for s in pairs(self.sockets) do
-		s:try_close()
+	for s in pairs(self.tcp.sockets) do --close all accepted sockets if any.
+		s.stcp:try_close()
 	end
 	live(self, nil)
 	local ok, err = self.tcp:try_close()
@@ -1330,18 +1327,15 @@ function server_stcp:try_accept()
 		return nil, 'ssl_server_reset_failed'
 	end
 
-	local cs = wrap_conn_stcp(ctcp, eng, keepalive)
-	local ok, err = engine_run(cs, bor(BR_SSL_SENDAPP, BR_SSL_RECVAPP))
+	local s = wrap_client_stcp(ctcp, eng, keepalive)
+	live(s, 'accepted %s.%d tcp=%s clients:%d', self, ctcp.i, ctcp, self.tcp.n)
+	local ok, err = engine_run(s, bor(BR_SSL_SENDAPP, BR_SSL_RECVAPP))
 	if not ok then
-		cs:try_close()
+		s:try_close()
 		return nil, err, true --retriable
 	end
-	self.sockets[cs] = true
-	cs.listen_socket = self
-	log('', 'tls', 'accepted', '%-4s tcp=%s', cs, ctcp)
-	liveadd(cs, 'accepted', 'tcp=', ctcp)
 
-	return cs
+	return s
 end
 
 server_stcp.accept = unprotect_io(server_stcp.try_accept)
