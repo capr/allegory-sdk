@@ -24,6 +24,7 @@ PUSH
 	pb:put([str|num|obj], ...)           push values to buffer
 	pb:putf(format, ...)                 push printf message
 	pb:putcdata(cdata, size)             push cdata value
+	pb:putdata(s | cdata, size)          push string or cdata buffer
 	pb:put_{u8,i8,...}(x)                push binary integer
 	pb:encode(o)                         push serialized Lua object
 	pb:fill(n, [c])                      push repeat bytes
@@ -95,6 +96,16 @@ function pb:tostring ()    return self.b:tostring () end
 function pb:__len    ()    return #self.b end
 function pb:reserve  (n)   return self.b:reserve(n) end
 function pb:ref      ()    return self.b:ref() end
+
+function pb:putdata(data, len)
+	if isstr(data) then
+		assert(len == nil or len == #data)
+		self.b:put(data)
+	else
+		self.b:putcdata(data, len)
+	end
+	return self
+end
 
 pb.check_io = check_io
 pb.checkp   = checkp
@@ -300,7 +311,7 @@ function pb:haveline() --for line-based protocols like http.
 		if i > 0 then --line already started, need to end it
 			self:need(i + 1)
 		elseif not self:have(1) then
-			return nil, 'eof'
+			return false, 'eof'
 		end
 	end
 end
