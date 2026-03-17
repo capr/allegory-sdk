@@ -172,7 +172,11 @@ local function gzip_unzip(op, data, size)
 	local gz = gzip_state{op = op}
 	local b = string_buffer()
 	function gz.write(data, size)
-		b:put(ffi.string(data, size))
+		if isstr(data) then
+			b:put(data)
+		else
+			b:putcdata(data, size)
+		end
 	end
 	gz:push(data, size)
 	if op == 'compress' then gz:finish() end
