@@ -25,10 +25,11 @@ local server = http_server{
 	},
 	debug = {
 		protocol = true,
-		stream = true,
+		--stream = true,
 		tracebacks = true,
 		errors = true,
 	},
+	--compress = false,
 	respond = function(req, thread)
 		while true do
 			local buf, sz, left = req:read_body_chunk()
