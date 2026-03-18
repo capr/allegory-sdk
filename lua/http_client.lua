@@ -8,26 +8,38 @@
 	cookie jars, multi-level debugging, caching, cdata-buffer-based I/O.
 	In short, your dream library for web scraping.
 
-	http_client(opt) -> client           create a client object
-	client:request(opt) -> req, res      make a HTTP request
-	client:close_all()                   close all connections
-	getpage(...) -> ...                  perform a http request on a static client
+CLIENT
+	http_client(opt) -> client        create a client object
+		max_conn                       limit the number of total connections
+		max_conn_per_target            limit the number of connections per target
+		max_pipelined_requests         limit the number of pipelined requests
+		client_ips <- {ip1,...}        a list of client IPs to assign to requests
+		max_retries                    number of retries before giving up
+		max_redirects                  number of redirects before giving up
+		debug                          true to enable client-level debugging
+		tls_options                    options to pass to sock_bearssl
+	client:request(opt) -> req, res   make a HTTP request
+		connection options...          options to pass to `http()`
+		request options...             options to pass to `http:build_request()`
+		client_ip                      client ip to bind to (optional)
+		connect_timeout                connect timeout (optional)
+		request_timeout                timeout for the request part (optional)
+		reply_timeout                  timeout for the reply part (optional)
+	client:fetch(opt | url, [upload], [receive_content]) -> content, res, req
+	client:close_all()                close all connections
+FETCH
+	fetch(opt | url, [upload], [receive_content]) -> content, res, req
 
-http_client(opt) -> client
+NOTES
 
-		max_conn                limit the number of total connections
-		max_conn_per_target     limit the number of connections per target
-		max_pipelined_requests  limit the number of pipelined requests
-		client_ips              a list of client IPs to assign to requests
-		max_retries             number of retries before giving up
-		max_redirects           number of redirects before giving up
-		debug                   true to enable client-level debugging
-		tls_options             options to pass to sock_bearssl
-
-	NOTE: A target is a combination of (vhost, port, client_ip) on which
+	A target is a combination of (vhost, port, client_ip) on which
 	one or more HTTP connections can be created subject to per-target limits.
 
-	### Pipelined requests
+	client:request() must be called from a scheduled socket thread.
+
+	client:close_all() must be called after the socket loop finishes.
+
+Pipelined requests
 
 	A pipelined request is a request that is sent in advance of receiving the
 	response for the previous request on the same connection. Most HTTP servers
@@ -36,24 +48,10 @@ http_client(opt) -> client
 
 	Spawning a new connection for a new request has a lot more initial latency
 	than pipelining the request on an existing connection. On the other hand,
-	pipelined responses come serialized and also the server might decide not
-	to start processing pipelined requests as soon as they arrive because it
-	would have to buffer the results before it can start sending them.
-
-client:request(opt) -> req, res
-
-	Make a HTTP request. This must be called from a scheduled socket thread.
-
-		connection options...     options to pass to `http()`
-		request options...        options to pass to `http:make_request()`
-		client_ip                 client ip to bind to (optional)
-		connect_timeout           connect timeout (optional)
-		request_timeout           timeout for the request part (optional)
-		reply_timeout             timeout for the reply part (optional)
-
-client:close_all()
-
-	Close all connections. This must be called after the socket loop finishes.
+	pipelined responses need to come back in the same order as the requests
+	and so the server might decide not to start processing pipelined requests
+	as soon as they arrive because it would have to buffer the results before
+	it can start sending them.
 
 ]=]
 
@@ -67,14 +65,14 @@ require'sock_bearssl'
 require'gzip'
 require'fs'
 require'resolver'
-require'http'
+require'http_date'
 
-local pull = function(t)
+local function pull(t)
 	return remove(t, 1)
 end
 
 local client = {
-	type = 'http_client', http = http,
+	type = 'http_client',
 	max_conn = 50,
 	max_conn_per_target = 20,
 	max_pipelined_requests = 10,
@@ -84,6 +82,180 @@ local client = {
 	max_cookies = 1e6,
 	max_cookies_per_host = 1000,
 }
+
+--http connection object -----------------------------------------------------
+
+local http = {}
+
+function http:send_request(t, cookies)
+
+	local req = object(creq, {http = self})
+
+	req.http_version = opt.http_version or '1.1'
+	req.method = opt.method or 'GET'
+	req.uri = opt.uri or '/'
+
+	req.headers = {}
+
+	assert(opt.host, 'host missing') --required, even for HTTP/1.0.
+	local default_port = self.https and 443 or 80
+	local port = self.port ~= default_port and self.port or nil
+	req.headers['host'] = {host = opt.host, port = port}
+
+	req.close = opt.close or req.http_version == '1.0'
+	if req.close then
+		req.headers['connection'] = 'close'
+	end
+
+	if repl(opt.compress, nil, self.compress) ~= false then
+		req.headers['accept-encoding'] = 'gzip, deflate'
+	end
+
+	req.headers['cookie'] = cookies
+
+	req.content, req.content_size = opt.content or '', opt.content_size
+
+	--self:set_body_headers(req.headers, req.content, req.content_size, req.close)
+	if isstr(content) then
+		assert(not content_size, 'content_size would be ignored')
+		headers['content-length'] = #content
+	elseif iscdata(content) then
+		headers['content-length'] = assert(content_size, 'content_size missing')
+	elseif isfunc(content) then
+		if content_size then
+			headers['content-length'] = content_size
+		elseif not close then
+			headers['transfer-encoding'] = 'chunked'
+		end
+	else
+		assert(false, type(content))
+	end
+	update(req.headers, opt.headers)
+
+	req.request_timeout = opt.request_timeout
+	req.reply_timeout   = opt.reply_timeout
+
+	local write = opt.receive_content
+	if isfunc(write) then
+		local user_write = write
+		function write(buf, sz)
+			return user_write(req, buf, sz)
+		end
+	end
+	req.receive_content = write
+	req.headers_received = opt.headers_received
+
+
+	local dt = req.request_timeout
+	self.start_time = clock()
+	self.f:setexpires(dt and self.start_time + dt or nil, 'w')
+
+	--send request line
+	--req.method, req.uri, req.http_version
+	assert(http_version == '1.1' or http_version == '1.0')
+	assert(method and method == method:upper())
+	assert(uri)
+	self:dp('=>', '%s %s HTTP/%s', method, uri, http_version)
+	self.f:send(_('%s %s HTTP/%s\r\n', method, uri, http_version))
+
+	--send request headers.
+	--header names are case-insensitive and can't contain newlines.
+	for k,v in pairs(req.response_headers) do
+		assert(not v:has'\n' and not v:has'\r')
+		req:dp('->', '%-17s %s', k, v)
+		ctcp.wb:putf('%s: %s\r\n', k, v)
+	end
+	ctcp.wb:putf'\r\n'
+	ctcp.wb:flush()
+
+	--self:send_body(req.content, req.content_size, req.headers['transfer-encoding'])
+end
+
+function http:should_have_response_body(method, status)
+	if method == 'HEAD' then return false end
+	if status == 204 or status == 304 then return false end
+	if status >= 100 and status < 200 then return false end
+	return true
+end
+
+function http:should_redirect(req, res)
+	local method, status = req.method, res.status
+	return res.headers['location']
+		and (status == 301 or status == 302 or status == 303 or status == 307)
+end
+
+function http:read_response(req)
+	local res = object(cres, {http = self, request = req})
+	req.response = res
+	res.rawheaders = {}
+
+	local dt = req.reply_timeout
+	self.f:setexpires(dt and clock() + dt or nil, 'r')
+
+	res.http_version, res.status, res.status_message = self:read_status_line()
+
+	while res.status == 100 do --ignore any 100-continue messages
+		self:read_headers(res.rawheaders)
+		res.http_version, res.status = self:read_status_line()
+	end
+
+	self:read_headers(res.rawheaders)
+	res.headers = self:parsed_headers(res.rawheaders)
+
+	if req.headers_received then
+		req.headers_received(res)
+	end
+
+	res.close = req.close
+		or (res.headers['connection'] and res.headers['connection'].close)
+		or res.http_version == '1.0'
+
+	local receive_content = req.receive_content
+	if self:should_redirect(req, res) then
+		receive_content = nil --ignore the body (it's not the body we want)
+		res.redirect_location = self.f:checkp(res.headers['location'], 'no location')
+		res.receive_content = req.receive_content
+	end
+
+	if self:should_have_response_body(req.method, res.status) then
+		res.content, res.content_size =
+			self:read_body(res.headers, receive_content, true, res.close, res)
+	end
+
+	return res
+end
+
+local function is_ip(s)
+	return s:find'^%d+%.%d+%.%d+%.%d+'
+end
+function http:cookie_domain_matches_request_host(domain, host)
+	return not domain or domain == host or (
+		host:sub(-#domain) == domain
+		and host:sub(-#domain-1, -#domain-1) == '.'
+		and not is_ip(host)
+	)
+end
+
+function http:cookie_default_path(uri)
+	return '/' --TODO
+end
+
+--cookie path matches request path exactly, or
+--cookie path ends in `/` and is a prefix of the request path, or
+--cookie path is a prefix of the request path, and the first
+--character of the request path that is not included in the cookie path is `/`.
+function http:cookie_path_matches_request_path(cpath, path)
+	if cpath == rpath then
+		return true
+	elseif cpath == rpath:sub(1, #cpath) then
+		if cpath:sub(-1, -1) == '/' then
+			return true
+		elseif rpath:sub(#cpath + 1, #cpath + 1) == '/' then
+			return true
+		end
+	end
+	return false
+end
 
 --targets --------------------------------------------------------------------
 
@@ -236,7 +408,7 @@ function client:connect_now(target)
 		self:resume_next_wait_conn_thread()
 	end)
 	target.http_args.f = tcp
-	local http = http(target.http_args)
+	local http = object(http, {}, target.http_args)
 	self:dp(target, ' BIND', '%s %s', tcp, http)
 	return http
 end
@@ -444,13 +616,11 @@ function client:request(t)
 	local cookies = self:get_cookies(target.client_ip, target.host,
 		t.uri or '/', target.http_args.https)
 
-	local req = http:build_request(t, cookies)
-
 	self:dp(target, '+SEND_RQ', '%s.%s.%s %s %s',
 		target, http, req, req.method, req.uri)
 
-	local ok, err = http:send_request(req)
-	if not ok then return nil, err, req end
+	local req, err = http:try_send_request(t, cookies)
+	if not req then return nil, err end
 
 	self:dp(target, '-SEND_RQ', '%s.%s.%s', target, http, req)
 
@@ -507,9 +677,10 @@ function client:request(t)
 	return res, true, req
 end
 
---hi-level API: getpage ------------------------------------------------------
+--hi-level API: fetch --------------------------------------------------------
 
-function client:getpage(arg1, upload, receive_content)
+--opt | url,[upload],[receive_content]
+function client:fetch(arg1, upload, receive_content)
 
 	local opt = istab(arg1) and arg1 or empty
 	upload = upload or opt.upload
@@ -585,26 +756,17 @@ function http_client(t)
 	return self
 end
 
---global getpage -------------------------------------------------------------
+--global fetch ---------------------------------------------------------------
 
 local cl
-function getpage(...)
+function fetch(...)
 	cl = cl or http_client{
-		max_conn               = config'getpage_max_conn',
-		max_conn_per_target    = config'getpage_max_conn_per_target',
-		max_pipelined_requests = config'getpage_max_pipelined_requests',
-		client_ips             = config'getpage_client_ips',
-		max_redirects          = config'getpage_max_redirects',
-		debug = config'getpage_debug' and index(collect(words(config'getpage_debug'))),
+		max_conn               = config'fetch_max_conn',
+		max_conn_per_target    = config'fetch_max_conn_per_target',
+		max_pipelined_requests = config'fetch_max_pipelined_requests',
+		client_ips             = config'fetch_client_ips',
+		max_redirects          = config'fetch_max_redirects',
+		debug = config'fetch_debug' and index(collect(words(config'fetch_debug'))),
 	}
-	return cl:getpage(...)
-end
-
-function update_ca_file()
-	local file = config'ca_file' or varpath'cacert.pem'
-	local s, err = getpage{
-		url = 'https://curl.haxx.se/ca/cacert.pem',
-	}
-	assert(s, err)
-	save(file, s)
+	return cl:fetch(...)
 end
