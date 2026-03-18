@@ -3,21 +3,21 @@
 	HTTP 1.1 server (TLS 1.2, gzip, chunked, full-duplex, pipelined)
 	Written by Cosmin Apreutesei. Public Domain.
 
-	http_server(opt1,...) -> server   Create a http server merging multiple options tables
-OPTIONS
-	listen                     {{addr=,...}, {addr=,...}}
-		host                        Host header match
-		addr                        IP address to listen to
-		port                        TCP port to listen to
-		tls                         use TLS on this socket
-		tls_options                 TLS options, see sock_bearssl.lua
-		unix_socket                 unix socket file to listen to
-		unix_socket_perms           set perms on socket file after bind()
-		unix_socket_user            set user  on socket file after bind()
-		unix_socket_group           set group on socket file after bind()
-	compress <- true|false     gzip-compress responses (true)
-	respond <- fn(req)         request handler
-	debug <- flags             debug flags: 'protocol tracebacks stream'
+SERVER
+	http_server(opt1,...) -> server   Create a http server (opt tables are merged)
+	  listen                       {{addr=,...}, {addr=,...}}
+	    host                       Host header match
+	    addr                       IP address to listen to
+	    port                       TCP port to listen to
+	    tls                        use TLS on this socket
+	    tls_options                TLS options, see sock_bearssl.lua
+	    unix_socket                unix socket file to listen to
+	    unix_socket_perms          set perms on socket file after bind()
+	    unix_socket_user           set user  on socket file after bind()
+	    unix_socket_group          set group on socket file after bind()
+	  compress <- true|false       gzip-compress responses (true)
+	  respond <- fn(req)           request handler
+	  debug <- flags               debug flags: 'protocol tracebacks stream'
 REQUEST
 	req.headers -> {k=v}	          request headers (in lowercase)
 	req.body_size -> n             request upload size in bytes
@@ -33,7 +33,7 @@ RESPONSE
 	req.compress <- true|false     gzip-compress response (also see compressed_mime_types)
 	req:send_headers() -> req      send status line and headers
 	req:send_chunk(s | buf,len | nil,'eof') -> req    send body chunk
-	req:end() -> req               end of response
+	req:finish() -> req            finish response
 CONFIG
 	host                           'localhost'
 	http_addr                      '0.0.0.0'
