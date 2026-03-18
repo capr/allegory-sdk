@@ -4,27 +4,23 @@
 	Written by Cosmin Apreutesei. Public Domain.
 
 API
-
 	client_stcp(tcp, host, opt) -> cstcp         create a secure client socket
 	server_stcp(tcp, opt) -> sstcp               create a secure server socket
-	cstcp:[try_]recv(buf, sz) -> n               receive decrypted bytes
-	cstcp:[try_]send(buf, sz) -> true            send bytes (encrypted)
-	cstcp:[try_]close()                          close with SSL shutdown
-	sstcp:[try_]accept() -> cstcp                accept a TLS client connection
-	cstcp:[try_]shutdown('r'|'w'|'rw')           shutdown underlying TCP
-
-opt table:
-
-	ca[_file]              CA certificate PEM data or file. client only.
-	cert[_file]            certificate PEM data or file (for server or mutual TLS)
-	key[_file]             private key PEM data or file (for server or mutual TLS)
-	cert_issuer_rsa        hint: server EC cert was issued by RSA CA (default: EC)
-	min_rsa_size           minimum RSA key size for server cert chains (default: 2048)
-	session_cache_entries  number of TLS session cache entries (default: 1024)
-	insecure_noverifycert  skip server certificate verification. client only.
-
+		sstcp:[try_]accept() -> cstcp             accept a TLS client connection
+		  cstcp:[try_]recv(buf, sz) -> n          receive decrypted bytes
+		  cstcp:[try_]send(buf, sz) -> true       send bytes (encrypted)
+		  cstcp:[try_]close()                     close with SSL shutdown
+		  cstcp:[try_]shutdown('r'|'w'|'rw')      shutdown underlying TCP
+	opt table:
+		cert[_file]            certificate PEM data or file (for server or mutual TLS)
+		key[_file]             private key PEM data or file (for server or mutual TLS)
+		cert_issuer_rsa        hint: server EC cert was issued by RSA CA (default: EC)
+		min_rsa_size           minimum RSA key size for server cert chains (default: 2048)
+		session_cache_entries  number of TLS session cache entries (default: 1024)
+	opt table / client only:
+		ca[_file]              CA certificate PEM data or file
+		insecure_noverifycert  skip server certificate verification
 CONFIG
-
 	ca_file                path to CA file. autodetected. client only.
 
 ]=]
@@ -921,7 +917,7 @@ local function P(s)
 	return exists(s) and s or nil
 end
 local function os_ca_file(path)
-	return P(varpath'cacert.pem')                              --updated via update_ca_file()
+	return false
 		or P'/etc/ssl/certs/ca-certificates.crt'                --Debian/Ubuntu/Gentoo etc.
 		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --Fedora/RHEL 7
 		or P'/etc/pki/tls/certs/ca-bundle.crt'                  --Fedora/RHEL 6
@@ -930,10 +926,15 @@ local function os_ca_file(path)
 		or P'/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem' --CentOS/RHEL 7
 		or P'/etc/ssl/cert.pem'                                 --Alpine Linux
 end
-local load_ca = memoize(function(ca_file)
-	ca_file = assert(ca_file or config'ca_file' or os_ca_file(), 'ca file not found')
-	return load(ca_file)
-end)
+local ca, ca_clock
+local function load_ca(ca_file)
+	if not ca or clock() - ca_clock > 3600 * 24 then
+		ca_file = assert(ca_file or config'ca_file' or os_ca_file(), 'ca file not found')
+		ca = load(ca_file)
+		ca_clock = clock()
+	end
+	return ca
+end
 
 local load_once = memoize(load)
 local function cert_key_opt(opt, required)
