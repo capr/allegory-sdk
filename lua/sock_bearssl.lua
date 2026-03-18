@@ -1305,8 +1305,10 @@ end
 
 function server_stcp:try_close()
 	if not self.tcp.fd then return true end
-	for s in pairs(self.tcp.sockets) do --close all accepted sockets if any.
-		s.stcp:try_close()
+	for s in pairs(self.tcp.sockets) do --close all accepted tls sockets if any.
+		if s.stcp then
+			s.stcp:try_close()
+		end
 	end
 	live(self, nil)
 	local ok, err = self.tcp:try_close()

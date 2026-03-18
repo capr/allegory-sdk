@@ -27,6 +27,7 @@ REQUEST
 	req.thread                     the thread that handled the request
 RESPONSE
 	req.status <- n                set response status (default: 200)
+	req.status_message <- s        set response status message (inconsequential)
 	req.response_headers <- {k=v}  set response headers (in lowercase!)
 		content-length <- n         set body size otherwise it's chunked transfer
 		content-type <- mime        set content-type
@@ -184,16 +185,17 @@ function http_server(...)
 		next_request_id = next_request_id + 1
 
 		--read request headers
-		for i = 1, 100 do
+		for i = 1, 101 do
 			local line = ctcp.rb:needline()
 			if line == '' then break end --headers end with a blank line
+			self:checkp(i <= 100, 'too many headers')
 			local name, value = line:match'^([^:]+):%s*(.*)'
 			ctcp:checkp(name, 'invalid header')
 			name = name:lower() --header names are case-insensitive
 			value = value:trim()
 			req:dp('<-', '%-17s %s', name, value)
 			local prev_value = req.headers[name]
-			if prev_value then --duplicate header: fold.
+			if prev_value then --duplicate header: append value.
 				req.headers[name] = prev_value .. ',' .. value
 			else
 				req.headers[name] = value
@@ -259,7 +261,8 @@ function http_server(...)
 			--send status line
 			assert(req.status >= 100 and req.status <= 999, 'invalid status code')
 			req:dp('=>', '%s', req.status)
-			ctcp.wb:putf('HTTP/1.1 %d\r\n', req.status)
+			ctcp.wb:putf('HTTP/1.1 %d%s%s\r\n', req.status,
+				req.status_message and ' ' or '', req.status_message or '')
 
 			--send response headers.
 			--header names are case-insensitive and can't contain newlines.

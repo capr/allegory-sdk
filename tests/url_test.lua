@@ -50,3 +50,4 @@ test(url_parse'?a=1&b=2&c=&d&f=hidden&f=visible&g=a=1%26b=2', {
 test(url_parse'http://user:pass@host/a/b?x=1&y=2&z&w=#fragment',
 				{scheme='http',user='user',pass='pass',host='host',path='/a/b',query='x=1&y=2&z&w=',fragment='fragment',
 				args={x='1',y='2',z=true,w='','x','1','y','2','z',true,'w',''},segments={'','a','b'}})
+print'url ok'

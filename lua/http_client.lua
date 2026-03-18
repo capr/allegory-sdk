@@ -18,14 +18,15 @@ CLIENT
 		max_redirects                  number of redirects before giving up
 		debug                          true to enable client-level debugging
 		tls_options                    options to pass to sock_bearssl
-	client:request(opt) -> req, res   make a HTTP request
-		connection options...          options to pass to `http()`
-		request options...             options to pass to `http:build_request()`
+	client:request(opt) -> req        make a HTTP request
+		TODO: document all options
 		client_ip                      client ip to bind to (optional)
 		connect_timeout                connect timeout (optional)
 		request_timeout                timeout for the request part (optional)
-		reply_timeout                  timeout for the reply part (optional)
-	client:fetch(opt | url, [upload], [receive_content]) -> content, res, req
+		response_timeout               timeout for the response part (optional)
+	req:upload_chunk(s | buf,sz)
+	req:
+	client:fetch(opt | url) -> s, ht  make a simple request and get the response body and headers
 	client:close_all()                close all connections
 FETCH
 	fetch(opt | url, [upload], [receive_content]) -> content, res, req
@@ -87,55 +88,34 @@ local client = {
 
 local http = {}
 
-function http:send_request(t, cookies)
+function http:send_request(opt, cookies)
 
-	local req = object(creq, {http = self})
+	local req = update({
+		http = self,
+		method = 'GET',
+		uri = '/',
+		headers = {},
+	}, opt)
 
-	req.http_version = opt.http_version or '1.1'
-	req.method = opt.method or 'GET'
-	req.uri = opt.uri or '/'
+	assert(req.host, 'host missing') --required, even for HTTP/1.0.
 
-	req.headers = {}
-
-	assert(opt.host, 'host missing') --required, even for HTTP/1.0.
 	local default_port = self.https and 443 or 80
 	local port = self.port ~= default_port and self.port or nil
-	req.headers['host'] = {host = opt.host, port = port}
+	req.headers['host'] = req.host..(port and ':'..port or '')
 
-	req.close = opt.close or req.http_version == '1.0'
 	if req.close then
 		req.headers['connection'] = 'close'
 	end
 
 	if repl(opt.compress, nil, self.compress) ~= false then
-		req.headers['accept-encoding'] = 'gzip, deflate'
+		req.headers['accept-encoding'] = 'gzip'
 	end
 
 	req.headers['cookie'] = cookies
 
-	req.content, req.content_size = opt.content or '', opt.content_size
+	assert(req.headers['content-length'])
 
-	--self:set_body_headers(req.headers, req.content, req.content_size, req.close)
-	if isstr(content) then
-		assert(not content_size, 'content_size would be ignored')
-		headers['content-length'] = #content
-	elseif iscdata(content) then
-		headers['content-length'] = assert(content_size, 'content_size missing')
-	elseif isfunc(content) then
-		if content_size then
-			headers['content-length'] = content_size
-		elseif not close then
-			headers['transfer-encoding'] = 'chunked'
-		end
-	else
-		assert(false, type(content))
-	end
-	update(req.headers, opt.headers)
-
-	req.request_timeout = opt.request_timeout
-	req.reply_timeout   = opt.reply_timeout
-
-	local write = opt.receive_content
+	local write = req.receive_content
 	if isfunc(write) then
 		local user_write = write
 		function write(buf, sz)
@@ -145,28 +125,25 @@ function http:send_request(t, cookies)
 	req.receive_content = write
 	req.headers_received = opt.headers_received
 
-
 	local dt = req.request_timeout
 	self.start_time = clock()
 	self.f:setexpires(dt and self.start_time + dt or nil, 'w')
 
 	--send request line
-	--req.method, req.uri, req.http_version
-	assert(http_version == '1.1' or http_version == '1.0')
-	assert(method and method == method:upper())
-	assert(uri)
-	self:dp('=>', '%s %s HTTP/%s', method, uri, http_version)
-	self.f:send(_('%s %s HTTP/%s\r\n', method, uri, http_version))
+	assert(req.method and req.method == method:upper())
+	assert(req.uri)
+	self:dp('=>', '%s %s HTTP/1.1', req.method, req.uri)
+	req.wb:putf('%s %s HTTP/1.1\r\n', req.method, req.uri)
 
 	--send request headers.
 	--header names are case-insensitive and can't contain newlines.
-	for k,v in pairs(req.response_headers) do
+	for k,v in pairs(req.headers) do
 		assert(not v:has'\n' and not v:has'\r')
 		req:dp('->', '%-17s %s', k, v)
-		ctcp.wb:putf('%s: %s\r\n', k, v)
+		req.wb:putf('%s: %s\r\n', k, v)
 	end
-	ctcp.wb:putf'\r\n'
-	ctcp.wb:flush()
+	req.wb:putf'\r\n'
+	req.wb:flush()
 
 	--self:send_body(req.content, req.content_size, req.headers['transfer-encoding'])
 end
@@ -178,48 +155,62 @@ function http:should_have_response_body(method, status)
 	return true
 end
 
-function http:should_redirect(req, res)
-	local method, status = req.method, res.status
-	return res.headers['location']
+function http:should_redirect(req)
+	local status = req.status
+	return req.response_headers['location']
 		and (status == 301 or status == 302 or status == 303 or status == 307)
 end
 
 function http:read_response(req)
-	local res = object(cres, {http = self, request = req})
-	req.response = res
-	res.rawheaders = {}
-
-	local dt = req.reply_timeout
+	local dt = req.response_timeout
 	self.f:setexpires(dt and clock() + dt or nil, 'r')
 
-	res.http_version, res.status, res.status_message = self:read_status_line()
+	--read status line
+	local line, err = self.b:needline()
+	if not line then return nil, err end
+	local http_version, status, status_message
+		= line:match'^HTTP/(%d+%.%d+)%s+(%d%d%d)%s*(.*)'
+	self:dp('<=', '%s %s %s', status, status_message, http_version)
+	status = tonumber(status)
+	self.f:checkp(http_version and status, 'invalid status line: %s', line)
+	self.f:checkp(http_version == '1.1', 'invalid http version: %s', http_version)
+	self.f:checkp(status >= 200 and status <= 999, 'invalid status: %d', status)
+	req.status = status
+	req.status_message = status_message
 
-	while res.status == 100 do --ignore any 100-continue messages
-		self:read_headers(res.rawheaders)
-		res.http_version, res.status = self:read_status_line()
+	--read response headers
+	req.response_headers = {}
+	for i = 1, 101 do
+		local line = ctcp.rb:needline()
+		if line == '' then break end --headers end with a blank line
+		self:checkp(i <= 100, 'too many headers')
+		local name, value = line:match'^([^:]+):%s*(.*)'
+		ctcp:checkp(name, 'invalid header')
+		name = name:lower() --header names are case-insensitive
+		value = value:trim()
+		req:dp('<-', '%-17s %s', name, value)
+		local prev_value = req.response_headers[name]
+		if name == 'set-cookie' then --this header is not safe to combine.
+			add(attr(req.response_headers, name), value)
+		elseif prev_value then --duplicate header: append value.
+			req.response_headers[name] = prev_value .. ',' .. value
+		else
+			req.response_headers[name] = value
+		end
 	end
 
-	self:read_headers(res.rawheaders)
-	res.headers = self:parsed_headers(res.rawheaders)
-
-	if req.headers_received then
-		req.headers_received(res)
-	end
-
-	res.close = req.close
-		or (res.headers['connection'] and res.headers['connection'].close)
-		or res.http_version == '1.0'
+	local hconn = req.response_headers['connection']
+	req.close = req.close or (hconn and hconn:has'close')
 
 	local receive_content = req.receive_content
-	if self:should_redirect(req, res) then
+	if self:should_redirect(req) then
 		receive_content = nil --ignore the body (it's not the body we want)
-		res.redirect_location = self.f:checkp(res.headers['location'], 'no location')
-		res.receive_content = req.receive_content
+		req.redirect_location = self.f:checkp(req.response_headers['location'], 'no location')
 	end
 
-	if self:should_have_response_body(req.method, res.status) then
+	if self:should_have_response_body(req.method, req.status) then
 		res.content, res.content_size =
-			self:read_body(res.headers, receive_content, true, res.close, res)
+			self:read_body(req.response_headers, receive_content, true, req.close, res)
 	end
 
 	return res
@@ -485,7 +476,7 @@ end
 --redirects ------------------------------------------------------------------
 
 function client:redirect_request_args(t, req, res)
-	local location = assert(res.redirect_location, 'no location')
+	local location = assert(req.redirect_location, 'no location')
 	local loc = url_parse(location)
 	local uri = url_format{
 		path = loc.path,
@@ -494,7 +485,6 @@ function client:redirect_request_args(t, req, res)
 	}
 	local https = loc.scheme == 'https' or nil
 	return {
-		http_version = res.http_version,
 		method = 'GET',
 		close = t.close,
 		host = loc.host or t.host,
@@ -503,11 +493,11 @@ function client:redirect_request_args(t, req, res)
 		uri = uri,
 		compress = t.compress,
 		headers = merge({['content-type'] = false}, t.headers),
-		receive_content = res.receive_content,
+		receive_content = req.receive_content,
 		redirect_count = (t.redirect_count or 0) + 1,
 		connect_timeout = t.connect_timeout,
 		request_timeout = t.request_timeout,
-		reply_timeout   = t.reply_timeout,
+		respone_timeout = t.response_timeout,
 		debug = t.debug or self.debug,
 	}
 end
@@ -531,7 +521,7 @@ function client:clear_cookies(client_ip, host)
 end
 
 function client:store_cookies(target, req, res)
-	local cookies = res.headers['set-cookie']
+	local cookies = req.response_headers['set-cookie']
 	if not cookies then return end
 	local time = time()
 	local client_jar = self:cookie_jar(target.client_ip)
