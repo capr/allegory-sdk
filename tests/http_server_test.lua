@@ -1,4 +1,4 @@
---go@ plink d10 -t -batch sdk/bin/linux/luajit sdk/tests/http_server_test.lua
+--go@ plink d10 -t -batch sdk/bin/linux/luajit sdk/tests/httplite_test.lua
 require'glue'
 require'http_server'
 logging.debug = true
@@ -26,25 +26,22 @@ local server = http_server{
 	debug = {
 		protocol = true,
 		--stream = true,
-		--tracebacks = true,
+		tracebacks = true,
 		errors = true,
 	},
+	--compress = false,
 	respond = function(req, thread)
-		local read_body = req:read_body'reader'
 		while true do
-			local buf, sz = read_body()
-			if buf == nil then break end --eof
+			local buf, sz, left = req:read_body_chunk()
+			if left == 0 then break end
 			local s = str(buf, sz)
 			print(s)
 		end
 		if req.uri == '/favicon.ico' then
 			raise('http_response', {status = 404})
 		end
-		local out = req:respond({
-			--compress = false,
-			want_out_function = true,
-		})
-		out(('hello '):rep(1000))
+		local out = req:send_headers()
+		req:send_chunk(('hello '):rep(1000)):finish()
 		--raise{status = 404, content = 'Dude, no page here'}
 	end,
 	--respond = webb_respond,
@@ -52,4 +49,3 @@ local server = http_server{
 
 start()
 server:stop()
-
