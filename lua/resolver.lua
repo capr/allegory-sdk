@@ -15,8 +15,9 @@
 API
 	resolver(t) -> r                                 create a resolver
 	r:query(name,[type],[timeout] | t) -> answers    query
-	r:lookup(name,[type],[timeout]) -> addresses     name lookup
-	r:reverse_lookup(address,[timeout]) -> hosts     reverse lookup
+	r:[try_]lookup(name,[type],[timeout]) -> addresses     name lookup
+	r:[try_]resolve(name,[type],[timeout]) -> addresses    resolve hostname to ip
+	r:[try_]reverse_lookup(address,[timeout]) -> hosts     reverse lookup
 
 resolver(t) -> r
 
@@ -54,12 +55,13 @@ r:[try_]reverse_lookup(address,[timeout]) -> hostnames
 
 GLOBAL RESOLVER
 
-	resolve(host) -> ip              (create resolver and) resolve a hostname
+	resolve(host, [type], [timeout]) -> ip    (create resolver and) resolve a hostname
 
 CONFIG
 
-	hosts                 {NAME = IP}   - static lookup table
-	ns                    {IP1, ...}    - name servers to use
+	hosts                 {NAME = IP}    - static lookup table for IPv4
+	hosts6                {NAME = IP6}   - static lookup table for IPv6
+	ns                    {IP1, ...}     - name servers to use
 	resolver_debug        false
 
 ]=]
@@ -67,6 +69,7 @@ CONFIG
 require'glue'
 require'lrucache'
 require'sock'
+require'ipv6'
 
 local
 	band, shr, shl, char, format, add, concat, u8a, str, check_io, checkp =
@@ -130,16 +133,8 @@ end
 
 local function ip6(q, p, i, n) --ipv6 in binary
 	check_len(q, i, n, 16)
-	local t = {}
-	for i = 0, 15, 2 do
-		local a, b = p[i], p[i+1]
-		if a == 0 then
-			add(t, format('%x', b))
-		else
-			add(t, format('%x%02x', a, b))
-		end
-	end
-	return concat(t, ':'), i+16
+	local s = ipv6_tostring(str(p+i, 16))
+	return s, i+16
 end
 
 local function u16(q, p, i, n) --u16 in big-endian
@@ -346,6 +341,9 @@ rs.timeout = 5 --arbitrary default
 
 rs.hosts = {
 	localhost = '127.0.0.1',
+}
+rs.hosts6 = {
+	localhost = '::1',
 }
 rs.servers = {
 	'1.1.1.1', --cloudflare
@@ -585,7 +583,7 @@ function resolver(opt)
 		end, _('resolver scheduler %d: %s', i, addr))
 		rs.nst[i] = ns
 		ns.i = i
-		rs:dbg(ns, nil, 'NS', rs.debug and ai:tostring())
+		rs:dbg(ns, nil, 'NS', addr)
 	end
 
 	rs.cache = lrucache{max_size = rs.max_cache_entries}
@@ -698,22 +696,22 @@ function rs:reverse_lookup(...)
 	return check_io(nil, self:try_reverse_lookup(...))
 end
 
-local function static_resolve(self, host)
-	if host:find'^%d+%.%d+%.%d+%.%d$' then --ip4
+local function static_resolve(self, host, type)
+	if type == 'A' and is_ipv4(host) then --ip4
 		return host
-	end
-	if host:find(':', 1, true) then --ip6
+	elseif type == 'AAAA' and host:has':' then --ip6
 		return host
-	end
-	local ip = self.hosts[host] --static
-	if ip then
-		return ip
+	elseif type == 'A' then
+		return self.hosts[host] --static
+	elseif type == 'AAAA' then
+		return self.hosts6[host] --static
 	end
 end
-function rs:try_resolve(host)
-	local ip = static_resolve(self, host)
-	if ip then return {ip} end
-	return self:try_lookup(host)
+function rs:try_resolve(host, type, timeout)
+	type = type or 'A'
+	local ip = static_resolve(self, host, type)
+	if ip then return istab(ip) and ip or {ip} end
+	return self:try_lookup(host, type, timeout)
 end
 function rs:resolve(...)
 	return check_io(nil, self:try_resolve(...))
@@ -722,14 +720,15 @@ end
 --global resolver ------------------------------------------------------------
 
 local rs
-function try_resolve(host)
+function try_resolve(host, type, timeout)
 	host = trim(host)
 	rs = rs or resolver{
 		hosts   = config'hosts',
+		hosts6  = config'hosts6',
 		servers = config'ns',
 		debug   = config'resolver_debug',
 	}
-	local addrs, err = rs:try_resolve(host)
+	local addrs, err = rs:try_resolve(host, type, timeout)
 	return addrs and addrs[1], err
 end
 
@@ -775,7 +774,7 @@ if not ... then
 				printf('L %d: %-36s %-36s %-8s  ttl: %6d',
 					i,
 					ans.name,
-					ans.a or ans.cname,
+					ans.a or ans.aaaa or ans.cname,
 					ans.type,
 					ans.ttl)
 
@@ -799,10 +798,9 @@ if not ... then
 	end
 
 	for i,s in ipairs{
-		{name = 'luapower.com', tcp_only = true, timeout = 1},
-		'luapower.com',
-		'luapower.com',
-		'luapower.com',
+		{name = 'google.com', tcp_only = true, timeout = 1},
+		'google.com',
+		{name = 'google.com', type = 'AAAA'},
 		{name = 'catcostaocasa.ro', timeout = 1},
 		{name = 'www.yahoo.com', timeout = 1},
  		'www.openresty.org',

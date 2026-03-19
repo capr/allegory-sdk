@@ -5,11 +5,12 @@
 	TLS support in sock_bearssl.lua.
 
 ADDRESSES
-	[try_]sockaddr('unix:PATH') -> sa      make a sockaddr for a unix socket
-	[try_]sockaddr('ip:port') -> sa        make a sockaddr for a ip/ip6 socket
+	[try_]sockaddr('unix:PATH', [resolve=true]) -> sa   make a sockaddr for a unix socket
+	[try_]sockaddr('ip:port', [resolve=true]) -> sa     make a sockaddr for a ip/ip6 socket
 	sa:family() -> 'ip|ip6|unix'           socket family
 	sa:port() -> port|nil                  port (for ip/ip6 family)
 	sa:tostring() -> ip|ip6|path           string representation
+	is_ipv4(s) -> true|false               check if s looks like an IPv4 adress
 SOCKETS
 	issocket(s) -> t|f                     check if s is a socket
 	s:[try_]close()                        close connection and free socket
@@ -355,6 +356,10 @@ local function sockaddr_from_unix_path(path)
 	return sa
 end
 
+function is_ipv4(s)
+	return s:find'^%d+%.%d+%.%d+%.%d+$' and true or false
+end
+
 local function ipv4_tobin(s)
 	local n1, n2, n3, n4 = s:match'^(%d+)%.(%d+)%.(%d+)%.(%d+)$'
 	if not n1 then return nil end --invalid
@@ -365,9 +370,8 @@ local function ipv4_tobin(s)
 	if n1 > 255 or n2 > 255 or n3 > 255 or n4 > 255 then return nil end --invalid
 	return char(n1, n2, n3, n4)
 end
-local function sockaddr_from_ip4(ip, port)
-	local s = ipv4_tobin(ip)
-	if not s then return nil end
+
+local function sockaddr_from_ipv4(s, port) --s is in binary!
 	local sa = sockaddr_ct()
 	sa.family_num = AF_INET
 	copy(sa.addr_in.ip_bytes, s, 4)
@@ -378,8 +382,7 @@ local function sockaddr_from_ip4(ip, port)
 	return sa
 end
 
-local function sockaddr_from_ip6(ip, port)
-	local s = ipv6_tobin(ip)
+local function sockaddr_from_ipv6(s, port) --s is in binary!
 	if not s then return nil end
 	local sa = sockaddr_ct()
 	sa.family_num = AF_INET6
@@ -391,23 +394,70 @@ local function sockaddr_from_ip6(ip, port)
 	return sa
 end
 
-function try_sockaddr(s)
+local function split_host_port(s) -- returns: host, [port], 'ip|ip6|hostname'
+	local ip6, port, host
+	if s:starts'[' then --[ip6]:port or [ip6] (RFC 3986)
+		ip6, port = s:match'^%[(.+)%]:(%d+)$'
+		if not ip6 then ip6 = s:match'^%[(.+)%]$' end
+		if not ip6 then return nil end
+	elseif s:find(':.*:') then -- bare ip6 (multiple colons; ambiguous but practical)
+		ip6 = s
+	elseif s:has':' then -- host:port or ip:port
+		host, port = s:match'^(.+):(%d+)$'
+		if not host then return nil end
+	else --host or ip
+		host = s
+		if #host == 0 then return nil end
+	end
+	port = tonumber(port)
+	if port and not (port >= 0 and port <= 0xffff) then return nil end
+	if ip6 then
+		ip6 = ipv6_tobin(ip6)
+		if not ip6 then return nil end
+		return ip6, port, 'ip6'
+	elseif is_ipv4(host) then
+		host = ipv4_tobin(host)
+		if not host then return nil end
+		return host, port, 'ip'
+	else
+		return host, port, 'hostname'
+	end
+end
+
+--TODO: support multiple IPs.
+function try_sockaddr(s, resolve)
 	if issockaddr(s) then return s end --pass-through
 	if s:starts'unix:' then
 		return sockaddr_from_unix_path(s:sub(6))
 	else
-		local ip, port = s:match'^(.*):(%d+)$'
-		port = port and tonumber(port)
-		if not (ip and port) then return nil end
-		if s:has'.' then
-			return sockaddr_from_ip4(ip, port)
-		elseif s:has':' then
-			return sockaddr_from_ip6(ip, port)
+		local addr, port, addr_type = split_host_port(s)
+		if not addr then
+			return nil
+		elseif addr_type == 'ip6' then
+			return sockaddr_from_ipv6(addr, port)
+		elseif addr_type == 'ip' then
+			return sockaddr_from_ipv4(addr, port)
+		elseif addr_type == 'hostname' then --hostname
+			if resolve == false then
+				return nil, 'hostname'
+			end
+			require'resolver'
+			local addr, err = try_resolve(addr)
+			if not addr then
+				return nil, err
+			elseif is_ipv4(addr) then
+				return sockaddr_from_ipv4(ipv4_tobin(addr), port)
+			elseif addr:has':' then
+				return sockaddr_from_ipv6(ipv6_tobin(addr), port)
+			end
+		else
+			return nil
 		end
 	end
 end
-function sockaddr(s)
-	return assertf(try_sockaddr(s), 'invalid address: %s', s)
+function sockaddr(s, ...)
+	local sa, err = try_sockaddr(s, ...)
+	return assertf(sa, '%s: %s', err or 'invalid address', s)
 end
 
 local sa = {}
