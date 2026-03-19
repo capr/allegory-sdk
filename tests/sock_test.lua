@@ -75,7 +75,7 @@ function test.addr_passthrough()
 end
 
 function test.addr_invalid()
-	local sa = try_sockaddr('not-an-address', false)
+	local sa = try_sockaddr('not-an-address', 'noresolve')
 	assert(not sa)
 end
 

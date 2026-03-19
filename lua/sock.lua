@@ -5,10 +5,8 @@
 	TLS support in sock_bearssl.lua.
 
 ADDRESSES
-	[try_]sockaddr('unix[:PATH]') -> sa   make a sockaddr for a unix socket
-	[try_]sockaddr('IP[:PORT]') -> sa     make a sockaddr for a ip/ip6 socket
-	[try_]sockaddr('HOST[:PORT]', [resolve=true]) -> sa   make a sockaddr for a ip/ip6 socket
-	[try_]sockaddrs('HOST[:PORT]', [resolve=true]) -> {sa1,...}   DNS can have multiple IPs
+	[try_]sockaddr(addr, [timeout]) -> sa  make a sockaddr from a string (see addr format)
+	[try_]sockaddrs(addr, [timeout]) -> {sa1,...}  resolves to multiple IPs
 	sa:family() -> 'ip|ip6|unix'           socket family
 	sa:port() -> port|nil                  port (for ip/ip6 family)
 	sa:tostring() -> ip|ip6|path           string representation
@@ -396,7 +394,7 @@ local function sockaddr_from_ipv6(s, port) --s is in binary!
 	return sa
 end
 
-local function split_host_port(s) -- returns: host, [port], 'ip|ip6|hostname'
+local function parse_addr(s) -- returns: host, [port], 'ip|ip6|hostname'
 	local ip6, port, host
 	if s:starts'[' then --[ip6]:port or [ip6] (RFC 3986)
 		ip6, port = s:match'^%[(.+)%]:(%d+)$'
@@ -426,12 +424,12 @@ local function split_host_port(s) -- returns: host, [port], 'ip|ip6|hostname'
 	end
 end
 
-local function _try_sockaddrs(s, resolve) --returns sockaddr or {sockaddr1, ...}
+local function _try_sockaddrs(s, timeout) --returns sockaddr or {sockaddr1, ...}
 	if issockaddr(s) then return s end --pass-through
 	if s:starts'unix:' then
 		return sockaddr_from_unix_path(s:sub(6))
 	end
-	local addr, port, addr_type = split_host_port(s)
+	local addr, port, addr_type = parse_addr(s)
 	if not addr then
 		return nil
 	elseif addr_type == 'ip6' then
@@ -439,11 +437,12 @@ local function _try_sockaddrs(s, resolve) --returns sockaddr or {sockaddr1, ...}
 	elseif addr_type == 'ip' then
 		return sockaddr_from_ipv4(addr, port)
 	elseif addr_type == 'hostname' then
-		if resolve == false then
+		if timeout == 'noresolve' then
 			return nil, 'hostname'
 		end
 		require'resolver'
-		local addrs, err = try_resolve(addr)
+		--TODO: make try_resolve() give both 'A' and 'AAAA' records at once.
+		local addrs, err = try_resolve(addr, nil, timeout)
 		if not addrs then return nil, err end
 		for i,addr in ipairs(addrs) do
 			if is_ipv4(addr) then
@@ -739,7 +738,9 @@ end, EINPROGRESS)
 
 function tcp:try_connect(addr)
 	if not self.fd then return nil, 'closed' end
-	local sa = sockaddr(addr)
+	local resolve_timeout = self.send_expires and self.send_expires - clock()
+	local sa, err = try_sockaddr(addr, resolve_timeout)
+	if not sa then return nil, err end
 	local addr_s = sa:tostring()
 	log('', 'sock', 'connect?', '%-4s %s', self, addr_s)
 	if not self.bound_addr and self.family ~= 'unix' then
@@ -863,7 +864,9 @@ end, EWOULDBLOCK)
 function udp:try_sendto(addr, buf, len, flags)
 	if not self.fd then return nil, 'closed' end
 	len = len or #buf
-	local sa = sockaddr(addr)
+	local resolve_timeout = self.send_expires and self.send_expires - clock()
+	local sa, err = try_sockaddr(addr, resolve_timeout)
+	if not sa then return nil, err end
 	local len, err = udp_sendto(self, sa, buf, len, flags)
 	if not len then return nil, err end
 	return len
@@ -1098,7 +1101,8 @@ function socket:try_bind(addr)
 		self.family == 'ip'  and '0.0.0.0:0' or
 		self.family == 'ip6' and '[::]:0'
 		or nil
-	local sa = sockaddr(addr)
+	local sa, err = try_sockaddr(addr)
+	if not sa then return nil, err end
 	local ok, err = check_errno(C.bind(self.fd, sa, sa:size()) == 0)
 	if not ok then return false, err end
 	self.bound_addr = sa:tostring()
@@ -1114,7 +1118,8 @@ int listen(SOCKET s, int backlog);
 ]]
 
 function tcp:try_listen(addr, backlog, onaccept)
-	local sa = sockaddr(addr)
+	local sa, err = try_sockaddr(addr)
+	if not sa then return nil, err end
 	log('', 'sock', 'listen?', '%-4s %s', self, sa:tostring())
 	if not self.bound_addr then
 		local ok, err = self:try_bind(sa)
@@ -1535,10 +1540,15 @@ function try_connect(self, addr, timeout)
 	if not issocket(self) then
 		self, addr, timeout = nil, self, addr
 	end
-	local sa = sockaddr(addr)
+	local sas, err = try_sockaddrs(addr, timeout)
+	if not sas then return nil, err end
+	local sa = sas[1]
+	if #sas > 1 then
+		--TODO: implement Happy Eyeballs algorithm.
+	end
 	self = self or create_tcp(sa:family())
 	self:settimeout(timeout)
-	local ok, err = self:try_connect(addr)
+	local ok, err = self:try_connect(sa)
 	if not ok then
 		self:try_close()
 		return nil, err
@@ -1565,7 +1575,7 @@ function listen(self, addr, backlog, onaccept)
 	else
 		self:setopt('so_reuseaddr', true)
 	end
-	return self:listen(addr, backlog, onaccept)
+	return self:listen(sa, backlog, onaccept)
 end
 
 --coroutine-based scheduler --------------------------------------------------
