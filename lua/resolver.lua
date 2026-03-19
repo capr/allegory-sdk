@@ -55,7 +55,9 @@ r:[try_]reverse_lookup(address,[timeout]) -> hostnames
 
 GLOBAL RESOLVER
 
-	resolve(host, [type], [timeout]) -> ip    (create resolver and) resolve a hostname
+	resolve(host, [type], [timeout]) -> {ip1,...}
+
+	Create a resolver on first call and resolve a hostname.
 
 CONFIG
 
@@ -728,8 +730,7 @@ function try_resolve(host, type, timeout)
 		servers = config'ns',
 		debug   = config'resolver_debug',
 	}
-	local addrs, err = rs:try_resolve(host, type, timeout)
-	return addrs and addrs[1], err
+	return rs:try_resolve(host, type, timeout)
 end
 
 function resolve(...)

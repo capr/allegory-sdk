@@ -5,8 +5,10 @@
 	TLS support in sock_bearssl.lua.
 
 ADDRESSES
-	[try_]sockaddr('unix:PATH', [resolve=true]) -> sa   make a sockaddr for a unix socket
-	[try_]sockaddr('ip:port', [resolve=true]) -> sa     make a sockaddr for a ip/ip6 socket
+	[try_]sockaddr('unix[:PATH]') -> sa   make a sockaddr for a unix socket
+	[try_]sockaddr('IP[:PORT]') -> sa     make a sockaddr for a ip/ip6 socket
+	[try_]sockaddr('HOST[:PORT]', [resolve=true]) -> sa   make a sockaddr for a ip/ip6 socket
+	[try_]sockaddrs('HOST[:PORT]', [resolve=true]) -> {sa1,...}   DNS can have multiple IPs
 	sa:family() -> 'ip|ip6|unix'           socket family
 	sa:port() -> port|nil                  port (for ip/ip6 family)
 	sa:tostring() -> ip|ip6|path           string representation
@@ -82,8 +84,9 @@ MULTI-THREADING (WITH OS THREADS)
 
 ------------------------------------------------------------------------------
 
-The addr arg is either a sockaddr (sa) or a string of form 'ip:port'
-or 'unix:path'.
+The addr arg is either a sockaddr (sa) or a string of form:
+
+	'IP', 'IP6', 'HOST', 'IP:PORT', 'IP6:PORT', 'HOST:PORT', 'unix:PATH'
 
 Some error messages are normalized across platforms, like 'access_denied'
 and 'address_already_in_use' so they can be used in conditionals.
@@ -383,7 +386,6 @@ local function sockaddr_from_ipv4(s, port) --s is in binary!
 end
 
 local function sockaddr_from_ipv6(s, port) --s is in binary!
-	if not s then return nil end
 	local sa = sockaddr_ct()
 	sa.family_num = AF_INET6
 	copy(sa.addr_in6.ip_bytes, s, 16)
@@ -424,36 +426,52 @@ local function split_host_port(s) -- returns: host, [port], 'ip|ip6|hostname'
 	end
 end
 
---TODO: support multiple IPs.
-function try_sockaddr(s, resolve)
+local function _try_sockaddrs(s, resolve) --returns sockaddr or {sockaddr1, ...}
 	if issockaddr(s) then return s end --pass-through
 	if s:starts'unix:' then
 		return sockaddr_from_unix_path(s:sub(6))
-	else
-		local addr, port, addr_type = split_host_port(s)
-		if not addr then
-			return nil
-		elseif addr_type == 'ip6' then
-			return sockaddr_from_ipv6(addr, port)
-		elseif addr_type == 'ip' then
-			return sockaddr_from_ipv4(addr, port)
-		elseif addr_type == 'hostname' then --hostname
-			if resolve == false then
-				return nil, 'hostname'
-			end
-			require'resolver'
-			local addr, err = try_resolve(addr)
-			if not addr then
-				return nil, err
-			elseif is_ipv4(addr) then
-				return sockaddr_from_ipv4(ipv4_tobin(addr), port)
-			elseif addr:has':' then
-				return sockaddr_from_ipv6(ipv6_tobin(addr), port)
-			end
-		else
-			return nil
-		end
 	end
+	local addr, port, addr_type = split_host_port(s)
+	if not addr then
+		return nil
+	elseif addr_type == 'ip6' then
+		return sockaddr_from_ipv6(addr, port)
+	elseif addr_type == 'ip' then
+		return sockaddr_from_ipv4(addr, port)
+	elseif addr_type == 'hostname' then
+		if resolve == false then
+			return nil, 'hostname'
+		end
+		require'resolver'
+		local addrs, err = try_resolve(addr)
+		if not addrs then return nil, err end
+		for i,addr in ipairs(addrs) do
+			if is_ipv4(addr) then
+				addrs[i] = sockaddr_from_ipv4(ipv4_tobin(addr), port)
+			elseif addr:has':' then
+				addrs[i] = sockaddr_from_ipv6(ipv6_tobin(addr), port)
+			else
+				assert(false) --resolver bug
+			end
+		end
+		return addrs
+	else
+		assert(false) --bug
+	end
+end
+function try_sockaddrs(...)
+	local sa, err = _try_sockaddrs(...)
+	if not sa then return nil, err end
+	return istab(sa) and sa or {sa}
+end
+function try_sockaddr(...)
+	local sa, err = _try_sockaddrs(...)
+	if not sa then return nil, err end
+	return istab(sa) and sa[1] or sa
+end
+function sockaddrs(s, ...)
+	local sas, err = try_sockaddrs(s, ...)
+	return assertf(sas, '%s: %s', err or 'invalid address', s)
 end
 function sockaddr(s, ...)
 	local sa, err = try_sockaddr(s, ...)
@@ -1078,7 +1096,7 @@ function socket:try_bind(addr)
 	assert(not self.bound_addr)
 	addr = addr or
 		self.family == 'ip'  and '0.0.0.0:0' or
-		self.family == 'ip6' and ':::0'
+		self.family == 'ip6' and '[::]:0'
 		or nil
 	local sa = sockaddr(addr)
 	local ok, err = check_errno(C.bind(self.fd, sa, sa:size()) == 0)

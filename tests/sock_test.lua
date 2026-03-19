@@ -57,7 +57,7 @@ function test.addr_ipv4()
 end
 
 function test.addr_ipv6()
-	local sa = sockaddr('::1:80')
+	local sa = sockaddr('[::1]:80')
 	assert(sa:family() == 'ip6')
 	assert(sa:port() == 80)
 end
@@ -75,7 +75,7 @@ function test.addr_passthrough()
 end
 
 function test.addr_invalid()
-	local sa = try_sockaddr('not-an-address')
+	local sa = try_sockaddr('not-an-address', false)
 	assert(not sa)
 end
 
@@ -893,10 +893,10 @@ function test.ipv4_and_ipv6_loopback()
 		cs4:close(); s4:close()
 		-- IPv6 server on a separate port (skip gracefully if unavailable)
 		local port6 = nextport()
-		local ok6, s6 = pcall(listen, '::1:'..port6)
+		local ok6, s6 = pcall(listen, '[::1]:'..port6)
 		if ok6 then
 			resume(sthread(function()
-				local c = connect('::1:'..port6); c:send'v6'; c:close()
+				local c = connect('[::1]:'..port6); c:send'v6'; c:close()
 			end, 'c6'))
 			local cs6 = s6:accept()
 			local buf6 = new'char[64]'

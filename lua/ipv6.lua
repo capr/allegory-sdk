@@ -76,4 +76,5 @@ if not ... then
 	assert(ipv6_normalize('1:2:0:0:3:0:0:0', true) == '1:2:0:0:3::') --rightmost
 	assert(ipv6_tostring'ABCDEFGHIJKLMNOP' == '4142:4344:4546:4748:494a:4b4c:4d4e:4f50')
 	assert(ipv6_tobin'4142:4344:4546:4748:494a:4b4c:4d4e:4f50' == 'ABCDEFGHIJKLMNOP')
+	print'ipv6 ok'
 end
