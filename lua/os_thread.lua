@@ -489,9 +489,8 @@ pool.__index = pool
 
 local function pool_worker(q)
 	while true do
-		print('waiting for task', q:length())
 		local _, task = q:shift()
-		print'got task'
+		if not task then break end
 		task()
 	end
 end
@@ -499,14 +498,18 @@ end
 function os_thread_pool(n)
 	local t = {}
 	t.queue = synchronized_queue(1)
+	t.n = n
 	for i = 1, n do
-		t[i] = thread(pool_worker, t.queue)
+		t[i] = os_thread(pool_worker, t.queue)
 	end
 	return setmetatable(t, pool)
 end
 
 function pool:join()
-	for i = #self, 1, -1 do
+	for i = 1, self.n do
+		self.queue:push(false) --signal workers to stop
+	end
+	for i = self.n, 1, -1 do
 		self[i]:join()
 		self[i] = nil
 	end

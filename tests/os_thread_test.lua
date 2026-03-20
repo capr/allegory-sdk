@@ -5,31 +5,53 @@ require'os_thread'
 require'pthread'
 require'luastate'
 
+local N = os.getenv'AUTO' and 10 or 1000
+
 local function test_events()
 	local event = os_thread_event()
-	local t1 = os_thread(function(event)
-			local time = require'time'
-			while true do
-				print'set'
-				event:set()
-				sleep(0.1)
-				print'clear'
-				event:clear()
-				sleep(1)
-			end
-		end, event)
 
-	local t2 = os_thread(function(event)
-			local time = require'time'
-			while true do
-				event:wait()
-				print'!'
-				sleep(0.1)
-			end
-		end, event)
+	--event starts cleared
+	assert(not event:isset())
+
+	--wait on cleared event times out
+	assert(not event:wait(clock() + 0.01))
+
+	--set/isset/clear work
+	event:set()
+	assert(event:isset())
+	event:clear()
+	assert(not event:isset())
+
+	--wait on set event returns immediately
+	event:set()
+	assert(event:wait())
+
+	--test cross-thread signaling: producer sets event, consumer waits for it
+	event:clear()
+	local result = synchronized_queue(8)
+
+	local t1 = os_thread(function(event, result)
+		for i = 1, 5 do
+			event:wait()
+			result:push(i)
+			event:clear()
+		end
+	end, event, result)
+
+	for i = 1, 5 do
+		sleep(0.01)
+		event:set()
+		sleep(0.01) --give consumer time to wake and clear
+	end
 
 	t1:join()
-	t2:join()
+	assert(result:length() == 5, format('expected 5 results, got %d', result:length()))
+	for i = 1, 5 do
+		local _, v = result:shift()
+		assert(v == i, format('expected %d, got %s', i, tostring(v)))
+	end
+	result:free()
+	print 'os_thread_event() ok'
 end
 
 local function printtime(s, n, dt)
@@ -49,7 +71,7 @@ local function test_pthread_creation()
 	end)
 	local worker_cb_ptr = ptr_deserialize(state:call())
 	local t0 = clock()
-	local n = 1000
+	local n = N
 	for i=1,n do
 		local thread = pthread(worker_cb_ptr)
 		thread:join()
@@ -61,12 +83,14 @@ end
 
 local function test_luastate_creation()
 	local t0 = clock()
-	local n = 100
+	local n = N / 10
 	for i=1,n do
 		local state = luastate()
-		state:openlibs()
-		state:push(function()
-		end)
+		state:openlibs() --this takes 10x than the luastate creation itself.
+		require'glue'
+		require'fs'
+		require'sock'
+		state:push(function() end)
 		state:call()
 		state:close()
 	end
@@ -76,7 +100,7 @@ end
 
 local function test_thread_creation()
 	local t0 = clock()
-	local n = 10
+	local n = max(1, N / 100)
 	for i=1,n do
 		os_thread(function() end):join()
 	end
@@ -121,31 +145,31 @@ local function test_queue(qsize, pn, pm, cn, cm, msg)
 	assert(not q:peek(-1))
 	q:free()
 
-	print(string.format('queue test: %d*%d -> %d*%d, queue size: %d, time: %dms',
+	print(string.format('queue test: %d*%d -> %d*%d, queue size: %4d, time: %dms',
 		pn, pm, cn, cm, qsize, (t1 - t0) * 1000))
 end
 
 local function test_pool()
-	--local q = synchronized_queue(1)
-	--q:push('hi')
-	--print(q:push('hello', time() + 1))
-	local pool = os_thread_pool(1)
-	for i=1,100 do
-		--print('pushing', i)
-		print('push result', pool:push(function() print'hello' end, time() + 1))
+	local pool = os_thread_pool(4)
+	local n = 100
+	for i = 1, n do
+		assert(pool:push(function() end))
 	end
-	print'joining'
 	pool:join()
+	assert(pool.queue == nil) --join freed the queue
+	print 'os_thread_pool() ok'
 end
 
---test_events()
-test_pthread_creation() --TODO: this crashes on mingw64 !!!
+test_events()
+test_pthread_creation()
 test_luastate_creation()
 test_thread_creation()
-test_queue(1000, 10,  1000, 10,  1000)
-test_queue(1000,  1, 10000,  1, 10000)
-test_queue(1000,  1, 10000, 10,  1000)
-test_queue(1000, 10,  1000,  1, 10000)
-test_queue(1,     1, 10000, 10,  1000)
-test_queue(1,    10,  1000,  1, 10000)
---test_pool()
+test_queue(N, 10,    N, 10,    N)
+test_queue(N,  1, 10*N,  1, 10*N)
+test_queue(N,  1, 10*N, 10,    N)
+test_queue(N, 10,    N,  1, 10*N)
+test_queue(1,  1, 10*N, 10,    N)
+test_queue(1, 10,    N,  1, 10*N)
+test_pool()
+
+print'os_thread ok'
