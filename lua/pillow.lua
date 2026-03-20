@@ -107,3 +107,61 @@ ffi.metatype('pillow_image_t', {__index = {
 	bitmap = to_bitmap,
 	resize = resize,
 }})
+
+if not ... then --self-test
+
+	--create a 100x100 rgbx8 bitmap with known pixel data
+	local w, h = 100, 100
+	local stride = w * 4
+	local data = ffi.new('char[?]', stride * h)
+	for y = 0, h-1 do
+		for x = 0, w-1 do
+			local p = data + y * stride + x * 4
+			p[0] = x       --R
+			p[1] = y       --G
+			p[2] = x + y   --B
+			p[3] = 0       --X
+		end
+	end
+	local bmp = {format = 'rgbx8', w = w, h = h, stride = stride, data = data}
+
+	--create image and check properties
+	local im = pillow_image(bmp)
+	assert(im:width() == 100)
+	assert(im:height() == 100)
+	assert(im:mode() == 'RGB')
+
+	--resize with each filter
+	for _, filter in ipairs{'lanczos', 'bilinear', 'bicubic', 'box', 'hamming'} do
+		local im2 = im:resize(50, 50, filter)
+		assert(im2:width() == 50)
+		assert(im2:height() == 50)
+		im2:free()
+	end
+
+	--resize with default filter
+	local im2 = im:resize(200, 150)
+	assert(im2:width() == 200)
+	assert(im2:height() == 150)
+	im2:free()
+
+	--crop and resize
+	local im2 = im:resize(30, 30, 'bilinear', 10, 10, 50, 50)
+	assert(im2:width() == 30)
+	assert(im2:height() == 30)
+	im2:free()
+
+	--bitmap round-trip
+	local im2 = im:resize(60, 40)
+	local bmp2 = im2:bitmap()
+	assert(bmp2.w == 60)
+	assert(bmp2.h == 40)
+	assert(bmp2.format == 'rgbx8')
+	assert(bmp2.stride == 60 * 4)
+	bmp2.free()
+
+	im:free()
+
+	print'pillow ok'
+
+end
