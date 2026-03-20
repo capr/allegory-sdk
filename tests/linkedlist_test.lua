@@ -34,3 +34,4 @@ assert(list:remove_last() == nil)
 list:clear(); list:insert_first({'a'}); test{'a'}
 list:clear(); list:insert_first({'a'}); test{'a'}
 
+print'linkedlist ok'

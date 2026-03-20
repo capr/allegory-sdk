@@ -152,3 +152,38 @@ function json_encode(v, indent)
 		return s
 	end
 end
+
+
+if not ... then --self-test
+
+	--encode/decode roundtrip
+	local t = {a = 1, b = 'hello', c = true}
+	local s = json_encode(t)
+	local t2 = json_decode(s)
+	assert(t2.a == 1)
+	assert(t2.b == 'hello')
+	assert(t2.c == true)
+
+	--arrays
+	assert(json_encode({}) == '[]')
+	assert(json_encode({1, 2, 3}) == '[1,2,3]')
+
+	--null handling
+	assert(json_decode'null' == nil)
+	assert(json_decode('[1,null,3]')[2] == nil)
+	assert(json_decode('null', false) == false) --custom null_val
+
+	--json_pack/json_unpack with nils
+	local a, b, c = json_unpack(json_pack(1, nil, 3))
+	assert(a == 1 and b == nil and c == 3)
+
+	--try_json_decode
+	assert(try_json_decode'not json' == nil)
+	assert(try_json_decode'42' == 42)
+
+	--pretty print
+	assert(json_encode({1}, '\t'):find('\n'))
+
+	print'json ok'
+
+end

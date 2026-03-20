@@ -107,4 +107,6 @@ test_example1()
 test_example2()
 test_remove()
 test_replace()
+if os.getenv'AUTO' then return end
 benchmark()
+print'heap ok'

@@ -247,5 +247,6 @@ t = {}
 obj:off'testing'
 obj:fire('testing', 3, 5)
 assert(#t == 0)
+print'events ok'
 
 end

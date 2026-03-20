@@ -34,3 +34,4 @@ local req = multipart_mail{
 local s1 = load(exedir()..'/../tests/multipart_test/multipart_test.txt')
 local s2 = pp(req.headers, '\t') .. '\n' .. req.message:gsub('\r', '')
 assert(s1 == s2)
+print'multipart ok'

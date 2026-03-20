@@ -115,9 +115,160 @@ have both. AES encryption (`aes` option) means AES-256, the only option.
 if not ... then require'zip_test'; return end
 
 require'glue'
-require'minizip2_h'
-require'minizip2_rw_h'
 local C = ffi.load'minizip2'
+
+--mz.h & mz_zip.h 4.0.5 Zip manipulation
+--NOTE: Upgraded from 2.9.1 to 3.0.4 based on changelog only (no changes)!
+cdef[[
+enum {
+	MZ_OK                           =  0,
+	MZ_STREAM_ERROR                 = -1,
+	MZ_DATA_ERROR                   = -3,
+	MZ_MEM_ERROR                    = -4,
+	MZ_BUF_ERROR                    = -5,
+	MZ_VERSION_ERROR                = -6,
+
+	MZ_END_OF_LIST                  = -100,
+	MZ_END_OF_STREAM                = -101,
+
+	MZ_PARAM_ERROR                  = -102,
+	MZ_FORMAT_ERROR                 = -103,
+	MZ_INTERNAL_ERROR               = -104,
+	MZ_CRC_ERROR                    = -105,
+	MZ_CRYPT_ERROR                  = -106,
+	MZ_EXIST_ERROR                  = -107,
+	MZ_PASSWORD_ERROR               = -108,
+	MZ_SUPPORT_ERROR                = -109,
+	MZ_HASH_ERROR                   = -110,
+	MZ_OPEN_ERROR                   = -111,
+	MZ_CLOSE_ERROR                  = -112,
+	MZ_SEEK_ERROR                   = -113,
+	MZ_TELL_ERROR                   = -114,
+	MZ_READ_ERROR                   = -115,
+	MZ_WRITE_ERROR                  = -116,
+	MZ_SIGN_ERROR                   = -117,
+	MZ_SYMLINK_ERROR                = -118,
+
+	MZ_OPEN_MODE_READ               = 0x01,
+	MZ_OPEN_MODE_WRITE              = 0x02,
+	MZ_OPEN_MODE_READWRITE          = MZ_OPEN_MODE_READ | MZ_OPEN_MODE_WRITE,
+	MZ_OPEN_MODE_APPEND             = 0x04,
+	MZ_OPEN_MODE_CREATE             = 0x08,
+	MZ_OPEN_MODE_EXISTING           = 0x10,
+
+	MZ_SEEK_SET                     = 0,
+	MZ_SEEK_CUR                     = 1,
+	MZ_SEEK_END                     = 2,
+
+	MZ_COMPRESS_METHOD_STORE        = 0,
+	MZ_COMPRESS_METHOD_DEFLATE      = 8,
+	MZ_COMPRESS_METHOD_BZIP2        = 12,
+	MZ_COMPRESS_METHOD_LZMA         = 14,
+	MZ_COMPRESS_METHOD_AES          = 99,
+
+	MZ_COMPRESS_LEVEL_DEFAULT       = -1,
+	MZ_COMPRESS_LEVEL_FAST          = 2,
+	MZ_COMPRESS_LEVEL_NORMAL        = 6,
+	MZ_COMPRESS_LEVEL_BEST          = 9,
+
+	MZ_ZIP_FLAG_ENCRYPTED           = 1 << 0,
+	MZ_ZIP_FLAG_LZMA_EOS_MARKER     = 1 << 1,
+	MZ_ZIP_FLAG_DEFLATE_MAX         = 1 << 1,
+	MZ_ZIP_FLAG_DEFLATE_NORMAL      = 0,
+	MZ_ZIP_FLAG_DEFLATE_FAST        = 1 << 2,
+	MZ_ZIP_FLAG_DEFLATE_SUPER_FAST  = MZ_ZIP_FLAG_DEFLATE_FAST | MZ_ZIP_FLAG_DEFLATE_MAX,
+	MZ_ZIP_FLAG_DATA_DESCRIPTOR     = 1 << 3,
+	MZ_ZIP_FLAG_UTF8                = 1 << 11,
+	MZ_ZIP_FLAG_MASK_LOCAL_INFO     = 1 << 13,
+
+	MZ_ZIP_EXTENSION_ZIP64          = 0x0001,
+	MZ_ZIP_EXTENSION_NTFS           = 0x000a,
+	MZ_ZIP_EXTENSION_AES            = 0x9901,
+	MZ_ZIP_EXTENSION_UNIX1          = 0x000d,
+	MZ_ZIP_EXTENSION_SIGN           = 0x10c5,
+	MZ_ZIP_EXTENSION_HASH           = 0x1a51,
+	MZ_ZIP_EXTENSION_CDCD           = 0xcdcd,
+
+	MZ_ZIP64_AUTO                   = 0,
+	MZ_ZIP64_FORCE                  = 1,
+	MZ_ZIP64_DISABLE                = 2,
+
+	MZ_HOST_SYSTEM_MSDOS            = 0,
+	MZ_HOST_SYSTEM_UNIX             = 3,
+	MZ_HOST_SYSTEM_WINDOWS_NTFS     = 10,
+	MZ_HOST_SYSTEM_RISCOS           = 13,
+	MZ_HOST_SYSTEM_OSX_DARWIN       = 19,
+
+	MZ_PKCRYPT_HEADER_SIZE          = 12,
+
+	MZ_AES_VERSION                  = 1,
+	MZ_AES_MODE_ECB                 = 0,
+	MZ_AES_MODE_CBC                 = 1,
+	MZ_AES_MODE_GCM                 = 2,
+	MZ_AES_STRENGTH_128             = 1,
+	MZ_AES_STRENGTH_192             = 2,
+	MZ_AES_STRENGTH_256             = 3,
+	MZ_AES_KEY_LENGTH_MAX           = 32,
+	MZ_AES_BLOCK_SIZE               = 16,
+	MZ_AES_FOOTER_SIZE              = 10,
+
+	MZ_HASH_MD5                     = 10,
+	MZ_HASH_MD5_SIZE                = 16,
+	MZ_HASH_SHA1                    = 20,
+	MZ_HASH_SHA1_SIZE               = 20,
+	MZ_HASH_SHA224                  = 22,
+	MZ_HASH_SHA224_SIZE             = 28,
+	MZ_HASH_SHA256                  = 23,
+	MZ_HASH_SHA256_SIZE             = 32,
+	MZ_HASH_SHA384                  = 24,
+	MZ_HASH_SHA384_SIZE             = 48,
+	MZ_HASH_SHA512                  = 25,
+	MZ_HASH_SHA512_SIZE             = 64,
+	MZ_HASH_MAX_SIZE                = 256,
+
+	MZ_ENCODING_CODEPAGE_437        = 437,
+	MZ_ENCODING_CODEPAGE_932        = 932,
+	MZ_ENCODING_CODEPAGE_936        = 936,
+	MZ_ENCODING_CODEPAGE_950        = 950,
+	MZ_ENCODING_UTF8                = 65001,
+};
+
+typedef size_t time_t;
+
+/***************************************************************************/
+
+typedef struct mz_zip_file_s
+{
+	uint16_t version_madeby;            /* version made by */
+	uint16_t version_needed;            /* version needed to extract */
+	uint16_t flag;                      /* general purpose bit flag */
+	uint16_t compression_method_num;    /* compression method */
+	time_t   mtime_t;                   /* last modified date in unix time */
+	time_t   atime_t;                   /* last accessed date in unix time */
+	time_t   btime_t;                   /* creation date in unix time */
+	uint32_t crc;                       /* crc-32 */
+	int64_t  compressed_size_i64;       /* compressed size */
+	int64_t  uncompressed_size_i64;     /* uncompressed size */
+	uint16_t filename_size;             /* filename length */
+	uint16_t extrafield_size;           /* extra field length */
+	uint16_t comment_size;              /* file comment length */
+	uint32_t disk_number;               /* disk number start */
+	int64_t  disk_offset_i64;           /* relative offset of local header */
+	uint16_t internal_fa;               /* internal file attributes */
+	uint32_t external_fa;               /* external file attributes */
+
+	const char     *filename_ptr;       /* filename utf8 null-terminated string */
+	const uint8_t  *extrafield_ptr;     /* extrafield data */
+	const char     *comment_ptr;        /* comment utf8 null-terminated string */
+	const char     *linkname_ptr;       /* sym-link filename utf8 null-terminated string */
+
+	uint16_t zip64_u16;                 /* zip64 extension mode */
+	uint16_t aes_version;               /* winzip aes extension if not 0 */
+	uint8_t  aes_strength;              /* winzip aes encryption strength */
+
+} mz_zip_file, mz_zip_entry;
+
+]]
 
 --tools ----------------------------------------------------------------------
 
@@ -185,9 +336,99 @@ metatype('mz_zip_file', gettersandsetters(entry_get, entry_set))
 
 --reader & writer ------------------------------------------------------------
 
+--mz_zip_rw.h 4.0.5 Zip reader/writer
+--NOTE: Upgraded from 2.9.1 to 3.0.4 based on changelog only!
+--They say only `mz_zip_writer_open` changed.
+--mz_strm.h 4.0.5 Stream interface
+--NOTE: Upgraded from 2.9.1 to 3.0.4 based on changelog only (no changes)!
 cdef[[
 typedef struct minizip_reader_t;
 typedef struct minizip_writer_t;
+
+typedef int32_t (*mz_stream_read_cb) (void *stream, void *buf, int32_t size);
+
+/***************************************************************************/
+
+int32_t mz_zip_reader_open_file(void *handle, const char *path);
+int32_t mz_zip_reader_open_file_in_memory(void *handle, const char *path);
+int32_t mz_zip_reader_open_buffer(void *handle, uint8_t *buf, int32_t len, uint8_t copy);
+int32_t mz_zip_reader_close(void *handle);
+
+/***************************************************************************/
+
+int32_t mz_zip_reader_goto_first_entry(void *handle);
+int32_t mz_zip_reader_goto_next_entry(void *handle);
+int32_t mz_zip_reader_locate_entry(void *handle, const char *filename, uint8_t ignore_case);
+int32_t mz_zip_reader_entry_open(void *handle);
+int32_t mz_zip_reader_entry_close(void *handle);
+int32_t mz_zip_reader_entry_read(void *handle, void *buf, int32_t len);
+int32_t mz_zip_reader_entry_get_hash(void *handle, uint16_t algorithm, uint8_t *digest, int32_t digest_size);
+int32_t mz_zip_reader_entry_get_info(void *handle, mz_zip_file **file_info);
+int32_t mz_zip_reader_entry_is_dir(void *handle);
+int32_t mz_zip_reader_entry_save_file(void *handle, const char *path);
+int32_t mz_zip_reader_entry_save_buffer(void *handle, void *buf, int32_t len);
+int32_t mz_zip_reader_entry_save_buffer_length(void *handle);
+
+/***************************************************************************/
+
+int32_t mz_zip_reader_save_all(void *handle, const char *destination_dir);
+
+/***************************************************************************/
+
+void    mz_zip_reader_set_pattern(void *handle, const char *pattern, uint8_t ignore_case);
+void    mz_zip_reader_set_password(void *handle, const char *password);
+void    mz_zip_reader_set_raw(void *handle, uint8_t raw);
+int32_t mz_zip_reader_get_raw(void *handle, uint8_t *raw);
+int32_t mz_zip_reader_get_zip_cd(void *handle, uint8_t *zip_cd);
+int32_t mz_zip_reader_get_comment(void *handle, const char **comment);
+void    mz_zip_reader_set_encoding(void *handle, int32_t encoding);
+void    mz_zip_reader_set_sign_required(void *handle, uint8_t required);
+int32_t mz_zip_reader_entry_sign_verify(void *handle);
+int32_t mz_zip_reader_get_zip_handle(void *handle, void **zip_handle);
+void*   mz_zip_reader_create(void);
+void    mz_zip_reader_delete(void **handle);
+
+/***************************************************************************/
+
+int32_t mz_zip_writer_open_file(void *handle, const char *path, int64_t disk_size, uint8_t append);
+int32_t mz_zip_writer_close(void *handle);
+
+/***************************************************************************/
+
+int32_t mz_zip_writer_zip_cd(void *handle);
+
+/***************************************************************************/
+
+int32_t mz_zip_writer_entry_close(void *handle);
+int32_t mz_zip_writer_entry_write(void *handle, const void *buf, int32_t len);
+
+/***************************************************************************/
+
+int32_t mz_zip_writer_add_info(void *handle, void *stream, mz_stream_read_cb read_cb, mz_zip_file *file_info);
+int32_t mz_zip_writer_add_buffer(void *handle, void *buf, int32_t len, mz_zip_file *file_info);
+int32_t mz_zip_writer_add_file(void *handle, const char *path, const char *filename_in_zip);
+int32_t mz_zip_writer_add_path(void *handle, const char *path, const char *root_path, uint8_t include_path, uint8_t recursive);
+
+int32_t mz_zip_writer_copy_from_reader(void *handle, void *reader);
+
+/***************************************************************************/
+
+void    mz_zip_writer_set_password(void *handle, const char *password);
+void    mz_zip_writer_set_comment(void *handle, const char *comment);
+void    mz_zip_writer_set_raw(void *handle, uint8_t raw);
+int32_t mz_zip_writer_get_raw(void *handle, uint8_t *raw);
+void    mz_zip_writer_set_aes(void *handle, uint8_t aes);
+void    mz_zip_writer_set_compress_method(void *handle, uint16_t compress_method);
+void    mz_zip_writer_set_compress_level(void *handle, int16_t compress_level);
+void    mz_zip_writer_set_follow_links(void *handle, uint8_t follow_links);
+void    mz_zip_writer_set_store_links(void *handle, uint8_t store_links);
+void    mz_zip_writer_set_zip_cd(void *handle, uint8_t zip_cd);
+int32_t mz_zip_writer_set_certificate(void *handle, const char *cert_path, const char *cert_pwd);
+int32_t mz_zip_writer_get_zip_handle(void *handle, void **zip_handle);
+void*   mz_zip_writer_create(void);
+void    mz_zip_writer_delete(void **handle);
+
+/***************************************************************************/
 ]]
 local reader_ptr_ct = ctype'struct minizip_reader_t*'
 local writer_ptr_ct = ctype'struct minizip_writer_t*'

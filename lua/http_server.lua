@@ -244,7 +244,7 @@ function http_server(...)
 			assert(not headers_sent)
 			headers_sent = true
 
-			req.response_headers['date'] = http_date_format(time(), 'rfc1123')
+			req.response_headers['date'] = http_date_format(time())
 			if req.close then
 				req.response_headers['connection'] = 'close'
 			end

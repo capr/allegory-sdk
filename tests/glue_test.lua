@@ -1296,4 +1296,4 @@ end
 
 require'errors_test'
 
-print'glue tests passed'
+print'glue ok'

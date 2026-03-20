@@ -323,9 +323,30 @@ ffi.metatype('LZ4_streamHC_t', enchc)
 ffi.metatype('LZ4_streamDecode_t', dec)
 
 
-if not ... then
-	local s = lz4_compress_stream()
-	--TODO
-	--local n = s:compress(src, srclen, dst, dstlen)
-	s:free()
+if not ... then --self-test
+
+	local src = ('hello world! '):rep(100)
+	local srclen = #src
+
+	--buffer API: compress and decompress roundtrip
+	local bound = lz4_compress_bound(srclen)
+	local cbuf = ffi.new('char[?]', bound)
+	local clen = lz4_compress(src, srclen, cbuf, bound)
+	assert(clen and clen > 0 and clen < srclen)
+
+	local dbuf = ffi.new('char[?]', srclen)
+	local dlen = lz4_decompress(cbuf, clen, dbuf, srclen)
+	assert(dlen == srclen)
+	assert(ffi.string(dbuf, dlen) == src)
+
+	--HC compression
+	local clen_hc = lz4_compress(src, srclen, cbuf, bound, nil, 9)
+	assert(clen_hc and clen_hc > 0 and clen_hc <= clen)
+
+	local dlen_hc = lz4_decompress(cbuf, clen_hc, dbuf, srclen)
+	assert(dlen_hc == srclen)
+	assert(ffi.string(dbuf, dlen_hc) == src)
+
+	print'lz4 ok'
+
 end

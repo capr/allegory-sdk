@@ -195,10 +195,8 @@ end
 
 if not ... then
 
-	if os.getenv'AUTO' then return end
-
-	logging.verbose = true
-	logging.debug = true
+	--logging.verbose = true
+	--logging.debug = true
 
 	local server = mess_listen('127.0.0.1', '5555', function(self, chan)
 		chan:recvall(function(self, msg)
@@ -214,12 +212,15 @@ if not ... then
 		for i = 1, 20 do
 			chan:send{a = i, b = 2*i, s = tostring(i)}
 			local t = chan:recv()
-			pr(t)
+			assert(t.a == i, 'a mismatch')
+			assert(t.b == 2*i, 'b mismatch')
+			assert(t.s == tostring(i), 's mismatch')
 		end
 		chan:close()
 
 	end, 'client'))
 
 	start()
+	print'mess ok'
 
 end

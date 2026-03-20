@@ -64,6 +64,7 @@ local function test_specs()
 	end
 	print('SPEC TESTS FAILED: '..failed..' / '..total)
 	print()
+	assert(failed == 0)
 end
 
 local function test_dump()
@@ -112,3 +113,5 @@ test_basic()
 test_specs()
 test_dump()
 test_errors()
+
+print'mustache ok'

@@ -134,4 +134,6 @@ if not ... then
 	cache:put(k1, v2)
 	cache:put(k1, v3)
 
+	print'lrucache ok'
+
 end

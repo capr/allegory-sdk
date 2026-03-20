@@ -26,4 +26,4 @@ for i,t in ipairs(tests.cases) do
 	b2:reset()
 	b3:reset()
 end
-print'ok'
+print'blake3 ok'
