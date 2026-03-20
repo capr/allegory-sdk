@@ -412,7 +412,7 @@ function test.sock_haveline_eof()
 		local cs = server:accept()
 		local b = pbuffer{f = cs, lineterm = '\r\n'}
 		local s, err = b:haveline()
-		assert(s == nil and err == 'eof')
+		assert(s == false and err == 'eof')
 		b:free(); cs:close(); server:close()
 	end)
 end
