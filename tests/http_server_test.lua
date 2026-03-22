@@ -41,7 +41,7 @@ local server = http_server{
 			raise('http_response', {status = 404})
 		end
 		local out = req:send_headers()
-		req:send_chunk(('hello '):rep(1000)):finish()
+		req:send_body_chunk(('hello '):rep(1000)):finish()
 		--raise{status = 404, content = 'Dude, no page here'}
 	end,
 	--respond = webb_respond,
