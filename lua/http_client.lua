@@ -6,18 +6,17 @@
 	Features https, gzip compression, persistent connections, pipelining,
 	multiple client IPs, resource limits, auto-redirects, auto-retries,
 	cookie jars, multi-level debugging, caching, cdata-buffer-based I/O.
-	In short, your dream library for web scraping.
 
 CLIENT
-	http_client(opt) -> client        create a client object
-		max_conn                       limit the number of total connections
-		max_conn_per_target            limit the number of connections per target
-		max_pipelined_requests         limit the number of pipelined requests
-		client_ips <- {ip1,...}        a list of client IPs to assign to requests
-		max_retries                    number of retries before giving up
-		max_redirects                  number of redirects before giving up
-		debug                          true to enable client-level debugging
-		tls_options                    options to pass to sock_bearssl
+	http_client(opt1,...) -> client   create a client object
+	  max_conn                        limit the number of total connections
+	  max_conn_per_target             limit the number of connections per target
+	  max_pipelined_requests          limit the number of pipelined requests
+	  client_ips <- {ip1,...}         a list of client IPs to assign to requests
+	  max_retries                     number of retries before giving up
+	  max_redirects                   number of redirects before giving up
+	  tls_options                     options to pass to sock_bearssl
+	  debug <- flags                  debug flags: 'protocol tracebacks stream sched'
 	client:request(opt) -> req        make a HTTP request
 		TODO: document all options
 		client_ip                      client ip to bind to (optional)
@@ -26,14 +25,16 @@ CLIENT
 		response_timeout               timeout for the response part (optional)
 	req:upload_chunk(s | buf,sz)
 	req:
-	client:fetch(opt | url) -> s, ht  make a simple request and get the response body and headers
+	client:fetch(opt | url) -> s, ht  make a request and get response body and headers
 	client:close_all()                close all connections
+CONFIG
+	http_debug                        nil (set to true to enable)
 FETCH
 	fetch(opt | url, [upload], [receive_content]) -> content, res, req
 
 NOTES
 
-	A target is a combination of (vhost, port, client_ip) on which
+	A target is a combination of (vhost, client_ip) on which
 	one or more HTTP connections can be created subject to per-target limits.
 
 	client:request() must be called from a scheduled socket thread.
@@ -84,6 +85,12 @@ local client = {
 	max_cookies_per_host = 1000,
 }
 
+function client:dp(target, event, fmt, ...)
+	if logging.filter[''] then return end
+	local s = fmt and _(fmt, logargs(...)) or ''
+	return log('', 'htcl', event, '%-4s %s %s', target or '', s)
+end
+
 --http connection object -----------------------------------------------------
 
 local http = {}
@@ -97,8 +104,7 @@ function http:send_request(opt, cookies)
 		headers = {},
 	}, opt)
 
-	assert(req.host, 'host missing') --required, even for HTTP/1.0.
-
+	assert(req.host, 'host missing') --required by http
 	local default_port = self.https and 443 or 80
 	local port = self.port ~= default_port and self.port or nil
 	req.headers['host'] = req.host..(port and ':'..port or '')
@@ -113,7 +119,8 @@ function http:send_request(opt, cookies)
 
 	req.headers['cookie'] = cookies
 
-	assert(req.headers['content-length'])
+	local upload_len = req.headers['content-length'] or 0
+	if upload_len > 0 then
 
 	local write = req.receive_content
 	if isfunc(write) then
@@ -147,6 +154,7 @@ function http:send_request(opt, cookies)
 
 	--self:send_body(req.content, req.content_size, req.headers['transfer-encoding'])
 end
+http.try_send_request = protect_io(http.send_request)
 
 function http:should_have_response_body(method, status)
 	if method == 'HEAD' then return false end
@@ -217,14 +225,12 @@ function http:read_response(req)
 end
 
 local function is_ip(s)
-	return s:find'^%d+%.%d+%.%d+%.%d+'
+	return is_ipv4(s) or s:has':' and true or false
 end
+
 function http:cookie_domain_matches_request_host(domain, host)
-	return not domain or domain == host or (
-		host:sub(-#domain) == domain
-		and host:sub(-#domain-1, -#domain-1) == '.'
-		and not is_ip(host)
-	)
+	return not domain or domain == host
+		or (host:ends('.'..domain) and not is_ip(host))
 end
 
 function http:cookie_default_path(uri)
@@ -250,42 +256,32 @@ end
 
 --targets --------------------------------------------------------------------
 
---A target is a combination of (vhost, port, client_ip) on which one or more
+--A target is a combination of (vhost, client_ip) on which one or more
 --HTTP connections can be created subject to per-target limits.
 
-function client:assign_client_ip(host, port)
-	if #self.client_ips == 0 then
-		return nil
-	end
-	local ci = self.last_client_ip_index(host, port)
-	local i = (ci.index or 0)
+function client:assign_client_ip(host)
+	if #self.client_ips == 0 then return end
+	local i = (self.last_client_ip_index[host] or 0) + 1
 	if i > #self.client_ips then i = 1 end
-	ci.index = i
+	self.last_client_ip_index[host] = i
 	return self.client_ips[i]
 end
 
 function client:target(t) --t is request options
 	local host = assert(t.host, 'host missing'):lower()
 	local https = t.https and true or false
-	local port = t.port and assert(tonumber(t.port), 'invalid port')
-		or (https and 443 or 80)
-	local client_ip = t.client_ip or self:assign_client_ip(host, port)
-	local target = self.targets(host, port, client_ip)
-	if not target.type then
+	local client_ip = t.client_ip or self:assign_client_ip(host)
+	local target_key = host .. (client_ip and ' '..client_ip or '')
+	local target = attr(self.targets, target_key)
+	if not target.type then --just created
 		target.type = 'http_target'
 		target.debug_prefix = '@'
 		target.host = host
 		target.client_ip = client_ip
+		target.ready = {} --ready conn FIFO
+		target.conn_count = 0
+		--NOTE: these are set once so we assume they are static per target.
 		target.connect_timeout = t.connect_timeout
-		target.http_args = {
-			target = target,
-			host = host,
-			port = port,
-			client_ip = client_ip,
-			https = https,
-			max_line_size = t.max_line_size,
-			debug = t.debug or self.debug,
-		}
 		target.max_pipelined_requests = t.max_pipelined_requests
 		target.max_conn = t.max_conn_per_target
 		target.max_redirects = t.max_redirects
@@ -293,22 +289,17 @@ function client:target(t) --t is request options
 	return target
 end
 
---connections ----------------------------------------------------------------
+--connection management ------------------------------------------------------
 
-function client:inc_conn_count(target, n)
-	n = n or 1
-	self.conn_count = (self.conn_count or 0) + n
-	target.conn_count = (target.conn_count or 0) + n
+function client:adjust_conn_count(target, n)
+	self.conn_count = self.conn_count + n
+	target.conn_count = target.conn_count + n
 	self:dp(target, (n > 0 and '+' or '-')..'CO', '=%d, total=%d',
 		target.conn_count, self.conn_count)
 end
 
-function client:dec_conn_count(target)
-	self:inc_conn_count(target, -1)
-end
-
 function client:push_ready_conn(target, http)
-	push(attr(target, 'ready'), http)
+	push(target.ready, http)
 	self:dp(target, '+READY', '%s', http)
 end
 
@@ -347,45 +338,34 @@ function client:pull_matching_wait_conn_thread(target)
 	end
 end
 
-function client:_can_connect_now(target)
-	if (self.conn_count or 0) >= self.max_conn then return false end
-	if target then
-		local target_conn_count = target.conn_count or 0
-		local target_max_conn = target.max_conn or self.max_conn_per_target
-		if target_conn_count >= target_max_conn then return false end
-	end
-	return true
-end
 function client:can_connect_now(target)
-	local can = self:_can_connect_now(target)
+	local can = self.conn_count < self.max_conn
+	if can and target then
+		can = target.conn_count < (target.max_conn or self.max_conn_per_target)
+	end
 	self:dp(target, '?CAN_CO', '%s', can)
 	return can
 end
 
 function client:connect_now(target)
-	local host, port, client_ip = target()
+	local host, client_ip = target()
 	local tcp = tcp()
-	if target.http_args.debug and target.http_args.debug.stream then
+	if target.debug and target.debug.stream then
 		tcp:debug'http'
 	end
 	if client_ip then
-		local ok, err = tcp:bind(client_ip)
+		local ok, err = tcp:try_bind(client_ip)
 		if not ok then return nil, err end
 	end
-	self:inc_conn_count(target)
-	local dt = target.connect_timeout
-	local expires = dt and clock() + dt or nil
-	local ip, err = try_resolve(host)
-	if not ip then
-		return nil, 'lookup failed for "'..host..'": '..tostring(err)
-	end
-	local ok, err = tcp:connect(ip..':'..port, expires)
+	self:adjust_conn_count(target, 1)
+	tcp:settimeout()
+	local ok, err = try_connect(tcp, host, target.connect_timeout)
 	self:dp(target, '+CO', '%s %s', tcp, err or '')
 	if not ok then
-		self:dec_conn_count(target)
+		self:adjust_conn_count(target, -1)
 		return nil, err
 	end
-	if target.http_args.https then
+	if target.https then
 		local stcp, err = client_stcp(tcp, host, self.tls_options)
 		self:dp(target, ' TLS', '%s %s %s', stcp, http, err or '')
 		if not stcp then
@@ -395,11 +375,10 @@ function client:connect_now(target)
 	end
 	tcp:onclose(function(tcp)
 		self:dp(target, '-CO', '%s', tcp)
-		self:dec_conn_count(target)
+		self:adjust_conn_count(target, -1)
 		self:resume_next_wait_conn_thread()
 	end)
-	target.http_args.f = tcp
-	local http = object(http, {}, target.http_args)
+	local http = object(http, {tcp = tcp})
 	self:dp(target, ' BIND', '%s %s', tcp, http)
 	return http
 end
@@ -484,11 +463,13 @@ function client:redirect_request_args(t, req, res)
 		fragment = loc.fragment,
 	}
 	local https = loc.scheme == 'https' or nil
+	local port = loc.port or (not loc.host and t.port) or nil
+	local host = loc.host or t.host
+	if port then host = host..':'..port end
 	return {
 		method = 'GET',
 		close = t.close,
-		host = loc.host or t.host,
-		port = loc.port or (not loc.host and t.port or nil) or nil,
+		host = host,
 		https = https,
 		uri = uri,
 		compress = t.compress,
@@ -677,6 +658,7 @@ function client:fetch(arg1, upload, receive_content)
 	receive_content = receive_content or opt.receive_content
 
 	local headers = {}
+
 	if upload ~= nil and not isstr(upload) then
 		upload = json_encode(upload)
 		headers['content-type'] = 'application/json'
@@ -690,43 +672,43 @@ function client:fetch(arg1, upload, receive_content)
 		uri = u and u.path,
 		https = u and u.scheme == 'https' or not u and opt.https ~= false,
 		method = upload and 'POST',
-		content = upload,
+		upload = upload,
 		receive_content = receive_content or 'string',
 	}, opt)
 	opt.headers = update(headers, opt.headers)
 
-	local res, err, req = self:request(opt)
+	local req, err = self:request(opt)
 
-	if not res then
-		return nil, err, req
+	if not req then
+		return nil, err
 	end
-	local ct = res.headers['content-type']
+
+	local ct = req.response_headers['content-type']
 	if ct and ct.media_type == 'application/json' then
-		res.rawcontent = res.content
-		res.content = repl(json_decode(res.content), nil, null)
+		req.response = json_decode(req.response)
+		--if the entire resonse is the json value "null", then return null
+		--because nil is for errors.
+		req.response = repl(req.response, nil, null)
 	end
-	return res.content, res, req
+
+	return req.response, req
 end
 
 --instantiation --------------------------------------------------------------
 
-function client:log(target, severity, module, event, fmt, ...)
-	if logging.filter[severity] then return end
-	local s = fmt and _(fmt, logargs(...)) or ''
-	log(severity, module, event, '%-4s %s', target or '', s)
-end
+function http_client(...)
 
-function client:dp(target, ...)
-	return self:log(target, '', 'htcl', ...)
-end
+	local self = object(client, {}, ...)
 
-function http_client(t)
+	self.debug = self.debug or config'http_debug' or ''
+	if isstr(self.debug) then
+		self.debug = index(collect(words(self.debug)))
+	end
 
-	local self = object(client, {}, t)
-
-	self.last_client_ip_index = tuples(2)
-	self.targets = tuples(3)
+	self.last_client_ip_index = {} -- addr -> index
+	self.targets = {} -- 'HOST CLIENT_IP' -> target
 	self.cookies = {}
+	self.conn_count = 0
 
 	if self.debug and self.debug.sched then
 		local function pass(target, rc, ...)
@@ -756,7 +738,6 @@ function fetch(...)
 		max_pipelined_requests = config'fetch_max_pipelined_requests',
 		client_ips             = config'fetch_client_ips',
 		max_redirects          = config'fetch_max_redirects',
-		debug = config'fetch_debug' and index(collect(words(config'fetch_debug'))),
 	}
 	return cl:fetch(...)
 end
