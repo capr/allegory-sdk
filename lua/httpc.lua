@@ -25,8 +25,6 @@ require'http_date'
 
 --http connection object -----------------------------------------------------
 
-local htcp = {}
-
 function http_conn(tcp, opt)
 
 	local htcp = tcp
@@ -42,51 +40,53 @@ function http_conn(tcp, opt)
 		f = ctcp,
 	} --write buffer
 
-	local req
-	local headers_sent
-	local body_sent
+	local headers_sent, body_unsent_len
+	local headers_read, body_unread_len
 
-	function htcp:start_request(opt, cookies)
-		assert(not req)
+	function htcp:send_headers(req)
+		assert(not headers_sent)
+		headers_sent = true
+		headers_read = false
+		body_unread_len = nil
+
 		req = update({
-			tcp = self,
 			method = 'GET',
 			uri = '/',
 			headers = {},
-		}, opt)
-		self.req = req
-	end
+		}, req)
 
-	function htcp:send_headers()
-		assert(req)
-		assert(not headers_sent)
-		assert(not body_sent)
+		assert(req.headers['host'], 'host header required')
 
-		assert(req.host, 'host missing') --required by http
-		local default_port = self.https and 443 or 80
-		local port = self.port ~= default_port and self.port or nil
-		req.headers['host'] = req.host..(port and ':'..port or '')
-
+		--local default_port = self.istlssocket and 443 or 80
+		--local port = self.port ~= default_port and self.port or nil
+		--..(port and ':'..port or '')
+		--headers['host'] = host
 		if req.close then
 			req.headers['connection'] = 'close'
 		end
 
-		if repl(opt.compress, nil, self.compress) ~= false then
-			req.headers['accept-encoding'] = 'gzip'
+		req.headers['accept-encoding'] = 'gzip'
+
+		if req.cookies then
+			local t = {}
+			for k,v in sortedpairs(req.cookies) do
+				assert(not k:has'=')
+				assert(not k:has';')
+				assert(not v:has'=')
+				assert(not v:has';')
+				append(t, k, '=', v)
+			end
+			req.headers['cookie'] = cat(t, ';')
 		end
 
-		req.headers['cookie'] = cookies
-
-		local upload_len = req.headers['content-length'] or 0
-		--if upload_len > 0 then
+		body_unsent_len = req.headers['content-length'] or 0
 
 		local dt = req.request_timeout
-		self.start_time = clock()
-		self.tcp:setexpires(dt and self.start_time + dt or nil, 'w')
+		req.start_time = clock()
+		self:setexpires(dt and req.start_time + dt or nil, 'w')
 
 		--send request line
-		assert(req.method and req.method == method:upper())
-		assert(req.uri)
+		assert(req.method == req.method:upper())
 		self:dp('=>', '%s %s HTTP/1.1', req.method, req.uri)
 		wb:putf('%s %s HTTP/1.1\r\n', req.method, req.uri)
 
@@ -104,35 +104,22 @@ function http_conn(tcp, opt)
 
 	function htcp:send_body_chunk(chunk, len)
 		assert(headers_sent)
-		function send_body_chunk(chunk, len)
-			assert(headers_sent)
-			assert(not body_sent)
-			if not (chunk == nil and len == 'eof') then
-				len = len or #chunk
-				req:dp('>>', '%7d bytes', len)
-				if req.response_headers['content-length'] then
-					wb:putdata(chunk, len)
-					wb:flush()
-				else --chunked
-					wb:putf('%X\r\n', len)
-					wb:putdata(chunk, len)
-					wb:put'\r\n'
-					wb:flush()
-				end
-			else
-				body_sent = true
-				req:dp('>>', '%7d end', 0)
-				if not req.response_headers['content-length'] then
-					wb:put'0\r\n\r\n'
-					wb:flush()
-				end
-			end
-		end
+		len = len or #chunk
+		body_unsent_len = body_unsent_len - len
+		self:checkp(body_unsent_len >= 0, 'upload size mismatch')
+		req:dp('>>', '%7d bytes, left %7d', len, body_unsent_len)
+		wb:putdata(chunk, len)
+		wb:flush()
+		return body_unsent_len
 	end
-	--self:send_body(req.content, req.content_size, req.headers['transfer-encoding'])
+	function htcp:send_body(body, len)
+		local unsent = self:send_body_chunk(body, len)
+		self:checkp(unsent == 0, 'upload size mismatch')
+	end
 
 	function htcp:read_headers()
 		assert(headers_sent)
+		headers_read = true
 		for i = 1, 101 do
 			local line = rb:needline()
 			if line == '' then break end --headers end with a blank line
@@ -153,10 +140,35 @@ function http_conn(tcp, opt)
 				req.headers[name] = value
 			end
 		end
+		body_unread_len = req.response_headers['content-length']
 	end
 
-	function htcp:read_body_chunk()
-		--
+	local rb_needs_reset
+	function req.read_body_chunk(req)
+		assert(headers_read)
+		if body_unread_len == 0 then
+			return nil, 'eof', 0
+		end
+		if rb_needs_reset then
+			rb:reset()
+			rb_needs_reset = false
+		end
+		local chunked = req.response_headers['transfer-encoding'] == 'chunked'
+		if chunked then
+			local line = rb:needline()
+		end
+
+		rb:need(1)
+		local buf, len = rb:ref()
+		body_unread_len = body_unread_len - len
+		rb_needs_reset = true
+		return buf, len, body_unread_len
+	end
+
+	function req.read_body(req)
+		rb:need(body_unread_len)
+		body_unread_len = 0
+		return rb:ref()
 	end
 
 	return tcp
