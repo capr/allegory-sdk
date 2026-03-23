@@ -161,7 +161,8 @@ function http_server(...)
 		local line = rb:haveline()
 		if not line then ctcp:close(); return end
 		local method, uri, http_version = line:match'^([%u]+)%s+([^%s]+)%s+HTTP/(%d+%.%d+)'
-		ctcp:checkp(method and http_version == '1.1', 'invalid request line')
+		ctcp:checkp(http_version == '1.1', 'invalid http version')
+		ctcp:checkp(method == method:upper(), 'invalid http method')
 
 		local req = {
 			tcp = ctcp,
@@ -269,7 +270,7 @@ function http_server(...)
 			--passing a table as value will generate duplicate headers for each value
 			--set-cookie will be like that because it's not safe to send it folded.
 			local t = {}
-			for k,v in pairs(req.response_headers) do
+			for k,v in sortedpairs(req.response_headers) do
 				if not istab(v) then t[1] = v; v = t end
 				for _,v in ipairs(v) do
 					assert(not v:has'\n' and not v:has'\r')
@@ -406,7 +407,7 @@ function http_server(...)
 		if tls then
 			local opt = update({}, self.tls_options, listen_opt.tls_options)
 			local stcp = server_stcp(tcp, opt)
-			liveadd(stcp, 'listen=%s', tcp.bound_addr)
+			liveadd(stcp, 'listen=%s', tcp:bound_addr())
 			tcp = stcp
 		end
 
