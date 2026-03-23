@@ -1092,7 +1092,6 @@ end
 
 local stcp = {
 	issocket     = true,
-	istcpsocket  = true,
 	istlssocket  = true,
 	socktype     = 'tcp',
 	debug_prefix = 'X',
@@ -1143,6 +1142,14 @@ function stcp:wait_until(expires)
 end
 function stcp:wait(timeout)
 	return self.tcp:wait(timeout)
+end
+
+function stcp:remote_addr()
+	return self.tcp:remote_addr()
+end
+
+function stcp:bound_addr()
+	return self.tcp:bound_addr()
 end
 
 function stcp:debug(protocol)
@@ -1305,11 +1312,12 @@ end
 
 function server_stcp:try_close()
 	if not self.tcp.fd then return true end
-	for s in pairs(self.tcp.sockets) do --close all accepted tls sockets if any.
+	for s in pairs(self.tcp._sockets) do --close all accepted tls sockets if any.
 		if s.stcp then
 			s.stcp:try_close()
 		end
 	end
+	assert(self.tcp._sockets_n == 0)
 	live(self, nil)
 	local ok, err = self.tcp:try_close()
 	self.eng = nil
@@ -1331,7 +1339,7 @@ function server_stcp:try_accept()
 	end
 
 	local s = wrap_client_stcp(ctcp, eng, keepalive)
-	live(s, 'accepted %s.%d tcp=%s clients:%d', self, ctcp.i, ctcp, self.tcp.n)
+	live(s, 'accepted %s.%d tcp=%s clients:%d', self, ctcp.i, ctcp, self.tcp._sockets_n)
 	local ok, err = engine_run(s, bor(BR_SSL_SENDAPP, BR_SSL_RECVAPP))
 	if not ok then
 		s:try_close()

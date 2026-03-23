@@ -17,6 +17,7 @@ SOCKETS
 	s:closed() -> t|f                      check if the socket is closed
 	s:onclose(fn)                          exec fn after the socket is closed
 	s:[try_]bind(addr)                     bind socket to an address
+	s:bound_addr() -> sa                   get bound sockaddr
 	s:[try_]setopt(opt, val)               set socket option ('so_*', 'tcp_*', etc.)
 	s:[try_]getopt(opt) -> val             get socket option
 	s:debug([protocol])                    enable debugging
@@ -31,6 +32,7 @@ TCP
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
 	tcp:[try_]recvn(buf, n)                         receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
+	tcp:remote_addr() -> sa                         get connected/accepted sockaddr
 UDP
 	udp([family='ip'], [opt]) -> udp                make a SOCK_DGRAM socket
 	udp:[try_]connect(addr)                         connect to an address
@@ -145,8 +147,7 @@ tcp:[try_]listen(addr, [backlog], [onaccept])
 
 tcp:[try_]accept() -> ctcp | nil,err,[retry]
 
-	Accept a client connection. The connection socket has additional fields:
-	remote_addr, local_addr.
+	Accept a client connection.
 
 	A third return value indicates that the error is a network error and thus
 	the call can be retried.
@@ -576,19 +577,20 @@ function socket:try_close()
 	cancel_wait_io(self)
 	local ps = self.listen_socket
 	if ps then
-		ps.n = ps.n - 1
-		ps.sockets[self] = nil
+		ps._sockets_n = ps._sockets_n - 1
+		ps._sockets[self] = nil
 	end
-	if self.sockets then --close all accepted sockets if any.
-		for s in pairs(self.sockets) do
+	if self._sockets then --close all accepted sockets if any.
+		for s in pairs(self._sockets) do
 			s:try_close()
 		end
-		assert(isempty(self.sockets))
+		assert(self._sockets_n == 0)
 	end
 	if self._after_close then
 		self:_after_close()
 	end
-	live(self, nil, 'r:%d w:%d%s', self.r, self.w, self.n and ' clients:'..self.n or '')
+	live(self, nil, 'r:%d w:%d%s', self.r, self.w,
+		self._sockets and ' clients:'..self._sockets_n or '')
 	if not ok then return false, err end
 	return true
 end
@@ -741,23 +743,27 @@ function tcp:try_connect(addr)
 	local resolve_timeout = self.send_expires and self.send_expires - clock()
 	local sa, err = try_sockaddr(addr, resolve_timeout)
 	if not sa then return nil, err end
-	local addr_s = sa:tostring()
-	log('', 'sock', 'connect?', '%-4s %s', self, addr_s)
-	if not self.bound_addr and self.family ~= 'unix' then
+	log('', 'sock', 'connect?', '%-4s %s', self, sa:tostring())
+	if not self._bound_addr and self.family ~= 'unix' then
 		local ok, err = self:try_bind()
 		if not ok then return false, err end
 	end
 	local ret, err = socket_connect(self, sa)
 	local ok = ret == 0
 	if not ok then return false, err end
-	self.remote_addr = addr_s
-	log('', 'sock', 'connectd', '%-4s %s', self, self.remote_addr)
-	live(self, 'connected %s', self.remote_addr)
+	self._remote_addr = sa
+	local s = sa:tostring()
+	log('', 'sock', 'connectd', '%-4s %s', self, s)
+	live(self, 'connected %s', s)
 	return true
 end
 tcp.connect = unprotect_io(tcp.try_connect)
 udp.try_connect = tcp.try_connect
 udp.connect = unprotect_io(udp.try_connect)
+
+function tcp:remote_addr()
+	return self._remote_addr
+end
 
 do
 	--see man accept(2); get error codes with `sh c/precompile errno.h`.
@@ -771,18 +777,16 @@ do
 	local ENETUNREACH   = 101
 
 	local nbuf = new'int[1]'
-	local accept_sa = sockaddr_ct()
-	local accept_sa_size = sizeof(accept_sa)
-
-	local socket_accept = make_async(false, false, function(self)
-		nbuf[0] = accept_sa_size
+	local socket_accept = make_async(false, false, function(self, accept_sa)
+		nbuf[0] = sizeof(sockaddr_ct)
 		local r = C.accept4(self.fd, accept_sa, nbuf, bor(SOCK_NONBLOCK, SOCK_CLOEXEC))
 		return r
 	end, EWOULDBLOCK)
 
 	function tcp:try_accept(opt)
 		if not self.fd then return nil, 'closed' end
-		local s, err, errno = socket_accept(self)
+		local accept_sa = sockaddr_ct()
+		local s, err, errno = socket_accept(self, accept_sa)
 		local retry =
 			   errno == ENETDOWN
 			or errno == EPROTO
@@ -801,23 +805,13 @@ do
 			s:try_close()
 			return nil, err
 		end
-		local ra = accept_sa:tostring()
-		--get local addr
-		nbuf[0] = accept_sa_size
-		local ok, err = check_errno(C.getsockname(s.fd, accept_sa, nbuf) == 0)
-		if not ok then
-			s:try_close()
-			return nil, err
-		end
-		local la = accept_sa:tostring()
-		self.n = self.n + 1
-		self.sockets[s] = true
+		self._sockets_n = self._sockets_n + 1
+		self._sockets[s] = true
 		self.next_i = (self.next_i or 0) + 1
 		s.i = self.next_i
-		live(s, 'accepted %s.%d %s <- %s fd=%d clients:%d',
-			self, s.i, la, ra, s.fd, self.n)
-		s.remote_addr = ra
-		s.local_addr  = la
+		live(s, 'accepted %s.%d %s fd=%d clients:%d',
+			self, s.i, accept_sa:tostring(), s.fd, self._sockets_n)
+		s._remote_addr = accept_sa
 		s.listen_socket = self
 		return s
 	end
@@ -1096,7 +1090,7 @@ int bind(SOCKET s, const sockaddr*, int namelen);
 ]]
 
 function socket:try_bind(addr)
-	assert(not self.bound_addr)
+	if self._bound_addr then return nil, 'already_bound' end
 	addr = addr or
 		self.family == 'ip'  and '0.0.0.0:0' or
 		self.family == 'ip6' and '[::]:0'
@@ -1105,11 +1099,22 @@ function socket:try_bind(addr)
 	if not sa then return nil, err end
 	local ok, err = check_errno(C.bind(self.fd, sa, sa:size()) == 0)
 	if not ok then return false, err end
-	self.bound_addr = sa:tostring()
+	self._bound_addr = sa
 	--epoll_ctl() must be called after bind() for some reason.
 	return _sock_register(self)
 end
 socket.bind = unprotect_io(socket.try_bind)
+
+function socket:bound_addr()
+	local sa = self._bound_addr
+	if not sa then
+		sa = sockaddr_ct()
+		local nbuf = new('int[1]', sizeof(sa))
+		self:check_io(check_errno(C.getsockname(self.fd, sa, nbuf) == 0))
+		self._bound_addr = sa
+	end
+	return sa
+end
 
 --listen() -------------------------------------------------------------------
 
@@ -1118,19 +1123,18 @@ int listen(SOCKET s, int backlog);
 ]]
 
 function tcp:try_listen(addr, backlog, onaccept)
+	if self._bound_addr then return nil, 'already_bound' end
 	local sa, err = try_sockaddr(addr)
 	if not sa then return nil, err end
 	log('', 'sock', 'listen?', '%-4s %s', self, sa:tostring())
-	if not self.bound_addr then
-		local ok, err = self:try_bind(sa)
-		if not ok then return nil, err end
-	end
+	local ok, err = self:try_bind(sa)
+	if not ok then return nil, err end
 	backlog = clamp(backlog or 1/0, 0, 0x7fffffff)
 	local ok = C.listen(self.fd, backlog) == 0
 	if not ok then return check_errno() end
-	liveadd(self, 'listen=%s', self.bound_addr)
-	self.n = 0  --live client connection count
-	self.sockets = {} --live client connections: {socket->true}
+	liveadd(self, 'listen=%s', self._bound_addr)
+	self._sockets = {} --live client connections: {socket->true}
+	self._sockets_n = 0 --live client connection count
 
 	if onaccept then
 		repeat
