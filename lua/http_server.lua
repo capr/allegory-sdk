@@ -385,10 +385,9 @@ function http_server(...)
 
 		local addr =
 			listen_opt.unix_socket and 'unix:'..listen_opt.unix_socket
-			or (listen_opt.addr or '0.0.0.0')..':'..
-				(listen_opt.port or (listen_opt.tls and 443 or 80))
+			or listen_opt.addr or '0.0.0.0'
 
-		local tcp = listen(addr)
+		local tcp = listen(addr, listen_opt.port or (listen_opt.tls and 443 or 80))
 
 		if listen_opt.unix_socket then
 			if listen_opt.unix_socket_perms or

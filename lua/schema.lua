@@ -89,7 +89,7 @@ API
 
 ]=]
 
-if not ... then require'schema_test'; return end
+--if not ... then require'schema_test'; return end
 
 require'glue'
 

@@ -3,6 +3,7 @@
 	IPv6 conversion routines.
 	Written by Cosmin Apreutesei. Public Domain.
 
+	is_ipv6(s) -> true | false
 	ipv6_normalize(s, [compressed], [zeroes]) -> s
 	ipv6_tobin(s) -> s
 	ipv6_tostring(s, [compressed], [zeroes]) -> s
@@ -46,6 +47,10 @@ function ipv6_normalize(s, compressed, zeroes)
 		end
 	end
 	return s
+end
+
+function is_ipv6(s)
+	return ipv6_normalize(s) and true or false
 end
 
 local char = string.char

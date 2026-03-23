@@ -5,8 +5,8 @@
 	TLS support in sock_bearssl.lua.
 
 ADDRESSES
-	[try_]sockaddr(addr, [timeout]) -> sa  make a sockaddr from a string (see addr format)
-	[try_]sockaddrs(addr, [timeout]) -> {sa1,...}  resolves to multiple IPs
+	[try_]sockaddr(addr, [port], [timeout]) -> sa  make a sockaddr from a string (see addr format)
+	[try_]sockaddrs(addr, [port], [timeout]) -> {sa1,...}  resolves to multiple IPs
 	sa:family() -> 'ip|ip6|unix'           socket family
 	sa:port() -> port|nil                  port (for ip/ip6 family)
 	sa:tostring() -> ip|ip6|path           string representation
@@ -16,29 +16,29 @@ SOCKETS
 	s:[try_]close()                        close connection and free socket
 	s:closed() -> t|f                      check if the socket is closed
 	s:onclose(fn)                          exec fn after the socket is closed
-	s:[try_]bind(addr)                     bind socket to an address
+	s:[try_]bind(addr, [port])             bind socket to an address
 	s:bound_addr() -> sa                   get bound sockaddr
 	s:[try_]setopt(opt, val)               set socket option ('so_*', 'tcp_*', etc.)
 	s:[try_]getopt(opt) -> val             get socket option
 	s:debug([protocol])                    enable debugging
 TCP
 	tcp([family='ip'], [opt]) -> tcp                     make a SOCK_STREAM socket
-	[try_]connect([tcp, ], addr, [timeout]) -> tcp       (create tcp socket and) connect
-	listen([tcp, ], addr, [backlog], [onaccept]) -> tcp  (create tcp socket and) listen
-	tcp:[try_]connect(addr)                         connect to an address
+	[try_]connect([tcp, ], addr, [port], [timeout]) -> tcp       (create tcp socket and) connect
+	listen([tcp, ], addr, [port], [backlog], [onaccept]) -> tcp  (create tcp socket and) listen
+	tcp:[try_]connect(addr, [port])                 connect to an address
 	tcp:[try_]send(s|buf, [len], [flags]) -> true   send bytes to connected address
 	tcp:[try_]recv(buf, maxlen) -> len              receive bytes
-	tcp:[try_]listen(addr, [backlog], [onaccept])   put socket in listening mode
+	tcp:[try_]listen(addr, [port], [backlog], [onaccept])   put socket in listening mode
 	tcp:[try_]accept() -> ctcp | nil,err,[retry]    accept a client connection
 	tcp:[try_]recvn(buf, n)                         receive n bytes
 	tcp:[try_]recvall() -> buf, len                 receive until closed
 	tcp:remote_addr() -> sa                         get connected/accepted sockaddr
 UDP
 	udp([family='ip'], [opt]) -> udp                make a SOCK_DGRAM socket
-	udp:[try_]connect(addr)                         connect to an address
+	udp:[try_]connect(addr, [port])                 connect to an address
 	udp:[try_]send(s|buf, [len], [flags]) -> len    send bytes to connected address
 	udp:[try_]recv(buf, maxlen) -> len              receive bytes
-	udp:[try_]sendto(addr, s|buf, [len]) -> len     send a datagram to an address
+	udp:[try_]sendto(addr, [port], s|buf, [len]) -> len     send a datagram to an address
 	udp:[try_]recvnext(buf, maxlen, [flags]) -> len, sa     receive the next datagram
 	tcp:[try_]shutdown(['r'|'w'|'rw'])         send FIN
 THREADS
@@ -103,7 +103,7 @@ s:[try_]close()
 	returned 0 yet), or 2) so_linger socket option was set with a zero timeout,
 	then a TCP RST packet is sent to the client, otherwise a FIN is sent.
 
-s:[try_]bind(addr)
+s:[try_]bind(addr, [port])
 
 	Bind socket to an interface/port (which defaults to '0.0.0.0:0' / ':::0'
 	meaning all interfaces and a random port).
@@ -117,11 +117,11 @@ s:settimeout(seconds|nil, ['r'|'w'])
 
 tcp|udp:[try_]connect(addr, ...)
 
-	Connect to an address, binding the socket to ('*', 0) if not bound already.
+	Connect to an address.
 
 	For UDP sockets, this has the effect of filtering incoming packets so that
 	only those coming from the connected address get through the socket. Also,
-	you can call connect() multiple times (use ('*', 0) to switch back to
+	you can call connect() multiple times (use ('0.0.0.0', 0) to switch back to
 	unfiltered mode).
 
 tcp:[try_]send(s|buf, [len], [flags]) -> true
@@ -139,7 +139,7 @@ tcp|udp:[try_]recv(buf, maxlen, [flags]) -> len | 0,'eof'
 	Receive bytes from the connected address.
 	Returns (and keeps returning) 0,'eof' if the socket was closed on the other side.
 
-tcp:[try_]listen(addr, [backlog], [onaccept])
+tcp:[try_]listen(addr, [port], [backlog], [onaccept])
 
 	Put the socket in listening mode, binding the socket if not bound already
 	(in which case addr is ignored). The backlog defaults
@@ -161,7 +161,7 @@ tcp:[try_]recvall() -> buf,len | nil,err,buf,len
 
 	Receive until closed into an accumulating buffer.
 
-udp:[try_]sendto(addr, s|buf, [maxlen], [flags]) -> len
+udp:[try_]sendto(addr, [port], s|buf, [maxlen], [flags]) -> len
 
 	Send a datagram to a specific destination, regardless of whether the socket
 	is connected or not.
@@ -377,10 +377,7 @@ local function sockaddr_from_ipv4(s, port) --s is in binary!
 	local sa = sockaddr_ct()
 	sa.family_num = AF_INET
 	copy(sa.addr_in.ip_bytes, s, 4)
-	if port then
-		sa.port_bytes[0] = shr(port, 8)
-		sa.port_bytes[1] = band(port, 0xff)
-	end
+	if port then sa:set_port(port) end
 	return sa
 end
 
@@ -388,14 +385,11 @@ local function sockaddr_from_ipv6(s, port) --s is in binary!
 	local sa = sockaddr_ct()
 	sa.family_num = AF_INET6
 	copy(sa.addr_in6.ip_bytes, s, 16)
-	if port then
-		sa.port_bytes[0] = shr(port, 8)
-		sa.port_bytes[1] = band(port, 0xff)
-	end
+	if port then sa:set_port(port) end
 	return sa
 end
 
-local function parse_addr(s) -- returns: host, [port], 'ip|ip6|hostname'
+local function parse_addr(s, default_port) -- returns: host, [port], 'ip|ip6|hostname'
 	local ip6, port, host
 	if s:starts'[' then --[ip6]:port or [ip6] (RFC 3986)
 		ip6, port = s:match'^%[(.+)%]:(%d+)$'
@@ -410,7 +404,7 @@ local function parse_addr(s) -- returns: host, [port], 'ip|ip6|hostname'
 		host = s
 		if #host == 0 then return nil end
 	end
-	port = tonumber(port)
+	port = tonumber(port) or default_port
 	if port and not (port >= 0 and port <= 0xffff) then return nil end
 	if ip6 then
 		ip6 = ipv6_tobin(ip6)
@@ -425,12 +419,12 @@ local function parse_addr(s) -- returns: host, [port], 'ip|ip6|hostname'
 	end
 end
 
-local function _try_sockaddrs(s, timeout) --returns sockaddr or {sockaddr1, ...}
+local function _try_sockaddrs(s, default_port, timeout) --returns sockaddr or {sockaddr1, ...}
 	if issockaddr(s) then return s end --pass-through
 	if s:starts'unix:' then
 		return sockaddr_from_unix_path(s:sub(6))
 	end
-	local addr, port, addr_type = parse_addr(s)
+	local addr, port, addr_type = parse_addr(s, default_port)
 	if not addr then
 		return nil
 	elseif addr_type == 'ip6' then
@@ -491,6 +485,10 @@ function sa:port()
 	if self.family_num == AF_INET or self.family_num == AF_INET6 then
 		return self.port_bytes[0] * 0x100 + self.port_bytes[1]
 	end
+end
+function sa:set_port(port)
+	self.port_bytes[0] = shr(port, 8)
+	self.port_bytes[1] = band(port, 0xff)
 end
 function sa:size()
 	return (
@@ -738,12 +736,12 @@ local socket_connect = make_async(true, false, function(self, sa)
 	return C.connect(self.fd, sa, sa:size())
 end, EINPROGRESS)
 
-function tcp:try_connect(addr)
+function tcp:try_connect(addr, port)
 	if not self.fd then return nil, 'closed' end
 	local resolve_timeout = self.send_expires and self.send_expires - clock()
-	local sa, err = try_sockaddr(addr, resolve_timeout)
+	local sa, err = try_sockaddr(addr, port, resolve_timeout)
 	if not sa then return nil, err end
-	log('', 'sock', 'connect?', '%-4s %s', self, sa:tostring())
+	log('', 'sock', 'connect', '%-4s %s', self, sa:tostring())
 	if not self._bound_addr and self.family ~= 'unix' then
 		local ok, err = self:try_bind()
 		if not ok then return false, err end
@@ -752,9 +750,7 @@ function tcp:try_connect(addr)
 	local ok = ret == 0
 	if not ok then return false, err end
 	self._remote_addr = sa
-	local s = sa:tostring()
-	log('', 'sock', 'connectd', '%-4s %s', self, s)
-	live(self, 'connected %s', s)
+	live(self, 'connected %s', sa:tostring())
 	return true
 end
 tcp.connect = unprotect_io(tcp.try_connect)
@@ -855,11 +851,11 @@ local udp_sendto = make_async(true, true, function(self, sa, buf, len, flags)
 	return C.sendto(self.fd, buf, len, flags or 0, sa, sa:size())
 end, EWOULDBLOCK)
 
-function udp:try_sendto(addr, buf, len, flags)
+function udp:try_sendto(addr, port, buf, len, flags)
 	if not self.fd then return nil, 'closed' end
 	len = len or #buf
 	local resolve_timeout = self.send_expires and self.send_expires - clock()
-	local sa, err = try_sockaddr(addr, resolve_timeout)
+	local sa, err = try_sockaddr(addr, port, resolve_timeout)
 	if not sa then return nil, err end
 	local len, err = udp_sendto(self, sa, buf, len, flags)
 	if not len then return nil, err end
@@ -1089,13 +1085,13 @@ cdef[[
 int bind(SOCKET s, const sockaddr*, int namelen);
 ]]
 
-function socket:try_bind(addr)
+function socket:try_bind(addr, port)
 	if self._bound_addr then return nil, 'already_bound' end
 	addr = addr or
-		self.family == 'ip'  and '0.0.0.0:0' or
-		self.family == 'ip6' and '[::]:0'
+		self.family == 'ip'  and '0.0.0.0:'..(port or 0) or
+		self.family == 'ip6' and '[::]:'..(port or 0)
 		or nil
-	local sa, err = try_sockaddr(addr)
+	local sa, err = try_sockaddr(addr, port)
 	if not sa then return nil, err end
 	local ok, err = check_errno(C.bind(self.fd, sa, sa:size()) == 0)
 	if not ok then return false, err end
@@ -1122,9 +1118,9 @@ cdef[[
 int listen(SOCKET s, int backlog);
 ]]
 
-function tcp:try_listen(addr, backlog, onaccept)
+function tcp:try_listen(addr, port, backlog, onaccept)
 	if self._bound_addr then return nil, 'already_bound' end
-	local sa, err = try_sockaddr(addr)
+	local sa, err = try_sockaddr(addr, port)
 	if not sa then return nil, err end
 	log('', 'sock', 'listen?', '%-4s %s', self, sa:tostring())
 	local ok, err = self:try_bind(sa)
@@ -1540,14 +1536,15 @@ _G.socket = create_socket
 _G.tcp    = create_tcp
 _G.udp    = create_udp
 
-function try_connect(self, addr, timeout)
+function try_connect(self, addr, port, timeout)
 	if not issocket(self) then
-		self, addr, timeout = nil, self, addr
+		     self, addr, port, timeout =
+		nil, self, addr, port
 	end
-	local sas, err = try_sockaddrs(addr, timeout)
+	local sas, err = try_sockaddrs(addr, port, timeout)
 	if not sas then return nil, err end
 	local sa = sas[1]
-	if #sas > 1 then
+	if #sas > 1 and not self then
 		--TODO: implement Happy Eyeballs algorithm.
 	end
 	self = self or create_tcp(sa:family())
@@ -1564,11 +1561,12 @@ function connect(...)
 	return check_io(nil, try_connect(...))
 end
 
-function listen(self, addr, backlog, onaccept)
+function listen(self, addr, port, backlog, onaccept)
 	if not issocket(self) then
-		self, addr, backlog, onaccept = nil, self, addr, backlog
+		     self, addr, port, backlog, onaccept =
+		nil, self, addr, port, backlog
 	end
-	local sa = sockaddr(addr)
+	local sa = sockaddr(addr, port)
 	self = self or create_tcp(sa:family())
 	if sa:family() == 'unix' then
 		--remove the socket file to emulate reuseaddr.

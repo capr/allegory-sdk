@@ -12,13 +12,13 @@ local function nextport() PORT = PORT + 1; return PORT end
 
 -- helpers
 local function mkserver(port)
-	local s = listen('127.0.0.1:'..port)
+	local s = listen('127.0.0.1', port)
 	assert(s)
 	return s
 end
 
 local function mkclient(port)
-	local s = connect('127.0.0.1:'..port)
+	local s = connect('127.0.0.1', port)
 	assert(s)
 	return s
 end
@@ -75,7 +75,7 @@ function test.addr_passthrough()
 end
 
 function test.addr_invalid()
-	local sa = try_sockaddr('not-an-address', 'noresolve')
+	local sa = try_sockaddr('not-an-address', nil, 'noresolve')
 	assert(not sa)
 end
 
@@ -105,7 +105,7 @@ end
 
 function test.tcp_connect_refused()
 	checked_run(function()
-		local s, err = try_connect('127.0.0.1:'..nextport(), 1)
+		local s, err = try_connect('127.0.0.1', nextport(), 1)
 		assert(not s)
 		assert(err)
 	end)
@@ -178,7 +178,7 @@ function test.tcp_server_onaccept()
 		local server = tcp()
 		server:setopt('so_reuseaddr', true)
 		resume(sthread(function()
-			server:listen('127.0.0.1:'..port, nil, function(srv, cs)
+			server:listen('127.0.0.1', port, nil, function(srv, cs)
 				accepted = accepted + 1
 				cs:recv(BUF, 64)
 				-- cs closed by listen's wrapper
@@ -366,11 +366,11 @@ function test.udp_sendto_recvnext()
 	checked_run(function()
 		local port = nextport()
 		local server = udp()
-		server:bind('127.0.0.1:'..port)
+		server:bind('127.0.0.1', port)
 		resume(sthread(function()
 			local s = udp()
-			s:bind('127.0.0.1:0')
-			s:sendto('127.0.0.1:'..port, 'udp-hello')
+			s:bind('127.0.0.1', 0)
+			s:sendto('127.0.0.1', port, 'udp-hello')
 			s:close()
 		end, 'client'))
 		local buf = new'char[256]'
@@ -384,10 +384,10 @@ function test.udp_connected_mode()
 	checked_run(function()
 		local port = nextport()
 		local server = udp()
-		server:bind('127.0.0.1:'..port)
+		server:bind('127.0.0.1', port)
 		resume(sthread(function()
 			local s = udp()
-			s:connect('127.0.0.1:'..port)
+			s:connect('127.0.0.1', port)
 			s:send'udp-connected'
 			s:close()
 		end, 'client'))
@@ -403,11 +403,11 @@ function test.udp_recvnext_source_addr()
 		local port = nextport()
 		local client_port = nextport()
 		local server = udp()
-		server:bind('127.0.0.1:'..port)
+		server:bind('127.0.0.1', port)
 		resume(sthread(function()
 			local s = udp()
-			s:bind('127.0.0.1:'..client_port)
-			s:sendto('127.0.0.1:'..port, 'probe')
+			s:bind('127.0.0.1', client_port)
+			s:sendto('127.0.0.1', port, 'probe')
 			s:close()
 		end, 'client'))
 		local buf = new'char[256]'
@@ -522,7 +522,7 @@ function test.timeout_connect()
 		-- Connect to a non-routable address with short timeout
 		local s = tcp()
 		s:settimeout(0.05)
-		local ok, err = s:try_connect('10.255.255.1:1')
+		local ok, err = s:try_connect('10.255.255.1', 1)
 		assert(not ok)
 		assert(err == 'timeout' or err) -- may be 'timeout' or other net error
 		if not s:closed() then s:close() end
@@ -653,9 +653,9 @@ function test.error_bind_conflict()
 	checked_run(function()
 		local port = nextport()
 		local s1 = tcp()
-		s1:bind('127.0.0.1:'..port)
+		s1:bind('127.0.0.1', port)
 		local s2 = tcp()
-		local ok, err = s2:try_bind('127.0.0.1:'..port)
+		local ok, err = s2:try_bind('127.0.0.1', port)
 		assert(not ok)
 		assert(err == 'address_already_in_use')
 		s1:close()
@@ -846,7 +846,7 @@ function test.tcp_and_udp_same_port()
 		local tcp_got, udp_got
 		local tserver = mkserver(port)
 		local userver = udp()
-		userver:bind('127.0.0.1:'..port)
+		userver:bind('127.0.0.1', port)
 		resume(sthread(function()
 			local cs = tserver:accept()
 			local buf = new'char[64]'
@@ -868,7 +868,7 @@ function test.tcp_and_udp_same_port()
 		end, 'tcp-client'))
 		resume(sthread(function()
 			local s = udp()
-			s:connect('127.0.0.1:'..port)
+			s:connect('127.0.0.1', port)
 			s:send'udp-msg'
 			s:close()
 		end, 'udp-client'))
@@ -883,9 +883,9 @@ function test.ipv4_and_ipv6_loopback()
 		local port = nextport()
 		local got4, got6
 		-- IPv4 server
-		local s4 = listen('127.0.0.1:'..port)
+		local s4 = listen('127.0.0.1', port)
 		resume(sthread(function()
-			local c = connect('127.0.0.1:'..port); c:send'v4'; c:close()
+			local c = connect('127.0.0.1', port); c:send'v4'; c:close()
 		end, 'c4'))
 		local cs4 = s4:accept()
 		local buf4 = new'char[64]'
@@ -893,10 +893,10 @@ function test.ipv4_and_ipv6_loopback()
 		cs4:close(); s4:close()
 		-- IPv6 server on a separate port (skip gracefully if unavailable)
 		local port6 = nextport()
-		local ok6, s6 = pcall(listen, '[::1]:'..port6)
+		local ok6, s6 = pcall(listen, '[::1]', port6)
 		if ok6 then
 			resume(sthread(function()
-				local c = connect('[::1]:'..port6); c:send'v6'; c:close()
+				local c = connect('[::1]', port6); c:send'v6'; c:close()
 			end, 'c6'))
 			local cs6 = s6:accept()
 			local buf6 = new'char[64]'
