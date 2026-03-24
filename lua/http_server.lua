@@ -356,19 +356,12 @@ function http_server(...)
 			req:send_headers():finish()
 		end
 
-		--the request must be entirely read before we can read the next request.
+		--the request must be entirely read before we can read the next request
+		--or before we can close the connection.
 		while req:read_body_chunk() do end
 
-		--close connection if asked.
 		if req.close then
-			--this is the "http graceful close" you hear about: we send a FIN to
-			--the client then we wait for it to close the connection in response
-			--to our FIN, and only after that we can close our end.
-			--if we'd just call close() that would send a RST to the client which
-			--would cut short the client's pending input stream (it's how TCP works).
-			ctcp:shutdown'w'
-			while rb:have(1) do rb:reset() end --read until peer closes.
-			ctcp:close()
+			ctcp:close() --send FIN
 		end
 
 	end --handle_request()

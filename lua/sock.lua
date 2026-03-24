@@ -465,11 +465,11 @@ function try_sockaddr(...)
 end
 function sockaddrs(s, ...)
 	local sas, err = try_sockaddrs(s, ...)
-	return assertf(sas, '%s: %s', err or 'invalid address', s)
+	return check_io(nil, sas, '%s: %s', err or 'invalid address', s)
 end
 function sockaddr(s, ...)
 	local sa, err = try_sockaddr(s, ...)
-	return assertf(sa, '%s: %s', err or 'invalid address', s)
+	return check_io(nil, sa, '%s: %s', err or 'invalid address', s)
 end
 
 local sa = {}
@@ -1536,7 +1536,7 @@ _G.socket = create_socket
 _G.tcp    = create_tcp
 _G.udp    = create_udp
 
-function try_connect(addr, port, timeout, client_ip, debug_protocol)
+function try_connect(addr, port, timeout, client_ip)
 	local sas, err = try_sockaddrs(addr, port, timeout)
 	if not sas then return nil, err end
 	local sa = sas[1]
@@ -1544,9 +1544,6 @@ function try_connect(addr, port, timeout, client_ip, debug_protocol)
 		--TODO: implement Happy Eyeballs algorithm.
 	end
 	local self = create_tcp(sa:family())
-	if debug_protocol then
-		self:debug(debug_protocol)
-	end
 	self:settimeout(timeout)
 	if client_ip then
 		local ok, err = self:try_bind(client_ip)

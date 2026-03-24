@@ -4,8 +4,8 @@
 	Written by Cosmin Apreutesei. Public Domain.
 
 API
-	client_stcp(tcp, host, opt) -> cstcp         create a secure client socket
-	server_stcp(tcp, opt) -> sstcp               create a secure server socket
+	[try_]client_stcp(tcp, host, opt) -> cstcp   create a secure client socket
+	[try_]server_stcp(tcp, opt) -> sstcp         create a secure server socket
 		sstcp:[try_]accept() -> cstcp             accept a TLS client connection
 		  cstcp:[try_]recv(buf, sz) -> n          receive decrypted bytes
 		  cstcp:[try_]send(buf, sz) -> true       send bytes (encrypted)
@@ -1170,7 +1170,7 @@ local function wrap_client_stcp(tcp, eng, keepalive)
 	return s
 end
 
-function _G.client_stcp(tcp, host, opt)
+function _G.try_client_stcp(tcp, host, opt)
 	opt = opt or empty
 	local sc, eng, keepalive = make_client_ctx(opt)
 	if not sc then return nil, eng end
@@ -1188,6 +1188,7 @@ function _G.client_stcp(tcp, host, opt)
 	end
 	return s
 end
+_G.client_stcp = unprotect_io(_G.try_client_stcp)
 
 function client_stcp:try_close()
 	if not self.tcp.fd then return true end
@@ -1269,7 +1270,7 @@ client_stcp.write       = client_stcp.send
 
 local server_stcp = merge({type = 'server_tls_socket'}, stcp)
 
-function _G.server_stcp(tcp, opt)
+function _G.try_server_stcp(tcp, opt)
 	opt = opt or empty
 	local cert, key = cert_key_opt(opt, true)
 	local keepalive = {}
@@ -1309,6 +1310,7 @@ function _G.server_stcp(tcp, opt)
 	live(s, 'tcp=%s', tcp)
 	return s
 end
+_G.server_stcp = unprotect_io(_G.try_server_stcp)
 
 function server_stcp:try_close()
 	if not self.tcp.fd then return true end
@@ -1324,6 +1326,7 @@ function server_stcp:try_close()
 	self._keepalive = nil
 	return ok, err
 end
+server_stcp.close = unprotect_io(server_stcp.try_close)
 
 function server_stcp:try_accept()
 	if not self.tcp.fd then return nil, 'closed' end
@@ -1348,6 +1351,4 @@ function server_stcp:try_accept()
 
 	return s
 end
-
 server_stcp.accept = unprotect_io(server_stcp.try_accept)
-server_stcp.close  = unprotect_io(server_stcp.try_close)
