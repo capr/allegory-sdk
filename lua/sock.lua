@@ -23,8 +23,8 @@ SOCKETS
 	s:debug([protocol])                    enable debugging
 TCP
 	tcp([family='ip'], [opt]) -> tcp                     make a SOCK_STREAM socket
-	[try_]connect([tcp, ], addr, [port], [timeout]) -> tcp       (create tcp socket and) connect
-	listen([tcp, ], addr, [port], [backlog], [onaccept]) -> tcp  (create tcp socket and) listen
+	[try_]connect(addr, [port], [timeout], [client_ip]) -> tcp  create tcp socket and connect
+	listen(addr, [port], [backlog], [onaccept]) -> tcp          create tcp socket and listen
 	tcp:[try_]connect(addr, [port])                 connect to an address
 	tcp:[try_]send(s|buf, [len], [flags]) -> true   send bytes to connected address
 	tcp:[try_]recv(buf, maxlen) -> len              receive bytes
@@ -1536,19 +1536,25 @@ _G.socket = create_socket
 _G.tcp    = create_tcp
 _G.udp    = create_udp
 
-function try_connect(self, addr, port, timeout)
-	if not issocket(self) then
-		     self, addr, port, timeout =
-		nil, self, addr, port
-	end
+function try_connect(addr, port, timeout, client_ip, debug_protocol)
 	local sas, err = try_sockaddrs(addr, port, timeout)
 	if not sas then return nil, err end
 	local sa = sas[1]
-	if #sas > 1 and not self then
+	if #sas > 1 then
 		--TODO: implement Happy Eyeballs algorithm.
 	end
-	self = self or create_tcp(sa:family())
+	local self = create_tcp(sa:family())
+	if debug_protocol then
+		self:debug(debug_protocol)
+	end
 	self:settimeout(timeout)
+	if client_ip then
+		local ok, err = self:try_bind(client_ip)
+		if not ok then
+			self:try_close()
+			return nil, err
+		end
+	end
 	local ok, err = self:try_connect(sa)
 	if not ok then
 		self:try_close()
@@ -1561,13 +1567,9 @@ function connect(...)
 	return check_io(nil, try_connect(...))
 end
 
-function listen(self, addr, port, backlog, onaccept)
-	if not issocket(self) then
-		     self, addr, port, backlog, onaccept =
-		nil, self, addr, port, backlog
-	end
+function listen(addr, port, backlog, onaccept)
 	local sa = sockaddr(addr, port)
-	self = self or create_tcp(sa:family())
+	local self = create_tcp(sa:family())
 	if sa:family() == 'unix' then
 		--remove the socket file to emulate reuseaddr.
 		local socket_path = sa:tostring()

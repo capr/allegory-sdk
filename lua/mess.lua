@@ -10,7 +10,7 @@
 		- raising & catching errors in event handlers
 
 SERVER
-	mess_listen([tcp, ]host, port, onaccept, [onerror], [server_name]) -> server
+	mess_listen(host, port, onaccept, [onerror], [server_name]) -> server
 	onaccept(server, channel)
 	onerror(server, error)
 
@@ -105,37 +105,29 @@ local function wrapfn(event, fn, onerror, self)
 	end
 end
 
-function mess_listen(s, host, port, onaccept, onerror, server_name)
-
-	if not issocket(s) then
-		return mess_listen(tcp(), s, host, port, onaccept, onerror)
-	end
+function mess_listen(host, port, onaccept, onerror, server_name)
 
 	server_name = server_name or 'mess'
-
-	local server = {tcp = s}
-
-	s:setopt('so_reuseaddr', true)
-	s:listen(host..':'..port)
-
-	liveadd(s, server_name)
+	local tcp = listen(host, port)
+	local server = {tcp = tcp}
+	liveadd(tcp, server_name)
 
 	local stop
 	function server:stop()
 		stop = true
-		s:shutdown'r'
-		s:close()
+		tcp:shutdown'r'
+		tcp:close()
 	end
 
 	local onaccept = wrapfn('accept', onaccept, onerror, server)
 	resume(thread(function()
 		while not stop do
-			local ctcp, err, retry = s:try_accept()
+			local ctcp, err, retry = tcp:try_accept()
 			if not ctcp then
-				if s:closed() then --stop() called.
+				if tcp:closed() then --stop() called.
 					break
 				end
-				s:check_io(retry, err)
+				tcp:check_io(retry, err)
 				--temporary network error. retry without killing the CPU.
 				wait(0.2)
 				goto skip
@@ -153,14 +145,9 @@ function mess_listen(s, host, port, onaccept, onerror, server_name)
 	return server
 end
 
-function mess_connect(s, host, port, timeout)
-	if not issocket(s) then
-		return mess_connect(tcp(), s, host, port)
-	end
-	s:settimeout(timeout)
-	s:connect(host..':'..port)
-	s:settimeout(nil)
-	return mess_protocol(s)
+function mess_connect(host, port, timeout)
+	local tcp = connect(host, port, timeout)
+	return mess_protocol(tcp)
 end
 try_mess_connect = protect_io(mess_connect)
 
@@ -198,7 +185,7 @@ if not ... then
 	--logging.verbose = true
 	--logging.debug = true
 
-	local server = mess_listen('127.0.0.1', '5555', function(self, chan)
+	local server = mess_listen('127.0.0.1', 5555, function(self, chan)
 		chan:recvall(function(self, msg)
 			self:send(msg)
 		end)
@@ -208,7 +195,7 @@ if not ... then
 
 	resume(thread(function()
 
-		local chan = mess_connect('127.0.0.1', '5555', 1)
+		local chan = mess_connect('127.0.0.1', 5555, 1)
 		for i = 1, 20 do
 			chan:send{a = i, b = 2*i, s = tostring(i)}
 			local t = chan:recv()

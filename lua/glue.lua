@@ -59,7 +59,7 @@ ARRAYS
 	del                          = table.remove
 	add(t, v)                      insert(t, v)
 	push(t, v)                     insert(t, v)
-	pop(t)                         remove(t)
+	pop(t) -> v                    remove(t)
 	clear                        = table.clear
 	sort(t, [cmp]) -> t          = table.sort but returns the table
 	extend(dt, t1, ...) -> dt      extend an array with contents of other arrays
