@@ -44,9 +44,8 @@ NOTES
 Pipelined requests
 
 	A pipelined request is a request that is sent in advance of receiving the
-	response for the previous request on the same connection. Most HTTP servers
-	accept these but in a limited number. Browsers don't have them though so if
-	you use them you'll look like the robot that you really are to the servers.
+	response for the previous request on the same connection. Browsers don't
+	do that, but most HTTP servers accept it within limit.
 
 	Spawning a new connection for a new request has a lot more initial latency
 	than pipelining the request on an existing connection. On the other hand,
@@ -74,6 +73,22 @@ require'http_date'
 
 local http = {type = 'http_connection', debug_prefix = 'H'}
 
+local function http_conn(opt)
+	local rb = pbuffer{
+		f = opt.tcp,
+		readahead = recv_buffer_size,
+		lineterm = '\r\n',
+		linesize = 8192,
+	} --read buffer
+	local wb = pbuffer{
+		f = opt.tcp,
+	} --write buffer
+	return object(http, {
+		rb = rb,
+		wb = wb,
+	}, opt)
+end
+
 function http:send_request(req, cookies)
 
 	assert(req.host, 'host missing') --required by http
@@ -83,7 +98,7 @@ function http:send_request(req, cookies)
 		req.headers['connection'] = 'close'
 	end
 
-	if repl(req.compress, nil, self.client.compress) ~= false then
+	if repl(req.compress, nil, self.compress) ~= false then
 		req.headers['accept-encoding'] = 'gzip'
 	end
 
@@ -408,21 +423,7 @@ function client:connect_now(target)
 		self:adjust_conn_count(target, -1)
 		self:resume_next_wait_conn_thread()
 	end)
-	local rb = pbuffer{
-		f = tcp,
-		readahead = recv_buffer_size,
-		lineterm = '\r\n',
-		linesize = 8192,
-	} --read buffer
-	local wb = pbuffer{
-		f = tcp,
-	} --write buffer
-	local http = object(http, {
-		client = client,
-		tcp = tcp,
-		rb = rb,
-		wb = wb,
-	})
+	local http = http_conn({tcp = tcp, compress = self.compress})
 	self:dp(target, ' BIND', '%s %s', tcp, http)
 	return http
 end
@@ -667,10 +668,10 @@ function client:request(opt)
 
 	self:dp(target, '-SEND_RQ', '%s.%s.%s', target, http, req)
 
-	local waiting_response
+	local wait_response
 	if http.reading_response then
 		self:push_wait_response_thread(http, currentthread(), target)
-		waiting_response = true
+		wait_response = true
 	else
 		http.reading_response = true
 	end
@@ -683,7 +684,7 @@ function client:request(opt)
 		end
 	end
 
-	if waiting_response then
+	if wait_response then
 		suspend()
 	end
 
