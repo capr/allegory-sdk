@@ -164,5 +164,5 @@ run(function()
 		assert(err == 'timeout') -- pool is full (n=2=limit)
 	end
 
-	print('all respool tests passed')
+	print'respool ok'
 end)
