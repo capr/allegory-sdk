@@ -13,13 +13,13 @@
 	virtualheap(...) -> push, pop   create a heap API from a stack API
 	cdataheap(h) -> h               create a fixed-capacity cdata-based heap
 	heap([h]) -> h                  create a heap for Lua values
-	h:push(val) -> i                push a value
-	h:pop([i][, dst]) -> val        pop value (root value at default index 1)
-	h:replace(i, val)               replace value at index
-	h:peek([i][, dst]) -> val       get value without popping it
-	h:find(v) -> i                  find value and return its index
-	h:remove(v) -> t|f              find value and remove it
-	h:length() -> n                 number of elements in heap
+	h:push(val) -> i                push a value                          O(log n)
+	h:pop([i][, dst]) -> val        pop value (root value at default i=1) O(log n)
+	h:replace(i, val)               replace value at index                O(log n)
+	h:peek([i][, dst]) -> val       get value without popping it          O(1)
+	h:find(v) -> i                  find value and return its index       O(n) or O(1)
+	h:remove(v) -> t|f              find value and remove it              O(n) or O(log n)
+	h:length() -> n                 number of elements in heap            O(1)
 
 	Values that compare equally are popped in random order.
 

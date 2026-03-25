@@ -13,7 +13,7 @@
 	list:insert_after([anchor, ]t)          add an item after another item (or at the end)
 	list:insert_before([anchor, ]t)         add an item before another item (or at the beginning)
 	list:remove(t) -> t                     remove a specific item (and return it)
-	list:remove_last() -> t                remove and return the last item, if any
+	list:remove_last() -> t                 remove and return the last item, if any
 	list:remove_first() -> t                remove and return the first item, if any
 	list:next([current]) -> t               next item after some item (or first item)
 	list:prev([current]) -> t               previous item after some item (or last item)

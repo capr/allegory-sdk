@@ -4,24 +4,23 @@
 	Written by Cosmin Apreutesei. Public domain.
 
 	* Allows removing a value at any position from the queue.
-	* For a cdata ringbuffer, look at fs.mirror_buffer().
 	* Implemented as an array, not a linked list, so remove(v) is O(n).
 	* INDEX is a special key that if given will make find() be O(1).
 
 	queue(size) -> q               create a queue
-	q:size()                       get queue capacity
-	q:count()                      get queue item count
-	q:full() -> t|f                check if the queue is full
-	q:empty() -> t|f               check if the queue is empty
-	q:push(v)                      add a value to the end of the queue
-	q:pull() -> v|nil              remove the first value from the queue (nil if empty)
-	q:peek() -> v|nil              get the first value without popping
-	q:exists(v) -> true|false      check if value exists
-	q:first() -> v|nil             get the first value without popping
-	q:last() -> v|nil              get the last value without popping
-	q:items() -> iter() -> v       iterate values
-	q:item_at(i) -> v|nil          get item at index i in 1..q:count()
-	q:remove(v) -> t|f             remove value (return `true` if found)
+	q:size()                       get queue capacity                     O(1)
+	q:count()                      get queue item count                   O(1)
+	q:full() -> t|f                check if the queue is full             O(1)
+	q:empty() -> t|f               check if the queue is empty            O(1)
+	q:push(v)                      add a value to the end of the queue    O(1)
+	q:pull() -> v|nil              remove the first value from the queue  O(1)
+	q:peek() -> v|nil              get the first value without popping    O(1)
+	q:exists(v) -> true|false      check if value exists                  O(n) or O(1)
+	q:first() -> v|nil             get the first value without popping    O(1)
+	q:last() -> v|nil              get the last value without popping     O(1)
+	q:items() -> iter() -> v       iterate values                         O(n)
+	q:item_at(i) -> v|nil          get item at index i in 1..q:count()    O(1)
+	q:remove(v) -> t|f             remove value (return `true` if found)  O(n)
 
 ]=]
 

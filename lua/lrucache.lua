@@ -9,16 +9,16 @@
 
 	lrucache([options]) -> cache      create a new cache
 	cache.max_size <- size            set the cache size limit
-	cache:clear()                     clear the cache
-	cache:free()                      destroy the cache
-	cache:free_value(val)             value destructor (to be overriden)
-	cache:value_size(val) -> size     get value size (to be overriden; returns 1)
-	cache:free_size() -> size         size left until `max_size`
-	cache:get(key) -> val             get a value from the cache by key
-	cache:remove(key) -> val          remove a value from the cache by key
-	cache:remove_val(val) -> key      remove a value from the cache
-	cache:remove_last() -> val        remove the last value from the cache
-	cache:put(key, val)               put a value in the cache, making room as needed
+	cache:clear()                     clear the cache                       O(n)
+	cache:free()                      destroy the cache                     O(n)
+	cache:free_value(val)             value destructor (to be overriden)    O(1)
+	cache:value_size(val) -> size     get value size (to be overriden)      O(1)
+	cache:free_size() -> size         size left until `max_size`            O(1)
+	cache:get(key) -> val             get a value from the cache by key     O(1)
+	cache:remove(key) -> val          remove a value from the cache by key  O(1)
+	cache:remove_val(val) -> key      remove a value from the cache         O(1)
+	cache:remove_last() -> val        remove the last value from the cache  O(1)
+	cache:put(key, val)               put a value in the cache, making room O(1..n)
 
 ]=]
 
@@ -122,18 +122,4 @@ function lrucache:put(key, val)
 end
 
 
-if not ... then
-
-	local cache = _G.lrucache()
-
-	local k1 = {}
-	local v1 = {}
-	local v2 = {}
-	local v3 = {}
-	cache:put(k1, v1)
-	cache:put(k1, v2)
-	cache:put(k1, v3)
-
-	print'lrucache ok'
-
-end
+if not ... then require'lrucache_test'; return end
