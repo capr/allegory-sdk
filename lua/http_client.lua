@@ -81,23 +81,30 @@ local function http_conn(opt)
 	}, opt)
 end
 
-function http:send_request_headers(req, cookies)
-
-	assert(req.host, 'host missing') --required by http
-	req.headers['host'] = req.host
-
+function http:send_request_headers(req)
+	assert(req.headers['host'], 'host missing') --required by http
 	if req.close then
 		req.headers['connection'] = 'close'
 	end
-
 	if repl(req.compress, nil, self.compress) ~= false then
 		req.headers['accept-encoding'] = 'gzip'
 	end
-
-	req.headers['cookie'] = cookies
-
-	req.request_body_len = req.headers['content-length'] or 0
-	req.request_body_unsent_len = req.request_body_len
+	local cookies = req.cookies
+	if istab(cookies) then
+		local t = {}
+		for k,v in sortedpairs(cookies) do
+			assert(not k:has'=')
+			assert(not k:has';')
+			assert(not v:has'=')
+			assert(not v:has';')
+			append(t, k, '=', v)
+		end
+		req.headers['cookie'] = cat(t, ';')
+	end
+	req.upload_unsent_size = req.upload_size or 0
+	if req.upload_size then
+		req.headers['content-length'] = tostring(req.upload_size)
+	end
 	req.wb = self.wb
 
 	self.tcp:settimeout(req.request_timeout, 'w')
@@ -122,8 +129,6 @@ function http:send_request_headers(req, cookies)
 	end
 	wb:putf'\r\n'
 	wb:flush()
-
-	return true
 end
 
 --two ways to send the body:
@@ -131,32 +136,25 @@ end
 -- 2. call send_request_body_chunk() for larger chunks (saves a memcopy).
 
 function http:flush_send_buffer(req)
-	local n = req.request_body_unsent_len
+	local n = req.upload_unsent_size
 	assert(n, 'request not sent')
 	local len = #self.wb
 	self.tcp:checkp(n >= len, 'upload size mismatch')
 	self.wb:flush()
 	n = n - len
-	req.request_body_unsent_len = n
+	req.upload_unsent_size = n
 	return n
 end
 
 function http:send_request_body_chunk(req, chunk, len)
-	local n = req.request_body_unsent_len
+	local n = req.upload_unsent_size
 	assert(n, 'request not sent')
 	len = len or #chunk
 	self.tcp:checkp(n >= len, 'upload size mismatch')
 	self.tcp:send(chunk, len)
 	n = n - len
-	req.request_body_unsent_len = n
+	req.upload_unsent_size = n
 	return n
-end
-
-function http:should_have_response_body(method, status)
-	if method == 'HEAD' then return false end
-	if status == 204 or status == 304 then return false end
-	if status >= 100 and status < 200 then return false end
-	return true
 end
 
 function http:read_response_headers(req)
@@ -198,77 +196,82 @@ function http:read_response_headers(req)
 		end
 	end
 
-	local hconn = req.response_headers['connection']
-	req.close = req.close or (hconn and hconn:has'close')
+	req.close = req.close or (req.response_headers['connection'] or ''):has'close'
 
-	local redirect = status == 301 or status == 302 or status == 303 or status == 307
+	local redirect =
+		status == 301 or
+		status == 302 or
+		status == 303 or
+		status == 307 or
+		status == 308
 	if redirect then
 		local location = req.response_headers['location']
 		req.redirect_location = tcp:checkp(location, 'no location')
 	end
+
+	--prepare req for reading the body
+	local te = req.response_headers['transfer-encoding']
+	local ce = req.response_headers['content-encoding']
+	local len = tonumber(req.response_headers['content-length'])
+	if te then len = nil end
+	tcp:checkp(not te or te == 'chunked')
+	tcp:checkp(not ce or ce == 'gzip')
+	tcp:checkp(not len or len >= 0)
+	req.chunked = te == 'chunked'
+	req.gzip = ce == 'gzip'
+	req.len = len
+	req.unread_len = len
+	req.finished = len ~= 0
+	if req.gzip then
+
+	end
 end
 
-function http:recv_response_body_chunk()
-
-	if not self:should_have_response_body(req.method, req.status) then
-		function http:read_response_body_chunk(req)
-			return true
-		end
-
-		return true
+function http:recv_response_body_chunk(req)
+	if req.finished then
+		return nil, 'eof'
 	end
-
-	local rb_needs_reset, body_read_state
-	local chunked_te = req.response_headers['transfer-encoding'] == 'chunked'
-	local body_unread_len = req.response_headers['content-length']
-
-	function http:read_response_body_chunk(req)
-
-		if body_read_state == 'eof' then
-			return nil, 'eof', 0
-		end
-		if rb_needs_reset then
+	if req.rb_needs_reset then
+		rb:reset()
+		req.rb_needs_reset = false
+	end
+	if req.chunked then
+		local line = rb:needline()
+		local len = tonumber(line:gsub(';.*', ''), 16) --len[; extension]
+		tcp:checkp(len, 'invalid chunk size')
+		req:dp('<<', '%7d bytes', len)
+		if len > 0 then
 			rb:reset()
-			rb_needs_reset = false
-		end
-		if body_read_state == 'chunked' then
-			local line = rb:needline()
-			local len = tonumber(line:gsub(';.*', ''), 16) --len[; extension]
-			tcp:checkp(len, 'invalid chunk size')
-			req:dp('<<', '%7d bytes', len)
-			if len > 0 then
-				rb:reset()
-				rb:need(len)
-				self.rb_needs_reset = true
-				return rb:ref()
-			else --last chunk
-				body_read_state = 'eof'
-			end
-			rb:needline()
-		elseif body_
-			rb:need(1)
+			rb:need(len)
 			self.rb_needs_reset = true
-			body_read_state = body_read_state - len
+			rb:needline()
+			return rb:ref(), len
+		else --last chunk
+			rb:needline()
+			req.finshed = true
+			return nil, 'eof'
+		end
+	elseif req.body_len then
+		if req.body_unread_len == 0 then
+			return nil, 'eof'
+		end
+		rb:need(1)
+		self.rb_needs_reset = true
+		local buf, len = rb:ref()
+		req:dp('<<', '%7d bytes', len)
+		req.body_unread_len = req.body_unread_len - len
+		return buf, len
+	else --read till EOF
+		if rb:have(1) then
+			self.rb_needs_reset = true
 			local buf, len = rb:ref()
 			req:dp('<<', '%7d bytes', len)
+			return buf, len
+		else
+			req.finished = true
+			return nil, 'eof'
 		end
-
-		return buf, len, body_unread_len
 	end
-
-	function client:read_response_body_chunk(http, req)
-		local chunk, len, left = http:read_response_body_chunk(req)
-		if chunk and left > 0 then return chunk, len, left end
-		http.reading_response = false
-		return chunk, len
-	end
-
-	function client:read_response_body(http, req)
-		local ok, err = http:read_response_body(req)
-		http.reading_response = false
-		return ok, err
-	end
-
 end
 
 function http:cookie_domain_matches_request_host(domain, host)

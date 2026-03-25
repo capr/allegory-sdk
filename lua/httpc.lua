@@ -1,23 +1,20 @@
---[=[
+--[[
 
 	Async http(s) downloader.
 	Written by Cosmin Apreutesei. Public Domain.
 
-	Features https, gzip compression, persistent connections, pipelining,
+	Features https, gzip compression, persistent connections,
 	multiple client IPs, resource limits, auto-redirects, auto-retries,
 	cookie jars, multi-level debugging, caching, cdata-buffer-based I/O.
 
-CLIENT
-	http_client(opt1,...) -> client   create a client object
-	client:request(opt) -> req        make a HTTP request
-
-]=]
+]]
 
 require'glue'
 require'json'
 require'url'
 require'sock'
 require'sock_bearssl'
+require'pbuffer'
 require'gzip'
 require'fs'
 require'resolver'
@@ -25,23 +22,72 @@ require'http_date'
 
 --http connection object -----------------------------------------------------
 
-function http_conn(tcp, opt)
+local http = {type = 'http_connection', debug_prefix = 'H'}
 
-	local htcp = tcp
-
+function http_conn(opt)
 	local rb = pbuffer{
-		f = tcp,
+		f = opt.tcp,
 		readahead = recv_buffer_size,
 		lineterm = '\r\n',
 		linesize = 8192,
 	} --read buffer
-
 	local wb = pbuffer{
-		f = ctcp,
+		f = opt.tcp,
 	} --write buffer
+	return object(http, {
+		rb = rb,
+		wb = wb,
+	}, opt)
+end
 
-	, body_unsent_len
-	local headers_read, body_read_state
+function http:send_request_headers(req)
+	assert(req.headers['host'], 'host missing') --required by http
+	if repl(req.compress, nil, self.compress) ~= false then
+		req.headers['accept-encoding'] = 'gzip'
+	end
+	local cookies = req.cookies
+	if istab(cookies) then
+		local t = {}
+		for k,v in sortedpairs(cookies) do
+			assert(not k:has'=')
+			assert(not k:has';')
+			assert(not v:has'=')
+			assert(not v:has';')
+			append(t, k, '=', v)
+		end
+		req.headers['cookie'] = cat(t, ';')
+	end
+	req.request_body_len = req.headers['content-length'] or 0
+	req.request_body_unsent_len = req.request_body_len
+	req.wb = self.wb
+
+	self.tcp:settimeout(req.request_timeout, 'w')
+	local wb = self.wb
+
+	--send request line
+	assert(req.method and req.method == req.method:upper())
+	assert(req.uri)
+	req:dp('=>', '%s %s HTTP/1.1', req.method, req.uri)
+	wb:putf('%s %s HTTP/1.1\r\n', req.method, req.uri)
+
+	--send request headers.
+	--header names are case-insensitive and can't contain newlines.
+	local t = {}
+	for k,v in pairs(req.headers) do
+		if not istab(v) then t[1] = v; v = t end --must be 'cookie'
+		for _,v in ipairs(v) do
+			assert(not v:has'\n' and not v:has'\r')
+			req:dp('->', '%-17s %s', k, v)
+			wb:putf('%s: %s\r\n', k, v)
+		end
+	end
+	wb:putf'\r\n'
+	wb:flush()
+
+	return true
+end
+
+
 
 	local headers_sent
 	function htcp:send_headers(req)
